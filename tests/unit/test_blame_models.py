@@ -340,3 +340,20 @@ def test_counter_evidence_round_trips_and_defaults_to_empty():
     for candidate in raw["repos"][0]["candidates"]:
         del candidate["against"]
     assert BlameEntry.from_dict(raw).candidates[0].against == ""
+
+
+def test_the_boundary_counts_round_trip_and_keep_unread_unread():
+    entry = _entry(boundary_changes={"2026-07-03": 0, "2026-07-04": 2})
+    restored = BlameEntry.from_dict(entry.to_dict())
+    assert restored.boundary_changes == {"2026-07-03": 0, "2026-07-04": 2}
+
+    # A sidecar written before the field, and a malformed count: both land on
+    # "unread", which is what an absent release means — never "the stack stood
+    # still", which is what a defaulted 0 would claim.
+    raw = _entry().to_dict()
+    del raw["boundary_changes"]
+    assert BlameEntry.from_dict(raw).boundary_changes == {}
+
+    raw = _entry(boundary_changes={"2026-07-04": 1}).to_dict()
+    raw["boundary_changes"]["2026-07-05"] = "a few"
+    assert BlameEntry.from_dict(raw).boundary_changes == {"2026-07-04": 1}

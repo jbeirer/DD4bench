@@ -379,6 +379,14 @@ class RegressionRow:
     scope_score: float | None = None
     scope_reason: str = ""
     scope_state: ScopeCandidateState = "discovery_incomplete"
+    #: ``release -> tracked packages that moved entering it`` across this
+    #: metric's history tail, from the sidecar entry that examined it. This pass
+    #: has no provenance access of its own, so without the entry's record every
+    #: boundary would render as unread — and the release where the software was
+    #: identical and the metric moved anyway is the sharpest evidence a step is
+    #: noise. Empty when no entry covers this row (or the sidecar predates the
+    #: field), which renders honestly as "not read".
+    boundary_changes: dict[str, int] = field(default_factory=dict)
 
     @property
     def scope(self) -> tuple[str, str, str]:
@@ -678,6 +686,11 @@ def _collect_window(confirmed: list[_Confirmed], plan: CommentPlan) -> None:
             verdict=verdict, stack=stack, scope_state=state,
             scope_score=candidate.score if candidate is not None else None,
             scope_reason=candidate.description if candidate is not None else "",
+            # Taken from *this row's own* entry, which is joined on the row's
+            # identity and window: the boundary counts describe that metric's
+            # history tail, so they are correct even for a row that entered on a
+            # narrower range than this comment's window.
+            boundary_changes=dict(entry.boundary_changes) if entry else {},
         ))
     # Ids ride on identity order so they are reproducible from the plan alone: a
     # night re-run must ask the model about "r3" and mean the same regression it
@@ -687,7 +700,7 @@ def _collect_window(confirmed: list[_Confirmed], plan: CommentPlan) -> None:
         RegressionRow(
             verdict=row.verdict, stack=row.stack, fact_id=f"r{index}",
             scope_score=row.scope_score, scope_reason=row.scope_reason,
-            scope_state=row.scope_state,
+            scope_state=row.scope_state, boundary_changes=row.boundary_changes,
         )
         for index, row in enumerate(plan.rows, start=1)
     ]
@@ -806,12 +819,19 @@ def _outcomes_for(
 #: fetches (one window's subject is another's competitor).
 PatchFor = Callable[[str, int], str]
 
+#: And how it supplies one's description — same shape, same best-effort contract,
+#: kept a separate callable rather than widening :data:`PatchFor` so every
+#: existing caller keeps working and a run without descriptions is simply a run
+#: whose prompts carry none.
+BodyFor = Callable[[str, int], str]
+
 
 def build_comments(
     plans: list[CommentPlan],
     *,
     attributor: Attributor | None = None,
     patch_for: PatchFor | None = None,
+    body_for: BodyFor | None = None,
     dashboard_url: str | None = None,
     min_score: float = _DEFAULT_MIN_SCORE,
 ) -> list[PRComment]:
@@ -864,7 +884,7 @@ def build_comments(
     comments = []
     for plan in plans:
         attribution, request = _review(
-            plan, attributor=attributor, patch_for=patch_for
+            plan, attributor=attributor, patch_for=patch_for, body_for=body_for,
         )
         if attributor is not None and attribution is None:
             _log.warning(
@@ -923,6 +943,7 @@ def _review(
     *,
     attributor: Attributor | None,
     patch_for: PatchFor | None,
+    body_for: BodyFor | None,
 ) -> tuple[Attribution | None, AttributionRequest | None]:
     """One plan's cross-configuration review and the request it was made from.
 
@@ -939,8 +960,9 @@ def _review(
     if attributor is None:
         return None, None
     fetch = patch_for or (lambda _repo, _number: "")
+    body_fetch = body_for or (lambda _repo, _number: "")
     try:
-        request = _attribution_request(plan, fetch)
+        request = _attribution_request(plan, fetch, body_fetch)
     except Exception as exc:  # noqa: BLE001 — a diff fetch must not lose the comment
         _log.warning(
             "build_comments: %s — could not assemble the review request (%s); "
@@ -957,7 +979,9 @@ def _review(
         return None, request
 
 
-def _attribution_request(plan: CommentPlan, fetch: PatchFor) -> AttributionRequest:
+def _attribution_request(
+    plan: CommentPlan, fetch: PatchFor, body_fetch: BodyFor
+) -> AttributionRequest:
     """The whole window, as the reviewing model is shown it."""
     return AttributionRequest(
         repo=plan.repo,
@@ -967,12 +991,13 @@ def _attribution_request(plan: CommentPlan, fetch: PatchFor) -> AttributionReque
         onset_release=plan.onset_release,
         files=plan.subject.files,
         patch=fetch(plan.repo, plan.number),
+        body=body_fetch(plan.repo, plan.number),
         additions=plan.subject.additions,
         deletions=plan.subject.deletions,
         regressions=tuple(_fact(row) for row in plan.rows),
         outcomes=plan.outcomes,
         competitors=tuple(
-            _competitor(other, scope, fetch)
+            _competitor(other, scope, fetch, body_fetch)
             # Cut the field to what the prompt can actually carry *before*
             # fetching anything: the prompt keeps the strongest
             # `MAX_COMPETITORS` in this same order, so a window with a hundred
@@ -986,7 +1011,9 @@ def _attribution_request(plan: CommentPlan, fetch: PatchFor) -> AttributionReque
     )
 
 
-def _competitor(other: CandidatePR, scope: str, fetch: PatchFor) -> CompetingPR:
+def _competitor(
+    other: CandidatePR, scope: str, fetch: PatchFor, body_fetch: BodyFor = lambda _r, _n: "",
+) -> CompetingPR:
     """One competing candidate as the review sees it — with a score only if the
     first pass gave it one, and the scope that gave it."""
     return CompetingPR(
@@ -997,6 +1024,7 @@ def _competitor(other: CandidatePR, scope: str, fetch: PatchFor) -> CompetingPR:
         scope_reason=other.description,
         scope=scope if other.ranked else "",
         patch=fetch(other.repo, other.number),
+        body=body_fetch(other.repo, other.number),
     )
 
 
@@ -1011,12 +1039,14 @@ def _fact(row: RegressionRow) -> RegressionFact:
         baseline_median=v.baseline_median, z_score=v.z_score,
         scope_score=row.scope_score, scope_reason=row.scope_reason,
         scope_state=row.scope_state,
-        # The release-boundary package counts the ranker annotates a history
-        # with are not available here — this pass runs from the sidecar and the
-        # report, with no provenance lookup of its own — so the tail arrives
-        # without them and the prompt renders those boundaries as unread. That
-        # is the honest rendering: "nobody looked" is what happened.
-        history=history_from_verdict(v),
+        # The release-boundary package counts come from the sidecar entry that
+        # examined this row (:attr:`RegressionRow.boundary_changes`): this pass
+        # has no provenance access of its own, and a boundary the ranker
+        # measured as "no tracked package changed" is the sharpest evidence a
+        # movement is the series' own noise. Boundaries the sidecar has nothing
+        # for stay unread, which is what the prompt then says about them.
+        history=history_from_verdict(v, packages_changed=row.boundary_changes),
+        regions=v.region_deltas,
     )
 
 
@@ -1371,6 +1401,7 @@ def _assessment(
         if text:
             return (
                 f"\n> 🤖 **The AI reviewer's assessment:** {text}"
+                + _evidence_note(attribution)
                 + _coverage_note(rendered if rendered is not None else rows, attribution)
             )
         return None
@@ -1389,6 +1420,31 @@ def _assessment(
     return (
         f"\n> 🤖 **The AI ranker judged this PR {claim} cause of the "
         f"regression:** {text}"
+    )
+
+
+def _evidence_note(attribution: Attribution) -> str:
+    """One line when the review could not judge whether the movements are real.
+
+    ``likely_noise`` never reaches here — it withdraws the comment outright
+    (:func:`build_comments`) — so the only case left is
+    ``insufficient_evidence``: the benchmark history behind these steps is too
+    short for the review to corroborate them. That does *not* overturn the
+    detector's own confirmation, which is a two-strike statistical judgement over
+    the measurements themselves and is why the comment exists at all. It does
+    change how much weight a reader should give the paragraph above it, so it is
+    said out loud rather than left for nobody to know.
+
+    ``real_change`` prints nothing. A caveat that appears on every comment is one
+    every reader learns to skip, which is how the one that matters gets skipped
+    too."""
+    assessment = attribution.assessment
+    if assessment is None or assessment.verdict != "insufficient_evidence":
+        return ""
+    return (
+        "\n>\n> <sub>The benchmark history behind these steps was too short for "
+        "the review to judge whether they are a real change; the regressions "
+        "themselves are confirmed by the nightly detector.</sub>"
     )
 
 

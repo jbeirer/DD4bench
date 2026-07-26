@@ -90,6 +90,31 @@ class HostFact:
 
 
 @dataclass(frozen=True)
+class RegionDelta:
+    """How much one sub-detector region's per-event time moved across a change
+    window.
+
+    A run-level step is a single number, and a single number names no mechanism:
+    "ALLEGRO got 21% slower" and "the HCAL barrel got 14× slower while everything
+    else stood still" are the same measurement, but only the second can be
+    matched against a diff. The region timing that answers this is recorded by
+    the ``k4BenchRegionTimingAction`` plugin on every run; this is that
+    decomposition, computed across the two releases the change entered between.
+
+    ``base``/``onset`` are the per-event median times (seconds) on each end of
+    the window, ``None`` when that end recorded nothing for the region — a region
+    that only appears on one side is a real event (a detector added or removed)
+    and must stay distinguishable from one that stayed flat. ``delta`` is the
+    signed move, and is what the regions are ranked by.
+    """
+
+    region: str
+    base: float | None
+    onset: float | None
+    delta: float
+
+
+@dataclass(frozen=True)
 class ReleasePoint:
     """One Key4hep release in a metric's recent history.
 
@@ -184,6 +209,11 @@ class MetricVerdict:
     #: either not attributed or not a step. Empty everywhere else, and empty on
     #: reports written before the field existed.
     history: tuple[ReleasePoint, ...] = ()
+    #: Where inside the detector this step landed (see :class:`RegionDelta`),
+    #: largest movement first. Carried on ``CONFIRMED`` *timing* verdicts only —
+    #: region data is per-event time, so it explains a time step and says nothing
+    #: about a memory one — and empty when the run recorded no region timing.
+    region_deltas: tuple[RegionDelta, ...] = ()
 
     @property
     def flagged(self) -> bool:
@@ -243,6 +273,13 @@ class RunGroupReport:
     notes: list[str] = field(default_factory=list)
     reliable: bool | None = None
     github_run_url: str | None = None
+    #: The compact geometry file this group's runs loaded, relative to the k4geo
+    #: checkout (``FCCee/ALLEGRO/compact/ALLEGRO_o1_v03/ALLEGRO_o1_v03.xml``).
+    #: Carried so attribution can state which candidate pull requests touch the
+    #: geometry this run actually reads rather than inferring it from path names.
+    #: Empty for every run benchmarked before it was recorded, which means
+    #: *unknown* — never "this run loads no geometry".
+    geometry_path: str = ""
 
     def _select(self, severity: Severity) -> list[MetricVerdict]:
         return [v for v in self.verdicts if v.severity is severity]

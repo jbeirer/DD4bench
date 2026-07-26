@@ -25,6 +25,7 @@ from k4bench.blame import rank as rank_mod
 from k4bench.blame.llm import ChatClient
 from k4bench.labels import pretty_sample
 from k4bench.blame.evidence import HistoryPoint, MetricHistory, ScopeOutcome
+from k4bench.regression.models import RegionDelta
 from k4bench.blame.prompt import (
     ASSESSMENT_RULE,
     NOISE_RULE,
@@ -657,3 +658,82 @@ def test_the_rules_the_second_pass_is_judged_under_are_the_same_ones():
     for rule in (SCORE_BAND_RULE, NOISE_RULE, ASSESSMENT_RULE, UNTRUSTED_EVIDENCE_RULE):
         assert rule in rank_mod._SYSTEM_PROMPT
         assert rule in attribute_mod._SYSTEM_PROMPT
+
+
+# ── Every metric carries its evidence, not just the ones with a table ─────────
+
+def test_every_metric_gets_a_history_clause_even_past_the_table_cap():
+    # One assessment is given for the whole group, so a metric whose series
+    # wobbles weekly must not be invisible behind the ones that got tables.
+    metrics = tuple(
+        MetricStep(metric=f"metric_{i}", metric_family="time", direction="UP",
+                   pct_change=0.2 - i / 1000, label="baseline", history=_history())
+        for i in range(rank_mod._MAX_HISTORY_BLOCKS + 2)
+    )
+    prompt = rank_mod._build_user_prompt(_request(metrics=metrics))
+    assert prompt.count("      history: series ±0.5%") == len(metrics)
+    assert prompt.count("Recent history of this metric") == rank_mod._MAX_HISTORY_BLOCKS
+
+
+def test_the_cap_never_claims_the_omitted_histories_are_similar():
+    # Nothing checks that they are, and a model would be entitled to read such a
+    # claim as a statement that they agree.
+    metrics = tuple(
+        MetricStep(metric=f"metric_{i}", metric_family="time", direction="UP",
+                   pct_change=0.2 - i / 1000, label="baseline", history=_history())
+        for i in range(rank_mod._MAX_HISTORY_BLOCKS + 2)
+    )
+    prompt = rank_mod._build_user_prompt(_request(metrics=metrics))
+    assert "similar history" not in prompt
+    assert "2 further metric(s) stepped in this window" in prompt
+    assert "summarised on its own line above" in prompt
+
+
+# ── The rest of the evidence a candidate is judged with ───────────────────────
+
+def test_the_prompt_states_how_much_of_the_stack_stood_still():
+    prompt = rank_mod._build_user_prompt(
+        dataclasses.replace(_request(), n_unchanged=19)
+    )
+    # Two candidates in the fixture, from two packages.
+    assert "2 of 21 tracked package(s) moved across this window" in prompt
+
+
+def test_a_candidate_carries_its_size_and_its_own_description():
+    candidates = (
+        RankCandidate(repo="key4hep/k4geo", number=10, title="Lower the step limit",
+                      files=("FCCee/ALLEGRO/a.xml",), patch="@@\n+x",
+                      body="Raises the step limit for accuracy; expect ~15% slower.",
+                      additions=42, deletions=7),
+    )
+    prompt = rank_mod._build_user_prompt(_request(candidates=candidates))
+    assert "#10 — Lower the step limit (+42/-7)" in prompt
+    assert "expect ~15% slower" in prompt
+    assert "BEGIN PR DESCRIPTION" in prompt
+
+
+def test_a_candidate_touching_the_run_s_geometry_says_so():
+    request = dataclasses.replace(
+        _request(candidates=(
+            RankCandidate(repo="key4hep/k4geo", number=10, title="Fix HCAL cells",
+                          files=("FCCee/ALLEGRO/compact/HCal.xml", "README.md")),
+        )),
+        geometry_tree="FCCee/ALLEGRO/compact/ALLEGRO_o1_v03/ALLEGRO_o1_v03.xml",
+    )
+    prompt = rank_mod._build_user_prompt(request)
+    assert "reaches this run's geometry: 1 of 2 changed file(s)" in prompt
+
+
+def test_a_run_with_no_recorded_geometry_says_nothing_about_reach():
+    prompt = rank_mod._build_user_prompt(_request())
+    assert "reaches this run's geometry" not in prompt
+
+
+def test_the_prompt_carries_the_region_breakdown_of_the_largest_movers():
+    prompt = rank_mod._build_user_prompt(_request(metrics=(
+        MetricStep(metric="wall_time_s", metric_family="time", direction="UP",
+                   pct_change=0.2, label="baseline", history=_history(),
+                   regions=(RegionDelta("HCAL_barrel", 0.31, 4.52, 4.21),)),
+    )))
+    assert "Where the change landed inside the detector" in prompt
+    assert "HCAL_barrel: 0.31 -> 4.52 s/event (+4.21)" in prompt

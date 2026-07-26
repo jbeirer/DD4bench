@@ -32,7 +32,14 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 
 from k4bench.blame.evidence import history_from_verdict, outcomes_for_window
-from k4bench.blame.github import GitHubClient, RateLimitError, RepoResolution, resolve_repo_prs
+from k4bench.blame.github import (
+    GitHubClient,
+    PRText,
+    RateLimitError,
+    RepoResolution,
+    low_signal_path,
+    resolve_repo_prs,
+)
 from k4bench.blame.models import BlameEntry, BlameReport, RepoBlame, StepAssessment
 from k4bench.blame.rank import (
     MetricStep,
@@ -152,14 +159,17 @@ def build_blame_report(
             continue
 
         repos: list[RepoBlame] = []
-        patches: dict[tuple[str, int], str] = {}
+        texts: dict[tuple[str, int], PRText] = {}
         for change in changes:
             resolution, rate_limited = _resolve(
                 change, github, resolution_cache, rate_limited
             )
             repos.append(_repo_blame(change, resolution))
             for pr in resolution.candidates:
-                patches[(pr.repo, pr.number)] = resolution.patches.get(pr.number, "")
+                texts[(pr.repo, pr.number)] = PRText(
+                    patch=resolution.patches.get(pr.number, ""),
+                    body=resolution.bodies.get(pr.number, ""),
+                )
 
         assessment: StepAssessment | None = None
         if ranker is not None:
@@ -168,10 +178,12 @@ def build_blame_report(
                 v.last_accepted_run_date, v.onset_run_date,
             )
             result = _rank_group(
-                ranker, verdicts_by_rank_group[rank_group], repos, patches,
+                ranker, verdicts_by_rank_group[rank_group], repos, texts,
                 rank_group, rank_cache,
                 outcomes=_outcomes(report, v, outcome_cache),
                 changed_count=changed_count,
+                n_unchanged=unchanged_cache[window],
+                geometry_path=_geometry_path(report, v),
             )
             if result.rankings:
                 repos = [_apply_rankings(r, result.rankings) for r in repos]
@@ -183,6 +195,17 @@ def build_blame_report(
             base_release=v.last_accepted_run_date, onset_release=v.onset_run_date,
             repos=tuple(repos), n_unchanged=unchanged_cache[window],
             assessment=assessment,
+            # Persisted for the cross-configuration pass, which has no provenance
+            # access of its own: without this it would render every boundary of
+            # every history as unread and lose the sharpest noise measurement the
+            # suite produces. Unknown boundaries are simply absent (see
+            # :func:`_packages_changed`), so the map never claims a stack stood
+            # still that nobody looked at.
+            boundary_changes={
+                release: count
+                for release, count in _packages_changed(v, changed_count).items()
+                if count is not None
+            },
         ))
 
     return BlameReport(
@@ -321,6 +344,23 @@ def _outcomes(
     return cache[key]
 
 
+def _geometry_path(report: NightlyReport, verdict: MetricVerdict) -> str:
+    """The compact geometry file the run group behind *verdict* loads.
+
+    Read off the report rather than carried on the verdict: it is a property of
+    the *run*, not of one metric, and every group in a night records it once.
+    Empty for runs benchmarked before the path was captured — the prompt then
+    states nothing about geometry reach rather than guessing at it."""
+    scope = (verdict.detector, verdict.platform, verdict.sample)
+    return next(
+        (
+            g.geometry_path for g in report.groups
+            if (g.detector, g.platform, g.sample) == scope and g.geometry_path
+        ),
+        "",
+    )
+
+
 def _assessment(result: RankResult) -> StepAssessment | None:
     """The sidecar's view of the ranker's step assessment.
 
@@ -339,12 +379,14 @@ def _rank_group(
     ranker: Ranker,
     verdicts: list[MetricVerdict],
     repos: list[RepoBlame],
-    patches: dict[tuple[str, int], str],
+    texts: dict[tuple[str, int], PRText],
     rank_group: tuple[str, str, str, str, str],
     rank_cache: dict[tuple[str, str, str, str, str], RankResult],
     *,
     outcomes: tuple,
     changed_count: Callable[[str, str | None, str], int | None],
+    n_unchanged: int = 0,
+    geometry_path: str = "",
 ) -> RankResult:
     """The ranker's judgement of one rank group: a score per candidate, and its
     read of the step itself.
@@ -379,8 +421,9 @@ def _rank_group(
         return RankResult()
     if rank_group not in rank_cache:
         rank_cache[rank_group] = _run_ranker(
-            ranker, verdicts, repos, patches,
+            ranker, verdicts, repos, texts,
             outcomes=outcomes, changed_count=changed_count,
+            n_unchanged=n_unchanged, geometry_path=geometry_path,
         )
     return rank_cache[rank_group]
 
@@ -389,10 +432,12 @@ def _run_ranker(
     ranker: Ranker,
     verdicts: list[MetricVerdict],
     repos: list[RepoBlame],
-    patches: dict[tuple[str, int], str],
+    texts: dict[tuple[str, int], PRText],
     *,
     outcomes: tuple,
     changed_count: Callable[[str, str | None, str], int | None],
+    n_unchanged: int = 0,
+    geometry_path: str = "",
 ) -> RankResult:
     """One guarded rank call. Any exception degrades to an empty result and is
     cached as such, so a broken ranker is asked at most once per detector/
@@ -400,12 +445,15 @@ def _run_ranker(
     isolation, extended to the model."""
     try:
         request = _rank_request(
-            verdicts, repos, patches,
+            verdicts, repos, texts,
             outcomes=outcomes, changed_count=changed_count,
+            n_unchanged=n_unchanged, geometry_path=geometry_path,
         )
         if not request.candidates:
             return RankResult()
-        return ranker.rank(request)
+        result = ranker.rank(request)
+        _warn_if_miscalibrated(request, result)
+        return result
     except Exception:
         _log.exception("blame: ranker raised — leaving this window's candidates unranked")
         return RankResult()
@@ -438,10 +486,12 @@ def _packages_changed(
 def _rank_request(
     verdicts: list[MetricVerdict],
     repos: list[RepoBlame],
-    patches: dict[tuple[str, int], str],
+    texts: dict[tuple[str, int], PRText],
     *,
     outcomes: tuple,
     changed_count: Callable[[str, str | None, str], int | None],
+    n_unchanged: int = 0,
+    geometry_path: str = "",
 ) -> RankRequest:
     """Assemble the ranker's input: every metric that stepped across the shared
     window with its own recent history, the configurations that measured the
@@ -465,13 +515,17 @@ def _rank_request(
             history=history_from_verdict(
                 m, packages_changed=_packages_changed(m, changed_count)
             ),
+            regions=m.region_deltas,
         )
         for m in verdicts
     )
     candidates = tuple(
         RankCandidate(
             repo=pr.repo, number=pr.number, title=pr.title,
-            files=pr.files, patch=patches.get((pr.repo, pr.number), ""),
+            files=pr.files,
+            patch=texts.get((pr.repo, pr.number), PRText()).patch,
+            body=texts.get((pr.repo, pr.number), PRText()).body,
+            additions=pr.additions, deletions=pr.deletions,
         )
         for repo in repos
         for pr in repo.candidates
@@ -483,7 +537,45 @@ def _rank_request(
         onset_release=v.onset_run_date,
         candidates=candidates,
         outcomes=outcomes,
+        n_unchanged=n_unchanged,
+        geometry_tree=geometry_path,
     )
+
+
+#: A score above this on a candidate that changes nothing a benchmark executes
+#: is a calibration failure worth a line in the log. Set above the comment
+#: threshold's neighbourhood on purpose: a model idly putting a docs change at
+#: 30 is ordinary hedging, while one putting it at 70 is not reading the diff.
+_CANARY_SCORE = 60.0
+
+
+def _warn_if_miscalibrated(request: RankRequest, result: RankResult) -> None:
+    """Log when the ranker scores a change that cannot have caused a runtime
+    regression.
+
+    Every window carries a few candidates that are structurally incapable of
+    moving a benchmark — documentation, licences, CI configuration — and how a
+    model treats *those* is a free, ground-truth-free read on whether it is
+    reading diffs or matching words. Diagnostic only: it never suppresses a
+    ranking or moves a score, because a rule confident enough to act on would
+    have to classify paths confidently enough to be wrong about a real one."""
+    by_key = {(c.repo, c.number): c for c in request.candidates}
+    suspect = [
+        f"{repo}#{number} ({ranking.score:.0f})"
+        for (repo, number), ranking in result.rankings.items()
+        if ranking.score >= _CANARY_SCORE
+        and (candidate := by_key.get((repo, number))) is not None
+        and candidate.files
+        and all(low_signal_path(f) for f in candidate.files)
+    ]
+    if suspect:
+        _log.warning(
+            "blame: %s/%s %s — the ranker scored documentation/CI-only "
+            "change(s) at or above %.0f: %s. That window's ranking is not "
+            "reading the diffs; treat its scores with suspicion.",
+            request.detector, request.sample, request.onset_release,
+            _CANARY_SCORE, ", ".join(sorted(suspect)),
+        )
 
 
 def _apply_rankings(

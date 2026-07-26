@@ -56,16 +56,22 @@ from k4bench.blame.prompt import (
     SCORE_BAND_RULE,
     UNTRUSTED_EVIDENCE_RULE,
     allocate_diff_budget,
+    body_block,
     diff_block,
     direction_phrase,
     format_files,
+    geometry_reach,
+    geometry_tree,
     history_block,
+    history_clause,
     log_prompt_size,
     measurement_phrase,
     outcome_lines,
     platform_line,
+    region_lines,
     sample_line,
 )
+from k4bench.regression.models import RegionDelta
 
 _log = logging.getLogger(__name__)
 
@@ -85,6 +91,14 @@ class RankCandidate:
     title: str
     files: tuple[str, ...] = ()
     patch: str = ""
+    #: The author's own account of the change. Frequently states the mechanism —
+    #: and sometimes the expected cost — more plainly than the diff shows it, and
+    #: is as untrusted as the diff: it is fenced the same way.
+    body: str = ""
+    #: How large the change is. A three-line change and a three-thousand-line one
+    #: deserve different priors, and the second pass was already shown this.
+    additions: int = 0
+    deletions: int = 0
 
 
 @dataclass(frozen=True)
@@ -118,6 +132,10 @@ class MetricStep:
     #: ``None`` for a report that predates recorded histories. The evidence that
     #: lets a model conclude the step is noise and blame nobody.
     history: MetricHistory | None = None
+    #: Where inside the detector this step landed, largest movement first. A
+    #: mechanism the model can match a diff against before it reads any code —
+    #: empty for a memory metric, or a run that recorded no region timing.
+    regions: tuple[RegionDelta, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -134,6 +152,18 @@ class RankRequest:
     base_release: str | None
     onset_release: str
     candidates: tuple[RankCandidate, ...] = ()
+    #: Tracked packages that did **not** move across this window. The other half
+    #: of the diff, and the half that bounds the search: "three of twenty-one
+    #: moved" tells the model the cause is in those three or in something
+    #: k4Bench does not track at all. The second pass has always been shown this;
+    #: the first had not.
+    n_unchanged: int = 0
+    #: The geometry tree this run actually loads, e.g. ``FCCee/ALLEGRO/`` — the
+    #: seam that turns "does this diff reach this detector?" from an inference
+    #: over path names into a fact. Empty when the run recorded no geometry path
+    #: (every run benchmarked before it was captured), and the prompt then says
+    #: nothing rather than guessing.
+    geometry_tree: str = ""
     #: The controls: configurations that measured this window and stayed flat.
     #: Cross-configuration evidence is what tells a shared-infrastructure cause
     #: apart from a detector-specific one, and this pass used to be shown none
@@ -259,6 +289,10 @@ _SYSTEM_PROMPT = (
 _MAX_PROMPT_CHARS = 45000
 _MAX_FILES_LISTED = 12
 _MAX_DESCRIPTION_CHARS = 200
+#: Description kept per candidate. Long enough for the paragraph that says what
+#: a change does and why, short enough that a template-heavy repository cannot
+#: spend the prompt on checklists.
+_MAX_BODY_CHARS = 1200
 #: Counter-evidence is a clause, not an essay — and unlike the reason it is not
 #: rendered on the outward-facing surfaces, so it earns less room.
 _MAX_AGAINST_CHARS = 200
@@ -383,12 +417,16 @@ _RESPONSE_INSTRUCTION = (
 
 
 def _step_lines(request: RankRequest) -> list[str]:
-    """One bullet per metric that stepped, with its measurement.
+    """One bullet per metric that stepped, with its measurement and a one-line
+    reading of its own history.
 
-    The measurement rides on the bullet rather than only in the history table
-    below it, because not every metric gets a table: the tables are capped at
-    the largest movers, and a metric shown as a bare percentage would be the
-    only one in the prompt whose size cannot be judged."""
+    Both ride on the bullet rather than only in the table below it, because not
+    every metric gets a table: the tables are capped at the largest movers, and a
+    metric past that cap would otherwise arrive as a bare percentage with no way
+    to judge its size and no hint of what its series normally does. That matters
+    more here than it looks — one assessment is given for the whole group, so a
+    metric whose series wobbles weekly must not be invisible behind six quiet
+    ones."""
     lines = ["- Metrics that stepped across the window:"]
     for step in request.metrics:
         subject = f"{step.metric} ({step.label})"
@@ -399,6 +437,9 @@ def _step_lines(request: RankRequest) -> list[str]:
             f"  - {subject} {direction_phrase(step.direction, step.pct_change)}"
             + (f" ({detail})" if detail else "")
         )
+        clause = history_clause(step.history)
+        if clause:
+            lines.append(f"      history: {clause}")
     return lines
 
 
@@ -416,11 +457,12 @@ def _history_lines(request: RankRequest) -> list[str]:
     """History tables for the window's largest movers.
 
     Capped rather than exhaustive: a detector-removal sweep can confirm dozens
-    of correlated metrics in one window, their histories repeat each other, and
-    the evidence a reader needs — is this series quiet, did the level hold, did
-    the stack even move — is the same in each. The cap is stated when it bites,
-    because a prompt that silently showed three of twelve histories would read
-    as a window where only three metrics have a past."""
+    of correlated metrics in one window, and a dozen full tables would crowd out
+    the diffs. Every metric still carries its one-line reading on its own bullet
+    (:func:`_step_lines`), so the cap costs detail, never evidence — and the cap
+    is stated when it bites, because a prompt that silently showed three of
+    twelve histories would read as a window where only three metrics have a
+    past."""
     if not any(step.history for step in request.metrics):
         return []
     ranked = sorted(request.metrics, key=_by_movement)
@@ -432,11 +474,15 @@ def _history_lines(request: RankRequest) -> list[str]:
             subject += f" [{step.sub_detector}]"
         lines.append("")
         lines += history_block(step.history, title=f"{subject} — ")
+        lines += region_lines(step.regions)
     remaining = sum(1 for step in ranked if step.history) - len(shown)
     if remaining > 0:
+        # Never "with a similar history": nothing checks that, and the model
+        # would be entitled to read it as a statement that they agree.
         lines.append(
-            f"  ({remaining} further metric(s) stepped in this window with a "
-            f"similar history; only the largest movements are shown in full.)"
+            f"  ({remaining} further metric(s) stepped in this window; their "
+            f"full history tables are omitted here, and each is summarised on "
+            f"its own line above.)"
         )
     return lines
 
@@ -466,15 +512,26 @@ def _run_context_lines(request: RankRequest) -> str:
     return "\n".join(lines)
 
 
-def _render_candidate(candidate: RankCandidate, diff_budget: int) -> str:
+def _render_candidate(
+    candidate: RankCandidate, diff_budget: int, geometry: str = ""
+) -> str:
     """One PR's prompt block.
 
     The number, title and file paths are always included; the diff is clipped
     to this candidate's *diff_budget* share, so a wide window degrades every
     oversized diff evenly rather than overflowing a small-context model."""
-    lines = [f"- #{candidate.number} — {candidate.title}"]
+    size = f"+{candidate.additions}/-{candidate.deletions}"
+    lines = [f"- #{candidate.number} — {candidate.title} ({size})"]
     if candidate.files:
         lines.append(f"  files: {format_files(candidate.files, _MAX_FILES_LISTED)}")
+        # A fact, where the run recorded enough to state one: whether this change
+        # lands in the geometry tree this detector actually loads. The model
+        # would otherwise infer it from path names, which is where a
+        # plausible-sounding wrong answer comes from.
+        reach = geometry_reach(candidate.files, geometry)
+        if reach:
+            lines.append(reach)
+    lines += body_block(candidate.body, _MAX_BODY_CHARS)
     lines += diff_block(candidate.patch, diff_budget)
     return "\n".join(lines)
 
@@ -483,11 +540,17 @@ def _build_user_prompt(request: RankRequest) -> str:
     """The user message: the window's regressions and their history, the
     configurations that stayed flat, then every candidate grouped by package,
     each with its fair share of the total diff budget."""
+    packages = sorted({c.repo for c in request.candidates})
     parts = [
         f"Run context — the {request.detector} run these metrics were "
         f"measured on; judge every candidate against it:",
         _run_context_lines(request),
         *outcome_lines(request.outcomes, _MAX_OUTCOMES_LISTED),
+        "",
+        # The denominator bounds the search: whatever caused this is in the
+        # packages that moved, or in something k4Bench does not track.
+        f"{len(packages)} of {len(packages) + request.n_unchanged} tracked "
+        f"package(s) moved across this window; the rest stood still.",
         "",
         "Candidate pull requests, grouped by package — score each on its own:",
     ]
@@ -504,7 +567,9 @@ def _build_user_prompt(request: RankRequest) -> str:
         parts.append("")
         parts.append(f"## {repo}")
         for candidate in candidates:
-            parts.append(_render_candidate(candidate, budget_for[candidate]))
+            parts.append(_render_candidate(
+                candidate, budget_for[candidate], geometry_tree(request.geometry_tree)
+            ))
 
     parts.append("")
     parts.append(

@@ -269,6 +269,24 @@ class StepAssessment:
         return cls(verdict=verdict, reason=str(data.get("reason") or ""))
 
 
+def _boundary_changes(raw: object) -> dict[str, int]:
+    """``release -> packages changed entering it``, read defensively.
+
+    An entry that cannot be read as a count is *dropped* rather than defaulted:
+    the absence of a release from this map already means "unread", so dropping a
+    malformed one lands on the honest answer instead of inventing a zero that
+    would read as "the stack stood still"."""
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, int] = {}
+    for release, count in raw.items():
+        try:
+            out[str(release)] = int(count)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 @dataclass(frozen=True)
 class BlameEntry:
     """Blame for one confirmed regression.
@@ -284,6 +302,17 @@ class BlameEntry:
     ``assessment`` is the ranker's read of the step (see
     :class:`StepAssessment`), shared by every entry of one rank group because
     the ranker judges that group's metrics together.
+
+    ``boundary_changes`` maps a release in this metric's history tail to the
+    number of tracked packages that moved *entering* it. It is the only piece of
+    the evidence the ranker assembles that the cross-configuration pass cannot
+    recompute — that pass runs from the report and this sidecar, with no
+    provenance access of its own — so it is persisted here rather than derived
+    twice. A release **absent** from the map is unread, never unchanged: ``0``
+    means the software was identical across that boundary (the strongest local
+    measurement of a series' own noise) and a missing key means nobody looked,
+    and collapsing the two would turn an unread boundary into proof of
+    innocence.
     """
 
     detector: str
@@ -297,6 +326,7 @@ class BlameEntry:
     repos: tuple[RepoBlame, ...] = ()
     n_unchanged: int = 0
     assessment: StepAssessment | None = None
+    boundary_changes: dict[str, int] = field(default_factory=dict)
 
     @property
     def key(self) -> tuple:
@@ -342,6 +372,7 @@ class BlameEntry:
             "assessment": (
                 self.assessment.to_dict() if self.assessment is not None else None
             ),
+            "boundary_changes": dict(sorted(self.boundary_changes.items())),
         }
 
     @classmethod
@@ -359,6 +390,7 @@ class BlameEntry:
             repos=tuple(RepoBlame.from_dict(r) for r in d.get("repos") or ()),
             n_unchanged=int(d.get("n_unchanged") or 0),
             assessment=StepAssessment.from_dict(d.get("assessment")),
+            boundary_changes=_boundary_changes(d.get("boundary_changes")),
         )
 
 

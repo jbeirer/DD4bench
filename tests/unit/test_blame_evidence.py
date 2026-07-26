@@ -273,3 +273,59 @@ def test_a_step_that_cannot_be_dated_counts_as_inside_the_window():
     # A step nobody can place is not evidence of flatness.
     undated = _verdict(onset_run_date=None)
     assert steps_in_window(undated, ("2026-07-14", "2026-07-18")) is True
+
+
+# ── Gaps in the evidence are breaks, not things to reach across ───────────────
+#
+# Both readings below are stated to a model as facts, and either one can flip a
+# likely_noise verdict. Bridging an unjudged release or an unknown host turns
+# "we do not know" into a claim, which is the one failure mode this module
+# exists to prevent.
+
+def test_a_quiet_boundary_is_never_claimed_across_an_unjudged_release():
+    # A judged -> B unjudged (a package moved entering it) -> C judged (none
+    # moved entering it). The 0 describes B→C only; pairing A with C would
+    # attribute a two-boundary move to it and call the software identical.
+    history = _history([
+        _point("2026-07-01", 12.0, packages=None),
+        _point("2026-07-04", 20.0, judged=False, severity="UNKNOWN", packages=1),
+        _point("2026-07-08", 18.0, packages=0),
+    ])
+    assert history.quiet_boundary_move is None
+    assert history.quiet_boundaries == 0
+
+
+def test_a_quiet_boundary_between_two_judged_releases_still_counts():
+    history = _history([
+        _point("2026-07-01", 12.0, packages=2),
+        _point("2026-07-04", 12.6, packages=0),
+        _point("2026-07-08", 12.0, packages=0),
+    ])
+    assert history.quiet_boundary_move == pytest.approx(0.05)
+    assert history.quiet_boundaries == 2
+
+
+def test_an_onset_host_change_needs_the_release_immediately_before_it():
+    old, new = HostFact("bench01", 64), HostFact("bench02", 64)
+    # The release before the onset recorded no host: whether the machine changed
+    # at the onset is unknown, and saying it did would hand the model a rival
+    # explanation nobody measured.
+    unknown_between = _history([
+        _point("2026-07-01", 12.0, hosts=(old,)),
+        _point("2026-07-14", 12.0),
+        _point("2026-07-18", 18.0, severity="CONFIRMED", hosts=(new,)),
+    ])
+    assert unknown_between.host_change_at_onset is None
+
+    adjacent = _history([
+        _point("2026-07-14", 12.0, hosts=(old,)),
+        _point("2026-07-18", 18.0, severity="CONFIRMED", hosts=(new,)),
+    ])
+    assert adjacent.host_change_at_onset == (old, new)
+
+
+def test_an_onset_with_no_release_before_it_claims_nothing():
+    history = _history([
+        _point("2026-07-18", 18.0, severity="CONFIRMED", hosts=(HostFact("bench01"),)),
+    ])
+    assert history.host_change_at_onset is None

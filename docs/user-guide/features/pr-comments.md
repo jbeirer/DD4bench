@@ -119,16 +119,25 @@ Three rules bound it:
 - **The step itself is judged first.** Both passes are shown each metric's own
   recent history — its release-by-release level, how much it moves across
   boundaries where *no tracked package changed at all*, whether the new level
-  held afterwards, and whether the benchmark host changed at the onset — and
-  both must report a `step_assessment` before scoring anyone. Without a place to
-  say "this movement is most likely noise", a model asked only to rank
-  candidates can express that solely by scoring everybody low, which reads
-  downstream exactly like "I looked and found nothing". A `likely_noise` verdict
-  from *either* pass withholds the comment: the ranking is still written and
-  still rendered on the dashboard and in the email, with the doubt beside it,
-  but nothing is posted to anyone's repository. Both passes also score against
-  the same published likelihood bands, so a step that merely *sounds* related to
-  a candidate's title cannot reach the high end of the scale.
+  held afterwards, whether the benchmark host changed at the onset, and where
+  inside the detector the time went — and both are asked for a `step_assessment`
+  before scoring anyone. Without a place to say "this movement is most likely
+  noise", a model asked only to rank candidates can express that solely by
+  scoring everybody low, which reads downstream exactly like "I looked and found
+  nothing".
+
+    A `likely_noise` verdict from *either* pass withholds the comment: the
+    ranking is still written and still rendered on the dashboard and in the
+    email, with the doubt beside it, but nothing is posted to anyone's
+    repository. The cross-configuration pass must actually answer — a reply
+    without a usable assessment is a decline, and no comment is posted that
+    night. `insufficient_evidence` is not a veto: the regression is confirmed by
+    the detector's own two-strike statistical rule, which the model failing to
+    corroborate from a short history does not overturn — so the comment stands
+    and says, in one line, that the history was too short to judge. Both passes
+    also score against the same published likelihood bands, so a step that
+    merely *sounds* related to a candidate's title cannot reach the high end of
+    the scale.
 
 Both passes use the same `K4BENCH_LLM_*` configuration and are off by default;
 `K4BENCH_LLM_SUMMARY_MODEL` optionally points this pass alone at a stronger
@@ -149,6 +158,7 @@ being wrong about far less often than it is worth being silent.
 | Merged | The PR is merged — an open PR cannot have shipped in a release. |
 | Complete discovery | The blame entry's candidate search was complete. Naming one PR out of a knowingly partial set is the overclaim the ranker itself refuses to make. |
 | The step is not read as noise | Neither pass concluded the movement is `likely_noise`. Each is shown the metric's recent release-by-release history — how much the series moves on its own, whether the level held, whether the benchmark host changed underneath it — and either saying "this is probably noise" withholds the comment, however high the candidate scored. |
+| The review committed to a reading | The cross-configuration pass must return a `step_assessment`. A reply without one is a decline, exactly like a reply with no summary, so nothing is posted that night — a comment on a step nobody assessed is the case this field exists to prevent. `insufficient_evidence` still posts, with one line in the comment saying the history was too short to judge. |
 | Confirmed tonight | Selection is driven from the *report*'s confirmed regressions, so a comment can only describe a regression that is confirmed in tonight's report. |
 | Not a storm | More than `max_comments` (default 10) comments in one night suppresses **all** of them: a night that loud is a bug, not a night. |
 | Not withdrawn | When the cross-configuration review ran and left *every* regression in the window below `min_score`, the comment is dropped. See [Two passes](#two-passes). |

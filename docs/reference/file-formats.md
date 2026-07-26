@@ -160,6 +160,10 @@ severity and direction it was flagged with, and the machine(s) that ran it:
   {"run_date": "2026-07-04", "value": 120.4, "n_runs": 1, "n_judged": 1,
    "severity": "CONFIRMED", "direction": "UP",
    "hosts": [{"name": "bench01", "cpu_cores": 64}]}
+],
+"region_deltas": [
+  {"region": "HCAL_barrel", "base": 0.31, "onset": 4.52, "delta": 4.21},
+  {"region": "ECAL_barrel", "base": 1.02, "onset": 1.03, "delta": 0.01}
 ]
 ```
 
@@ -173,6 +177,19 @@ if the series it came out of does not move that much by itself, and one number
 cannot say which. Only confirmed verdicts carry it (they are the only ones
 anything attributes), and older reports carry none — every reader treats an
 empty history as "no history recorded", never as a quiet series.
+
+`region_deltas` answers the other half: *where inside the detector* a timing step
+landed, from the per-region timing the `k4BenchRegionTimingAction` plugin records
+on every run (`{config}_regions.json`). Each entry is one top-level detector
+region's per-event median time on each end of the change window, largest movement
+first — so "ALLEGRO got 21% slower" becomes "the HCAL barrel went from 0.31 to
+4.52 s/event and nothing else moved", which is a claim a code diff can be checked
+against. Carried on confirmed **timing** verdicts only (region data is per-event
+time and says nothing about a memory step), and empty when either end of the
+window recorded no region file — with only one side measured there is no
+comparison, and treating the missing side as zero would report the whole detector
+as newly appearing. A region present on one end only keeps `null` on the other:
+it genuinely appeared or disappeared.
 
 ### Blame sidecar (`blame.json`)
 
@@ -196,6 +213,7 @@ confirmed, attributable regression).
       "label": "baseline", "metric": "wall_time_s", "sub_detector": null,
       "base_release": "2026-07-03", "onset_release": "2026-07-04",
       "n_unchanged": 60,
+      "boundary_changes": {"2026-07-03": 0, "2026-07-04": 2},
       "assessment": {
         "verdict": "real_change",
         "reason": "flat within ±0.4% for six releases, and the new level held"
@@ -247,6 +265,15 @@ claim of cause. Readers
 drop unknown keys, so the schema can gain fields without breaking an older
 dashboard; structurally malformed sidecars are hidden, never fatal.
 
+`boundary_changes` maps a release in the metric's history tail to the number of
+tracked packages that moved *entering* it. It is the one piece of the ranker's
+evidence the cross-configuration pass cannot recompute — that pass runs from the
+report and this sidecar with no provenance access — so it is persisted rather
+than derived twice. A release **absent** from the map is unread, never unchanged:
+`0` says the software was identical across that boundary and the metric moved
+anyway (the sharpest measurement of a series' own noise this suite produces),
+while a missing key says nobody looked.
+
 `assessment` is the ranker's judgement of the **movement itself**, before any
 question of who caused it: `real_change`, `likely_noise`, or
 `insufficient_evidence`, with a one-line reason. It is shared by every entry of
@@ -259,8 +286,10 @@ comment, since an accusation in someone else's repository about a wobble is the
 most expensive mistake this pipeline can make.
 
 The ranking stage is a **language model** that reads the metric that moved, its
-recent release-by-release history, the configurations that measured the same
-window without moving, and each candidate PR's actual code diff. It is
+recent release-by-release history, where inside the detector the time went, the
+configurations that measured the same window without moving, how much of the
+tracked stack stood still, and each candidate PR's own description and code diff
+(descriptions and diffs both arrive fenced as untrusted data). It is
 configured entirely by environment —
 `K4BENCH_LLM_URL`, `K4BENCH_LLM_MODEL`, `K4BENCH_LLM_API_KEY` and optional
 `K4BENCH_LLM_MAX_TOKENS` (any OpenAI-compatible `/chat/completions` endpoint;

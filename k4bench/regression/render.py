@@ -29,8 +29,10 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from k4bench.labels import pretty_platform, pretty_sample
 from k4bench.regression.models import (
     Direction,
+    HostFact,
     MetricVerdict,
     NightlyReport,
+    RegionDelta,
     ReleasePoint,
     RunGroupReport,
     Severity,
@@ -270,6 +272,32 @@ def to_json(report: NightlyReport) -> dict:
 _VERDICT_FIELDS = frozenset(f.name for f in dataclasses.fields(MetricVerdict))
 
 
+def _hosts(raw: object) -> tuple[HostFact, ...]:
+    """The machines behind one release, rebuilt from JSON.
+
+    Read explicitly rather than left to the dict: everything the blame pipeline
+    sees comes back through this reader, so a field that is written but never
+    parsed is a field that does not exist in production — which is exactly what
+    happened to this one. A host that cannot be read is dropped; the release
+    then carries no host, which is the same "we do not know" the writer means by
+    an empty tuple, and never a claim that the machine stayed the same."""
+    if not isinstance(raw, list):
+        return ()
+    hosts = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        cores = item.get("cpu_cores")
+        try:
+            hosts.append(HostFact(
+                name=str(item.get("name", "")),
+                cpu_cores=None if cores is None else int(cores),
+            ))
+        except (TypeError, ValueError):
+            continue
+    return tuple(hosts)
+
+
 def _history(raw: object) -> tuple[ReleasePoint, ...]:
     """A verdict's release history, rebuilt from JSON.
 
@@ -294,10 +322,33 @@ def _history(raw: object) -> tuple[ReleasePoint, ...]:
                 n_judged=int(item.get("n_judged") or 0),
                 severity=Severity(item.get("severity", Severity.UNKNOWN.value)),
                 direction=Direction(item.get("direction", Direction.NONE.value)),
+                hosts=_hosts(item.get("hosts")),
             ))
         except (TypeError, ValueError):
             continue
     return tuple(points)
+
+
+def _region_deltas(raw: object) -> tuple[RegionDelta, ...]:
+    """A verdict's region decomposition, rebuilt from JSON — same tolerance as
+    :func:`_history`, and for the same reason: it is evidence about a step, not
+    the judgement of one."""
+    if not isinstance(raw, list):
+        return ()
+    deltas = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        try:
+            deltas.append(RegionDelta(
+                region=str(item.get("region", "")),
+                base=None if item.get("base") is None else float(item["base"]),
+                onset=None if item.get("onset") is None else float(item["onset"]),
+                delta=float(item.get("delta") or 0.0),
+            ))
+        except (TypeError, ValueError):
+            continue
+    return tuple(deltas)
 
 
 def from_json(data: dict) -> NightlyReport:
@@ -311,6 +362,7 @@ def from_json(data: dict) -> NightlyReport:
                 "severity": Severity(v["severity"]),
                 "direction": Direction(v["direction"]),
                 "history": _history(v.get("history")),
+                "region_deltas": _region_deltas(v.get("region_deltas")),
             })
             for v in g.get("verdicts", [])
         ]

@@ -14,8 +14,11 @@ import math
 
 from k4bench.regression.models import (
     Direction,
+    HostFact,
     MetricVerdict,
     NightlyReport,
+    RegionDelta,
+    ReleasePoint,
     RunGroupReport,
     Severity,
 )
@@ -189,8 +192,9 @@ _WINDOW_FIELDS = {
 #: was first confirmed for its release, letting reruns render as reconfirmed).
 _REPEAT_FIELDS = {"first_confirmed_run_id"}
 #: The release-level history tail carried on confirmed verdicts, so a reader can
-#: weigh a step against the series it stepped out of.
-_HISTORY_FIELDS = {"history"}
+#: weigh a step against the series it stepped out of, and the region breakdown
+#: saying where inside the detector a timing step landed.
+_HISTORY_FIELDS = {"history", "region_deltas"}
 #: The verdict schema a reader deployed before these features knew about. The
 #: compatibility contract is that the new fields are *purely additive* to this
 #: set — anything else (a renamed or dropped field) breaks an old reader in a
@@ -221,3 +225,73 @@ def test_new_report_is_additive_over_the_pre_window_schema():
                 "severity": Severity(old_view["severity"]),
                 "direction": Direction(old_view["direction"]),
             })
+
+
+# ── What the blame pipeline reads back ────────────────────────────────────────
+#
+# Everything the ranker sees comes through `from_json`, so a field written but
+# never parsed is a field that does not exist in production. These two are the
+# ones a step gets attributed against.
+
+def _confirmed_with_evidence() -> MetricVerdict:
+    return MetricVerdict(
+        detector="ALLEGRO_o1_v03", platform="x86_64-almalinux9-gcc14.2.0-opt",
+        sample="single_e", label="baseline", metric_family="time",
+        metric="wall_time_s", sub_detector=None,
+        run_id="2026-07-22", run_date="2026-07-22", value=14.6,
+        baseline_median=12.0, baseline_mad=0.06, pct_change=0.21, z_score=42.0,
+        severity=Severity.CONFIRMED, direction=Direction.UP, reason="step",
+        onset_run_id="2026-07-18", onset_run_date="2026-07-18",
+        last_accepted_run_id="2026-07-14", last_accepted_run_date="2026-07-14",
+        history=(
+            ReleasePoint("2026-07-14", 12.0, 1, 1, Severity.OK, Direction.NONE,
+                         (HostFact("bench01", 64),)),
+            ReleasePoint("2026-07-18", 14.6, 2, 2, Severity.CONFIRMED, Direction.UP,
+                         (HostFact("bench02", 128),)),
+        ),
+        region_deltas=(RegionDelta("HCAL_barrel", 0.31, 4.52, 4.21),),
+    )
+
+
+def _round_trip(verdict: MetricVerdict) -> MetricVerdict:
+    group = RunGroupReport(
+        detector=verdict.detector, platform=verdict.platform, sample=verdict.sample,
+        k4h_release="key4hep-2026-07-22", run_date="2026-07-22", run_id="2026-07-22",
+        verdicts=[verdict],
+    )
+    report = NightlyReport(generated_at="2026-07-22T06:00:00", groups=[group])
+    return from_json(to_json(report)).groups[0].verdicts[0]
+
+
+def test_the_benchmark_host_survives_the_round_trip():
+    # The blame CLI reads report.json back before building any prompt, so a host
+    # dropped here can never reach the model — and "the machine changed exactly
+    # at the onset" is one of the few facts that competes with a code change.
+    restored = _round_trip(_confirmed_with_evidence())
+    assert restored.history[0].hosts == (HostFact("bench01", 64),)
+    assert restored.history[1].hosts == (HostFact("bench02", 128),)
+
+
+def test_the_region_breakdown_survives_the_round_trip():
+    restored = _round_trip(_confirmed_with_evidence())
+    assert restored.region_deltas == (RegionDelta("HCAL_barrel", 0.31, 4.52, 4.21),)
+
+
+def test_unreadable_evidence_costs_the_evidence_and_never_the_report():
+    data = to_json(NightlyReport(
+        generated_at="x",
+        groups=[RunGroupReport(
+            detector="D", platform="P", sample="S", k4h_release="k",
+            run_date="2026-07-22", run_id="2026-07-22",
+            verdicts=[_confirmed_with_evidence()],
+        )],
+    ))
+    verdict = data["groups"][0]["verdicts"][0]
+    verdict["history"][0]["hosts"] = "not a list"
+    verdict["history"][1]["hosts"] = [{"name": "bench02", "cpu_cores": "many"}]
+    verdict["region_deltas"] = [{"region": "HCAL", "delta": "lots"}]
+    restored = from_json(data).groups[0].verdicts[0]
+    assert restored.history[0].hosts == () and restored.history[1].hosts == ()
+    assert restored.region_deltas == ()
+    # The verdict itself is untouched: this is context for a step, not the step.
+    assert restored.severity is Severity.CONFIRMED and restored.pct_change == 0.21

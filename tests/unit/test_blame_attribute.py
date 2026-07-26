@@ -81,7 +81,12 @@ def _attributor(actions, **kwargs) -> OpenAICompatAttributor:
 
 
 def _reply(summary: str = "ALLEGRO moved and IDEA did not.", **likelihoods) -> str:
+    """A well-formed reply. The step assessment is part of that: the contract
+    requires it, and a reply without one is a decline (see
+    :func:`test_a_reply_without_an_assessment_is_declined`), so a fixture that
+    omitted it would test the decline path in every test that uses it."""
     return json.dumps({
+        "step_assessment": {"verdict": "real_change", "reason": "the level held"},
         "summary": summary,
         "attributions": [
             {"id": row_id, "likelihood": value}
@@ -606,17 +611,29 @@ def test_a_noise_verdict_is_carried_back_with_the_scores():
     assert result.likelihoods == {"r1": 80.0}
 
 
-def test_a_reply_with_no_assessment_is_unassessed_never_a_real_change():
-    result = _attributor([_completion(_reply(r1=80))]).attribute(_request())
-    assert result.assessment is None
+def test_a_reply_without_an_assessment_is_declined(caplog):
+    # This pass decides whether a public accusation is posted, and the gate
+    # downstream reads this field. A reply that skipped it is indistinguishable
+    # from one that never asked whether the movements are real, so it is a
+    # decline — which costs one night and is recoverable, unlike a comment
+    # posted on a step nobody assessed.
+    import json as _json
+
+    body = _json.dumps({
+        "summary": "ALLEGRO moved and IDEA did not.",
+        "attributions": [{"id": "r1", "likelihood": 80}],
+    })
+    assert _attributor([_completion(body)]).attribute(_request()) is None
+    assert "no usable step_assessment" in caplog.text
 
 
-def test_an_undefined_verdict_is_dropped_and_the_review_still_stands():
+def test_a_verdict_nobody_defined_is_declined_too():
+    # Silently accepting an unknown word would put a value in the gate's hands
+    # that nothing downstream defines.
     result = _attributor([
         _completion(_assessed_reply("probably_fine", r1=80)),
     ]).attribute(_request())
-    assert result.assessment is None
-    assert result.likelihoods == {"r1": 80.0}
+    assert result is None
 
 
 def test_the_first_rounds_reading_survives_the_completion_rounds():

@@ -81,6 +81,7 @@ from k4bench.blame.prompt import (
     SCORE_BAND_RULE,
     UNTRUSTED_EVIDENCE_RULE,
     allocate_diff_budget,
+    body_block,
     diff_block,
     direction_phrase,
     format_files,
@@ -90,8 +91,10 @@ from k4bench.blame.prompt import (
     measurement_phrase,
     outcome_lines,
     platform_line,
+    region_lines,
     sample_line,
 )
+from k4bench.regression.models import RegionDelta
 
 _log = logging.getLogger(__name__)
 
@@ -166,6 +169,11 @@ class RegressionFact:
     scope_reason: str = ""
     scope_state: ScopeCandidateState = "discovery_incomplete"
     history: MetricHistory | None = None
+    #: Where inside the detector this step landed, largest movement first — the
+    #: decomposition that turns "this configuration got slower" into a claim a
+    #: diff can be checked against. Empty for a memory row, or a run with no
+    #: region timing recorded.
+    regions: tuple[RegionDelta, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -204,6 +212,9 @@ class CompetingPR:
     scope_reason: str = ""
     scope: str = ""
     patch: str = ""
+    #: The author's own account of the change — best-effort like ``patch``, and
+    #: fenced as the untrusted prose it is.
+    body: str = ""
 
 
 @dataclass(frozen=True)
@@ -238,6 +249,10 @@ class AttributionRequest:
     onset_release: str
     files: tuple[str, ...] = ()
     patch: str = ""
+    #: The reviewed pull request's own description. The one place its author
+    #: states, in their own words, what the change is for — and untrusted for
+    #: exactly the same reason.
+    body: str = ""
     additions: int = 0
     deletions: int = 0
     regressions: tuple[RegressionFact, ...] = ()
@@ -380,6 +395,13 @@ _MAX_ATTRIBUTED_ROWS = 500
 MAX_COMPETITORS = 30
 _MAX_FILES_LISTED = 12
 _MAX_OUTCOMES_LISTED = 40
+
+#: Description budgets. The reviewed pull request earns more room than the
+#: alternatives it is weighed against — the whole review is about that one
+#: change, and thirty competitors' descriptions would otherwise cost more than
+#: their diffs.
+_MAX_SUBJECT_BODY_CHARS = 2000
+_MAX_COMPETITOR_BODY_CHARS = 400
 
 #: Rows given a *full* history table. Every row with a history already carries
 #: its one-line summary, so this is the depth-vs-width trade: eight tables (~6
@@ -676,7 +698,7 @@ def _history_lines(request: AttributionRequest) -> list[str]:
     at least once. Capped hard — a wide window holds hundreds of rows and their
     histories repeat — and the cap is stated, because silently showing three of
     two hundred would read as a window where only three rows have a past."""
-    facts = [f for f in _attributed_facts(request) if f.history]
+    facts = [f for f in _attributed_facts(request) if f.history or f.regions]
     if not facts:
         return []
     shown = facts[:_MAX_HISTORY_BLOCKS]
@@ -691,6 +713,7 @@ def _history_lines(request: AttributionRequest) -> list[str]:
             subject += f" [{fact.sub_detector}]"
         lines.append("")
         lines += history_block(fact.history, title=f"[{fact.id}] {subject} — ")
+        lines += region_lines(fact.regions)
     remaining = len(facts) - len(shown)
     if remaining > 0:
         lines.append(
@@ -783,6 +806,7 @@ def _subject_lines(request: AttributionRequest, budget: int) -> list[str]:
     ]
     if request.files:
         lines.append(f"  files: {format_files(request.files, _MAX_FILES_LISTED)}")
+    lines += body_block(request.body, _MAX_SUBJECT_BODY_CHARS)
     lines += diff_block(request.patch, budget)
     return lines
 
@@ -854,6 +878,9 @@ def _competitor_lines(competitors: list[CompetingPR], budgets: list[int]) -> lis
                 f"{competitor.scope_score:.0f}/100"
                 + (f" — {competitor.scope_reason}" if competitor.scope_reason else "")
             )
+        # The author's own material — description then diff — stays together and
+        # last, after k4Bench's own account of the candidate.
+        lines += body_block(competitor.body, _MAX_COMPETITOR_BODY_CHARS)
         lines += diff_block(competitor.patch, budget)
     return lines
 
@@ -1107,10 +1134,24 @@ def _parse_attribution(
             request.slug, len(likelihoods),
         )
         return None
+    assessment = _parse_assessment(data, slug=request.slug)
+    if assessment is None:
+        # Required, exactly like the summary, and for a stronger reason: this is
+        # the pass that decides whether a public accusation is posted, and the
+        # gate downstream reads this field. A reply without it is
+        # indistinguishable from one that never considered whether the movements
+        # are real, and accepting it would let a model skip the question and
+        # still produce a comment — the precise gap this field was added to
+        # close. Declining costs a night and is recoverable; posting on an
+        # unconsidered step is not.
+        _log.warning(
+            "attribute: %s — scored %d row(s) but gave no usable "
+            "step_assessment; declining, so no comment tonight",
+            request.slug, len(likelihoods),
+        )
+        return None
     return Attribution(
-        summary=summary,
-        likelihoods=likelihoods,
-        assessment=_parse_assessment(data, slug=request.slug),
+        summary=summary, likelihoods=likelihoods, assessment=assessment,
     )
 
 

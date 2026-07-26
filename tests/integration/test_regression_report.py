@@ -184,6 +184,24 @@ def _write_run_with_provenance(
         "label,returncode,n_events,wall_time_s,peak_rss_mb,user_cpu_s,events_per_sec\n"
         f"baseline,0,10,{wall_time_s},1024.0,{wall_time_s * 0.98},{10.0 / wall_time_s}\n"
     )
+    # Per-region timing, as the k4BenchRegionTimingAction plugin writes it. The
+    # HCAL carries the whole step and the ECAL stays flat, so the decomposition
+    # the ranker is shown has something to say; event 0 is the warm-up every
+    # reader of this file drops.
+    hcal = wall_time_s / 100.0
+    (run_dir / "baseline_regions.json").write_text(json.dumps({
+        "event_numbers": [0, 1, 2],
+        "event_wall_seconds": [9.9, 1.0, 1.0],
+        "event_region_sum_seconds": [9.9, 1.0, 1.0],
+        "event_unaccounted_seconds": [0.0, 0.0, 0.0],
+        "indexed_top_level_detectors": ["ECAL", "HCAL"],
+        "at_location_seconds": [
+            {"ECAL": 99.0, "HCAL": 99.0},
+            {"ECAL": 0.5, "HCAL": hcal},
+            {"ECAL": 0.5, "HCAL": hcal},
+        ],
+        "by_birth_seconds": [{"ECAL": 0.5, "HCAL": hcal} for _ in range(3)],
+    }))
     (run_dir / "machine_info.json").write_text(json.dumps({
         "hostname": "host-a", "cpu_physical_cores": 8, "cpu_logical_cores": 16,
         "load_avg_1m_start": 0.5, "load_avg_1m_end": 0.5,
@@ -399,3 +417,135 @@ def test_blame_report_with_ranker_over_local_tree(tmp_path, monkeypatch):
         c["number"] for e in data["entries"] for r in e["repos"] for c in r["candidates"]
     }
     assert 999 not in all_numbers  # the invented PR was dropped
+
+
+def test_the_whole_evidence_chain_reaches_the_cross_configuration_review(
+    tmp_path, monkeypatch
+):
+    """report.json → blame.json → the reviewing model's request, over a local tree.
+
+    The pieces are each unit-tested, but the chain is where they have failed
+    before: a field written by the report build and never parsed back, or an
+    evidence map the sidecar carries and the second pass never reads, is
+    invisible to every test that stops at one module. This walks the whole path
+    the nightly job walks and asserts on what the *reviewer* is finally handed.
+    """
+    data_dir = tmp_path / "data"
+    d0 = date.fromisoformat("2026-01-01")
+    # Ten steady nights on one release, then a persisting step on a new one:
+    # the same shape the blame CLI test uses, so the window is
+    # (2026-01-10, 2026-01-11] with only k4geo moving across it.
+    for i in range(10):
+        night = (d0 + timedelta(days=i)).isoformat()
+        wall = 100.0 + (0.4 if i % 2 else -0.4)
+        stack = f"key4hep-{night}"
+        _write_run_with_provenance(
+            data_dir / "DET" / _PLAT / stack / "single_e" / night,
+            night, stack, wall, "a" * 40,
+        )
+    for i, night in enumerate(("2026-01-11", "2026-01-12")):
+        _write_run_with_provenance(
+            data_dir / "DET" / _PLAT / "key4hep-2026-01-11" / "single_e" / night,
+            night, "key4hep-2026-01-11", 120.0 + i * 0.5, "c" * 40,
+        )
+
+    out_dir = tmp_path / "out"
+    assert subprocess.run(
+        [sys.executable, str(_SCRIPT), "--data-dir", str(data_dir),
+         "--output-dir", str(out_dir)],
+        capture_output=True, text=True,
+    ).returncode == 0
+
+    from k4bench.blame import builder as builder_mod
+    from k4bench.blame.attribute import Attribution, StepAssessment as ReviewAssessment
+    from k4bench.blame.builder import build_blame_report
+    from k4bench.blame.comment import CommentPolicy, build_comments, select
+    from k4bench.blame.github import GitHubClient, RepoResolution
+    from k4bench.blame.models import CandidatePR
+    from k4bench.blame.rank import Ranking, RankResult, StepAssessment
+    from k4bench.regression.render import from_json as report_from_json
+
+    report = report_from_json(json.loads((out_dir / "report.json").read_text()))
+
+    # ── What the report itself carried through its own JSON ──────────────────
+    confirmed = next(v for v in report.regressions if v.metric == "wall_time_s")
+    assert confirmed.history, "a confirmed verdict must carry its release tail"
+    assert confirmed.history[-1].hosts[0].name == "host-a"
+    hcal = next(d for d in confirmed.region_deltas if d.region == "HCAL")
+    assert hcal.delta > 0.15  # the HCAL absorbed the step; the ECAL did not
+    assert all(abs(d.delta) < 0.01 for d in confirmed.region_deltas if d.region == "ECAL")
+
+    blame_cli = _load_script(_BLAME_SCRIPT)
+    packages_for_release = blame_cli._make_packages_for_release(
+        [str(data_dir)], None, {_PLAT: ["DET"]}
+    )
+    monkeypatch.setattr(builder_mod, "resolve_repo_prs", lambda *a, **k: RepoResolution(
+        candidates=[CandidatePR(
+            repo="key4hep/k4geo", number=1234, title="Lower the step limit",
+            author="alice", url="https://github.com/key4hep/k4geo/pull/1234",
+            merged_at="2026-01-11T00:00:00Z", files=("src/stepping.cpp",),
+        )],
+        patches={1234: "@@ -1 +1 @@\n+ more steps"},
+        bodies={1234: "Raises the step limit; expect the HCAL to cost more."},
+    ))
+
+    seen: list = []
+
+    class _Ranker:
+        def rank(self, request):
+            seen.append(request)
+            return RankResult(
+                rankings={
+                    (c.repo, c.number): Ranking(88.0, "raises the step count")
+                    for c in request.candidates
+                },
+                assessment=StepAssessment("real_change", "the level held"),
+            )
+
+    blame = build_blame_report(
+        report, packages_for_release=packages_for_release,
+        github=GitHubClient(), ranker=_Ranker(),
+    )
+
+    # ── What the *ranker* was shown, over the real tree ──────────────────────
+    step = seen[0].metrics[0]
+    assert step.history is not None and step.regions
+    assert seen[0].candidates[0].body.startswith("Raises the step limit")
+    # Every night here ran on one release, so each boundary of the tail is a
+    # real, read boundary — the evidence a model needs to calibrate the step.
+    assert any(p.packages_changed is not None for p in step.history.points)
+
+    # ── Through blame.json, into the reviewer's request ──────────────────────
+    round_tripped = type(blame).from_json(json.loads(json.dumps(blame.to_json())))
+    plans = select(
+        report, round_tripped,
+        CommentPolicy.from_config({"repos": ["key4hep/k4geo"], "min_score": 80}),
+    )
+    assert plans, "the window should warrant a comment"
+
+    reviewed: list = []
+
+    class _Reviewer:
+        def attribute(self, request):
+            reviewed.append(request)
+            return Attribution(
+                summary="The HCAL carries the step and IDEA did not move.",
+                likelihoods={f.id: 90.0 for f in request.regressions},
+                assessment=ReviewAssessment("real_change", "held"),
+            )
+
+    build_comments(
+        plans, attributor=_Reviewer(),
+        patch_for=lambda _r, _n: "@@\n+ more steps",
+        body_for=lambda _r, _n: "Raises the step limit; expect the HCAL to cost more.",
+        dashboard_url="https://dash.example", min_score=80,
+    )
+    fact = next(
+        f for f in reviewed[0].regressions if f.metric == "wall_time_s"
+    )
+    # The two things a component test cannot see: the boundary counts the ranker
+    # measured, and the region breakdown the report build computed, both
+    # surviving the sidecar and reaching the pass that decides the comment.
+    assert any(p.packages_changed is not None for p in fact.history.points)
+    assert any(d.region == "HCAL" for d in fact.regions)
+    assert reviewed[0].body.startswith("Raises the step limit")

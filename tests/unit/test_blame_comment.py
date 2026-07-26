@@ -179,11 +179,11 @@ def _plans(report, blame, policy=None):
 
 
 def _comments(report, blame, policy=None, *, attributor=None, patch_for=None,
-              dashboard_url=_DASH):
+              body_for=None, dashboard_url=_DASH):
     policy = policy or _policy()
     return build_comments(
         _plans(report, blame, policy),
-        attributor=attributor, patch_for=patch_for,
+        attributor=attributor, patch_for=patch_for, body_for=body_for,
         dashboard_url=dashboard_url, min_score=policy.min_score,
     )
 
@@ -2202,3 +2202,63 @@ def test_the_review_is_shown_each_rows_history():
     # This pass does no provenance lookup of its own, so every boundary is
     # honestly unread rather than silently "nothing changed".
     assert all(p.packages_changed is None for p in fact.history.points)
+
+
+def test_the_review_receives_the_boundary_counts_the_ranker_measured():
+    # The evidence the docs promise this pass: a release where the software was
+    # identical and the metric moved anyway. This pass cannot read provenance
+    # itself, so it comes from the sidecar entry or not at all.
+    v = dataclasses.replace(_verdict(), history=(
+        ReleasePoint("2026-07-02", 100.0, 1, 1, Severity.OK, Direction.NONE),
+        ReleasePoint("2026-07-03", 100.0, 1, 1, Severity.OK, Direction.NONE),
+        ReleasePoint("2026-07-04", 120.0, 1, 1, Severity.CONFIRMED, Direction.UP),
+    ))
+    blame = _blame([v], [_candidate(number=607, score=95.0)])
+    blame = BlameReport(
+        generated_at=blame.generated_at, report_night=blame.report_night,
+        entries=tuple(
+            dataclasses.replace(e, boundary_changes={"2026-07-03": 0, "2026-07-04": 2})
+            for e in blame.entries
+        ),
+    )
+    attributor = _FakeAttributor({"r1": 90.0})
+    _comments(_report(v), blame, attributor=attributor)
+    points = attributor.requests[0].regressions[0].history.points
+    assert [p.packages_changed for p in points] == [None, 0, 2]
+
+
+def test_the_review_receives_the_reviewed_pull_requests_description():
+    v = _verdict()
+    blame = _blame([v], [_candidate(number=607, score=95.0)])
+    attributor = _FakeAttributor({"r1": 90.0})
+    _comments(
+        _report(v), blame, attributor=attributor,
+        patch_for=lambda _r, _n: "@@\n+x",
+        body_for=lambda _r, n: f"description of #{n}",
+    )
+    assert attributor.requests[0].body == "description of #607"
+
+
+def test_a_review_that_cannot_judge_the_step_says_so_in_the_comment():
+    # insufficient_evidence does not overturn the detector's own two-strike
+    # confirmation, so the comment stands — but a reader deserves to know how
+    # much weight the reviewer's paragraph carries.
+    v = _verdict()
+    blame = _blame([v], [_candidate(number=607, score=95.0)])
+    attributor = _FakeAttributor(
+        {"r1": 90.0},
+        assessment=AttrStepAssessment("insufficient_evidence", "only two releases"),
+    )
+    body = _comments(_report(v), blame, attributor=attributor)[0].body
+    assert body.count("too short for the review to judge") == 1
+    assert "confirmed by the nightly detector" in body
+
+
+def test_an_assessed_real_change_adds_no_caveat_to_the_comment():
+    v = _verdict()
+    blame = _blame([v], [_candidate(number=607, score=95.0)])
+    attributor = _FakeAttributor(
+        {"r1": 90.0}, assessment=AttrStepAssessment("real_change", "held"),
+    )
+    body = _comments(_report(v), blame, attributor=attributor)[0].body
+    assert "too short for the review to judge" not in body

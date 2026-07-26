@@ -308,7 +308,7 @@ def main(argv: list[str] | None = None) -> int:
     comments = build_comments(
         plans,
         attributor=attributor,
-        patch_for=_blame_comment._patch_source(args.read_token) if attributor else None,
+        **_blame_comment._review_inputs(args.read_token, attributor),
         dashboard_url=args.dashboard_url,
         min_score=policy.min_score,
     )

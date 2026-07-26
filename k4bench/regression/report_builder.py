@@ -39,6 +39,7 @@ from k4bench.regression.models import (
     SeriesId,
     Severity,
 )
+from k4bench.regression.regions import region_deltas
 from k4bench.remote import (
     fetch_runs_windowed,
     list_detectors,
@@ -368,17 +369,22 @@ def _group_report_from_frames(
 
     k4h_release = ""
     github_run_url = None
+    geometry_path = ""
     if not no_results:
         tonight_rows = results_df[results_df["run_id"] == tonight]
         if not tonight_rows.empty:
             k4h_release = str(tonight_rows["k4h_release"].iloc[0])
             url = tonight_rows["github_run_url"].iloc[0]
             github_run_url = url if pd.notna(url) else None
+            if "xml_path" in tonight_rows.columns:
+                xml = tonight_rows["xml_path"].iloc[0]
+                geometry_path = str(xml) if pd.notna(xml) and xml else ""
 
     group = RunGroupReport(
         detector=detector, platform=platform, sample=sample,
         k4h_release=k4h_release, run_date=tonight, run_id=tonight,
         reliable=reliability.get(tonight), github_run_url=github_run_url,
+        geometry_path=geometry_path,
     )
 
     series = evaluate_group_series(
@@ -423,6 +429,49 @@ def _group_report_from_frames(
     return group
 
 
+def _with_region_deltas(
+    group: RunGroupReport, run_dirs: tuple[str, ...]
+) -> RunGroupReport:
+    """*group* with each confirmed **timing** regression told where inside the
+    detector its step landed (:mod:`k4bench.regression.regions`).
+
+    Attached here rather than in the series walk because this is the one place
+    that has both the finished verdicts and the run directories the region files
+    live in — the same seam the host facts use.
+
+    Deliberately narrow, because region files are per configuration and hold
+    per-event arrays: only ``CONFIRMED`` verdicts, only the ``time`` family
+    (region data is per-event time and says nothing about a memory step), only
+    the two releases of that verdict's own window, and one computation per
+    ``(label, window)`` however many metrics share it. On the overwhelming
+    majority of nights nothing is confirmed and this does no I/O at all.
+    """
+    windows = {
+        (v.label, v.last_accepted_run_date, v.onset_run_date)
+        for v in group.verdicts
+        if v.severity is Severity.CONFIRMED
+        and v.metric_family == "time"
+        and v.last_accepted_run_date and v.onset_run_date
+    }
+    if not windows:
+        return group
+    computed = {
+        window: region_deltas(
+            run_dirs, label=window[0],
+            base_release=window[1], onset_release=window[2],
+        )
+        for window in windows
+    }
+    group.verdicts = [
+        dataclasses.replace(v, region_deltas=deltas)
+        if (deltas := computed.get(
+            (v.label, v.last_accepted_run_date, v.onset_run_date)
+        )) else v
+        for v in group.verdicts
+    ]
+    return group
+
+
 def group_report_from_run_dirs(
     detector: str,
     platform: str,
@@ -438,12 +487,13 @@ def group_report_from_run_dirs(
     machine_df = build_machine_info_trend(run_dirs)
     reliability = run_reliability_map(results_df, machine_df)
     tonight = max(Path(d).name for d in run_dirs)
-    return _group_report_from_frames(
+    group = _group_report_from_frames(
         detector, platform, sample,
         results_df=results_df, event_df=event_df,
         reliability=reliability, tonight=tonight,
         hosts=host_facts(machine_df),
     )
+    return None if group is None else _with_region_deltas(group, run_dirs)
 
 
 def build_nightly_report(

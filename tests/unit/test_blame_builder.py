@@ -15,6 +15,7 @@ from k4bench.regression.models import (
     Direction,
     MetricVerdict,
     NightlyReport,
+    RegionDelta,
     ReleasePoint,
     RunGroupReport,
     Severity,
@@ -571,3 +572,92 @@ def test_counter_evidence_reaches_the_sidecar(monkeypatch):
     )
     scored = next(c for c in blame.entries[0].candidates if c.number == 10)
     assert scored.against == "without_HCAL moved too"
+
+
+def test_the_boundary_counts_are_persisted_for_the_second_pass(monkeypatch):
+    # The cross-configuration pass runs from the report and this sidecar, with no
+    # provenance access of its own. Without these counts it renders every
+    # boundary as unread and loses the sharpest noise measurement there is.
+    _two_candidates(monkeypatch)
+    provenance = _provenance({
+        (_PLAT, "2026-07-02"): {"k4geo": _pkgs("a" * 40)},
+        (_PLAT, "2026-07-03"): {"k4geo": _pkgs("a" * 40)},
+        (_PLAT, "2026-07-04"): {"k4geo": _pkgs("c" * 40)},
+    })
+    verdict = _with_history(_verdict(), [
+        _release("2026-07-02", 100.0),
+        _release("2026-07-03", 100.0),
+        _release("2026-07-04", 120.0, Severity.CONFIRMED, Direction.UP),
+    ])
+    blame = build_blame_report(
+        _report([verdict]), packages_for_release=provenance,
+        github=GitHubClient(), ranker=_FakeRanker(
+            {("key4hep/k4geo", 10): Ranking(60.0, "x")}
+        ),
+    )
+    entry = blame.entries[0]
+    assert entry.boundary_changes == {"2026-07-03": 0, "2026-07-04": 1}
+    # The oldest release has no predecessor in the tail, so its boundary is
+    # unread — absent from the map rather than recorded as zero.
+    assert "2026-07-02" not in entry.boundary_changes
+
+
+def test_the_ranker_is_told_how_much_of_the_stack_stood_still(monkeypatch):
+    _two_candidates(monkeypatch)
+    ranker = _FakeRanker({("key4hep/k4geo", 10): Ranking(60.0, "x")})
+    build_blame_report(
+        _report([_verdict()]), packages_for_release=_MOVED,
+        github=GitHubClient(), ranker=ranker,
+    )
+    # _MOVED moves k4geo only, and records no other package.
+    assert ranker.requests[0].n_unchanged == 0
+
+
+def test_the_ranker_is_told_which_geometry_the_run_loads(monkeypatch):
+    _two_candidates(monkeypatch)
+    ranker = _FakeRanker({("key4hep/k4geo", 10): Ranking(60.0, "x")})
+    report = _report([_verdict()])
+    report.groups[0].geometry_path = "FCCee/ALLEGRO/compact/x/x.xml"
+    build_blame_report(
+        report, packages_for_release=_MOVED, github=GitHubClient(), ranker=ranker,
+    )
+    assert ranker.requests[0].geometry_tree == "FCCee/ALLEGRO/compact/x/x.xml"
+
+
+def test_a_high_score_on_a_documentation_only_change_is_flagged(monkeypatch, caplog):
+    # A free read on whether the model is reading diffs or matching words: this
+    # candidate cannot make a simulation slower whatever its title says.
+    def docs_only(client, slug, base, head):
+        return RepoResolution(candidates=[
+            CandidatePR(repo=slug, number=10, title="Document the HCAL step limit",
+                        author="a", url="u", files=("docs/hcal.md", "README.md")),
+        ])
+    _stub_resolve(monkeypatch, docs_only)
+    build_blame_report(
+        _report([_verdict()]), packages_for_release=_MOVED, github=GitHubClient(),
+        ranker=_FakeRanker({("key4hep/k4geo", 10): Ranking(85.0, "sounds related")}),
+    )
+    assert "documentation/CI-only change(s)" in caplog.text
+    assert "key4hep/k4geo#10 (85)" in caplog.text
+
+
+def test_an_ordinary_high_score_is_not_flagged(monkeypatch, caplog):
+    _two_candidates(monkeypatch)
+    build_blame_report(
+        _report([_verdict()]), packages_for_release=_MOVED, github=GitHubClient(),
+        ranker=_FakeRanker({("key4hep/k4geo", 10): Ranking(85.0, "raises step count")}),
+    )
+    assert "documentation/CI-only" not in caplog.text
+
+
+def test_region_deltas_reach_the_ranker(monkeypatch):
+    _two_candidates(monkeypatch)
+    ranker = _FakeRanker({("key4hep/k4geo", 10): Ranking(60.0, "x")})
+    verdict = dataclasses.replace(_verdict(), region_deltas=(
+        RegionDelta("HCAL_barrel", 0.31, 4.52, 4.21),
+    ))
+    build_blame_report(
+        _report([verdict]), packages_for_release=_MOVED,
+        github=GitHubClient(), ranker=ranker,
+    )
+    assert ranker.requests[0].metrics[0].regions[0].region == "HCAL_barrel"

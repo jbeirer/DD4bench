@@ -11,6 +11,7 @@ from k4bench.blame import github as gh_mod
 from k4bench.blame.github import (
     GitHubClient,
     RateLimitError,
+    low_signal_path,
     parse_pr_number,
     resolve_repo_prs,
 )
@@ -369,3 +370,75 @@ def test_comment_write_raises_on_rate_limit():
                                                {"X-RateLimit-Remaining": "0"})}
     with pytest.raises(RateLimitError):
         gh_mod.create_issue_comment(_client(routes), "key4hep/k4geo", 7, "hi")
+
+
+# ── The author's own account of the change ────────────────────────────────────
+
+def test_a_pull_requests_description_is_carried_as_transient_input():
+    # Frequently states the mechanism, and sometimes the cost, more plainly than
+    # the diff shows it — and it was previously thrown away.
+    body = dict(_pr_body(10), body="Raises the step limit; expect ~15% slower.")
+    client = _client({
+        "/compare/aaa...ccc": _Resp(200, {
+            "commits": [_commit("s1", "Lower the step limit (#10)")],
+            "total_commits": 1,
+        }),
+        "/pulls/10/files": _Resp(200, [
+            {"filename": "src/a.cpp", "patch": "@@\n+x"},
+        ]),
+        "/pulls/10": _Resp(200, body),
+    })
+    res = resolve_repo_prs(client, "key4hep/k4geo", "aaa", "ccc")
+    assert res.bodies[10] == "Raises the step limit; expect ~15% slower."
+    # Never persisted on the candidate: it is re-fetchable from GitHub forever.
+    assert not hasattr(res.candidates[0], "body")
+
+
+def test_a_missing_description_is_simply_absent():
+    client = _client({
+        "/compare/aaa...ccc": _Resp(200, {
+            "commits": [_commit("s1", "Lower the step limit (#10)")],
+            "total_commits": 1,
+        }),
+        "/pulls/10/files": _Resp(200, [{"filename": "src/a.cpp", "patch": "@@\n+x"}]),
+        "/pulls/10": _Resp(200, _pr_body(10)),
+    })
+    assert resolve_repo_prs(client, "key4hep/k4geo", "aaa", "ccc").bodies == {}
+
+
+# ── Which hunks the diff budget is spent on ───────────────────────────────────
+
+def test_documentation_and_packaging_are_recognised_conservatively():
+    for path in ("README.md", "docs/guide.rst", "poetry.lock",
+                 ".github/workflows/ci.yml", "LICENSE", "CHANGELOG.md"):
+        assert low_signal_path(path), path
+    # Anything not clearly prose or machinery counts as code: mis-ranking a
+    # source file as noise is far worse than the reverse.
+    for path in ("src/a.cpp", "FCCee/ALLEGRO/compact/x.xml", "python/steer.py",
+                 "cmake/Modules/FindGeant4.cmake"):
+        assert not low_signal_path(path), path
+
+
+def test_the_diff_budget_is_spent_on_code_before_prose():
+    # With a small budget and GitHub returning the changelog first, leaving the
+    # order alone would send the model a diff containing no code at all.
+    filler = "@@\n" + "+doc\n" * 4000
+    client = _client({
+        "/compare/aaa...ccc": _Resp(200, {
+            "commits": [_commit("s1", "Lower the step limit (#10)")],
+            "total_commits": 1,
+        }),
+        "/pulls/10/files": _Resp(200, [
+            {"filename": "CHANGELOG.md", "patch": filler},
+            {"filename": "docs/guide.md", "patch": filler},
+            {"filename": "src/stepping.cpp", "patch": "@@\n+ the real change"},
+        ]),
+        "/pulls/10": _Resp(200, _pr_body(10)),
+    })
+    res = resolve_repo_prs(client, "key4hep/k4geo", "aaa", "ccc")
+    assert "the real change" in res.patches[10]
+    # The paths still arrive in the pull request's own order — they are its
+    # shape, and cheap enough to keep whole.
+    assert res.candidates[0].files == (
+        "CHANGELOG.md", "docs/guide.md", "src/stepping.cpp",
+    )

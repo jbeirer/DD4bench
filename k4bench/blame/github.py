@@ -136,20 +136,42 @@ def _is_rate_limited(resp: requests.Response) -> bool:
     return "rate limit" in message.lower()
 
 
+#: Longest pull-request description kept. Descriptions are prose, and a long one
+#: is nearly always a template, a checklist and a screenshot table after the two
+#: sentences that say what the change does. Cutting here rather than at render
+#: time keeps the bound in one place and off the wire budget of every prompt.
+MAX_BODY_CHARS = 4000
+
+
+@dataclass(frozen=True)
+class PRText:
+    """One pull request's *transient* text: its diff sample and its description.
+
+    Both are model input and neither is persisted — they are re-fetchable from
+    GitHub forever, and ``blame.json`` deliberately keeps only what a human needs
+    to follow the lead. Named rather than returned as a widening tuple so a third
+    kind of text cannot silently shift a caller's unpacking."""
+
+    patch: str = ""
+    body: str = ""
+
+
 @dataclass
 class RepoResolution:
     """The GitHub half of a :class:`~k4bench.blame.models.RepoBlame`: the
     candidate PRs found in the range plus the two "couldn't see everything"
     flags the builder copies onto the blame.
 
-    ``patches`` maps a PR number to its bounded unified-diff sample — *transient*
-    ranker input the builder hands to the ranking stage, keyed alongside
-    ``candidates`` but deliberately **not** part of the persisted
-    :class:`CandidatePR`: the diff is re-fetchable from GitHub forever, so
-    ``blame.json`` keeps only the file paths and the ranker's verdict."""
+    ``patches`` maps a PR number to its bounded unified-diff sample and
+    ``bodies`` to its description — both *transient* ranker input the builder
+    hands to the ranking stage, keyed alongside ``candidates`` but deliberately
+    **not** part of the persisted :class:`CandidatePR`: both are re-fetchable
+    from GitHub forever, so ``blame.json`` keeps only the file paths and the
+    ranker's verdict."""
 
     candidates: list[CandidatePR] = field(default_factory=list)
     patches: dict[int, str] = field(default_factory=dict)
+    bodies: dict[int, str] = field(default_factory=dict)
     commits_unavailable: bool = False
     truncated: bool = False
 
@@ -229,10 +251,12 @@ def resolve_repo_prs(
             # candidate list is incomplete, not merely smaller.
             result.truncated = True
             continue
-        pr, patch = fetched
+        pr, text = fetched
         result.candidates.append(pr)
-        if patch:
-            result.patches[number] = patch
+        if text.patch:
+            result.patches[number] = text.patch
+        if text.body:
+            result.bodies[number] = text.body
     return result
 
 
@@ -253,15 +277,16 @@ def _pr_for_commit(client: GitHubClient, slug: str, sha: str) -> int | None:
 
 def fetch_pr(
     client: GitHubClient, slug: str, number: int
-) -> tuple[CandidatePR, str] | None:
-    """One PR's metadata with its changed paths, and a bounded diff sample, or
-    ``None`` if the PR itself cannot be read (deleted, or a transient error).
+) -> tuple[CandidatePR, PRText] | None:
+    """One PR's metadata with its changed paths, and its transient prose and
+    diff, or ``None`` if the PR itself cannot be read (deleted, or a transient
+    error).
 
-    Returns the persisted :class:`CandidatePR` alongside the *transient* patch
-    text — the diff is ranker input, never stored on the candidate (see
-    :class:`RepoResolution`). Public (not just :func:`resolve_repo_prs`'s
+    Returns the persisted :class:`CandidatePR` alongside a :class:`PRText` — both
+    the diff and the description are model input, never stored on the candidate
+    (see :class:`RepoResolution`). Public (not just :func:`resolve_repo_prs`'s
     internal helper) because a re-rank backfill already knows which PR numbers
-    are candidates and only needs their diffs refetched, not a fresh compare/
+    are candidates and only needs their text refetched, not a fresh compare/
     commit-walk to rediscover them."""
     resp = client.get(f"/repos/{slug}/pulls/{number}")
     if resp.status_code != 200:
@@ -272,6 +297,7 @@ def fetch_pr(
     except ValueError:
         return None
     files, patch = _fetch_pr_files(client, slug, number)
+    text = PRText(patch=patch, body=str(data.get("body") or "")[:MAX_BODY_CHARS])
     pr = CandidatePR(
         repo=slug,
         number=number,
@@ -283,7 +309,43 @@ def fetch_pr(
         additions=int(data.get("additions") or 0),
         deletions=int(data.get("deletions") or 0),
     )
-    return pr, patch
+    return pr, text
+
+
+#: Paths whose hunks are shown last, because they cannot cause a simulation to
+#: get slower or heavier: prose, licences, and the machinery that builds and
+#: tests the repository rather than what it runs. Deliberately conservative —
+#: anything not listed here counts as code, since mis-ranking a source file as
+#: noise is a far worse error than the reverse.
+_LOW_SIGNAL_SUFFIXES = (
+    ".md", ".rst", ".txt", ".png", ".jpg", ".svg", ".pdf",
+    ".lock", ".ipynb",
+)
+_LOW_SIGNAL_PREFIXES = ("docs/", ".github/", "doc/")
+_LOW_SIGNAL_NAMES = ("license", "licence", "copying", "changelog", "authors")
+
+
+def low_signal_path(path: str) -> bool:
+    """Whether *path* is documentation, packaging or CI rather than code.
+
+    Public because two callers need exactly the same conservative judgement: the
+    diff budget spends on code last-resort-last (:func:`_diff_priority`), and the
+    builder's calibration check asks whether a candidate a model scored highly
+    could have caused a runtime regression at all."""
+    lowered = path.lower()
+    name = lowered.rsplit("/", 1)[-1]
+    return (
+        lowered.endswith(_LOW_SIGNAL_SUFFIXES)
+        or lowered.startswith(_LOW_SIGNAL_PREFIXES)
+        or any(name.startswith(stem) for stem in _LOW_SIGNAL_NAMES)
+    )
+
+
+def _diff_priority(entry: dict) -> tuple:
+    """Sort key deciding which hunks get the budget: code first, then everything
+    else, ties broken by path so the order never depends on GitHub's."""
+    filename = str(entry.get("filename") or "")
+    return (low_signal_path(filename), filename)
 
 
 def _fetch_pr_files(
@@ -297,7 +359,16 @@ def _fetch_pr_files(
     are always kept (cheap, high-signal); the diff is capped per file and per PR
     (see the ``_MAX_PATCH_*`` bounds) with overflow marked ``… (truncated)``.
     Binary files and pure renames carry no ``patch``, so they contribute their
-    path but no diff text."""
+    path but no diff text.
+
+    The budget is spent in *relevance* order, not in GitHub's order (see
+    :func:`_diff_priority`). The paths keep the order GitHub gave them — they are
+    the pull request's own shape and cheap enough to keep whole — but the hunks
+    do not: a change touching a lockfile, a changelog and one source file spends
+    its whole allowance on the first two if the order is left alone, and what
+    reaches the model is then a diff with no code in it. On a wide window, where
+    each pull request gets barely a kilobyte, that is the difference between a
+    sample and a decoy."""
     resp = client.get(
         f"/repos/{slug}/pulls/{number}/files", params={"per_page": _MAX_FILES_PER_PR}
     )
@@ -308,15 +379,14 @@ def _fetch_pr_files(
     except ValueError:
         return (), ""
 
-    paths: list[str] = []
+    paths = [str(e["filename"]) for e in files if e.get("filename")]
     chunks: list[str] = []
     used = 0
     truncated = False
-    for entry in files:
+    for entry in sorted(files, key=_diff_priority):
         filename = entry.get("filename")
         if not filename:
             continue
-        paths.append(filename)
         patch = entry.get("patch")
         if not patch:
             # Binary file or a pure rename: no hunk to show. The path already

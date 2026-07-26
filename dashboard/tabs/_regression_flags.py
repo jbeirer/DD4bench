@@ -337,6 +337,19 @@ _ASSESSMENT_CAPTION = {
 }
 
 
+#: Markdown syntax characters escaped out of model-written text before it is
+#: rendered as a caption. ``st.caption`` escapes HTML but *renders Markdown*, and
+#: the text below was written by a model whose own inputs include pull-request
+#: titles, descriptions and diffs written by whoever opened them — so a link or
+#: an image is exactly as reachable here as in any other untrusted prose.
+_MARKDOWN_SYNTAX = "\\`*_{}[]()#+-.!|<>~"
+
+
+def _plain(text: str) -> str:
+    """*text* rendered as the literal words it is, never as Markdown."""
+    return "".join("\\" + ch if ch in _MARKDOWN_SYNTAX else ch for ch in text)
+
+
 def render_step_assessment(entry) -> None:
     """One caption for the ranker's read of the movement, when it is not the
     ordinary one.
@@ -345,14 +358,17 @@ def render_step_assessment(entry) -> None:
     sees "91%" against a step the same model called noise should see both at
     once, and the two disagreeing is itself the useful signal. Nothing renders
     for an unassessed entry — an older sidecar, or a model that declined — since
-    silence there means *not assessed*, never *fine*."""
+    silence there means *not assessed*, never *fine*.
+
+    The model's reason is escaped, not trusted: it is the one piece of prose on
+    this page that a stranger's pull request can influence."""
     assessment = getattr(entry, "assessment", None)
     if assessment is None:
         return
     caption = _ASSESSMENT_CAPTION.get(assessment.verdict)
     if caption is None:
         return
-    reason = f" — {assessment.reason}" if assessment.reason else ""
+    reason = f" — {_plain(assessment.reason)}" if assessment.reason else ""
     st.caption(f"{caption}{reason}.")
 
 

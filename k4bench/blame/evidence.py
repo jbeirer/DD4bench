@@ -170,17 +170,35 @@ class MetricHistory:
         return sum(1 for p in self.before_window if p.flagged)
 
     @property
-    def quiet_boundaries(self) -> int:
-        """Release boundaries in the tail across which **no tracked package
-        moved** yet the metric was still measured.
+    def _quiet_boundaries(self) -> list[tuple[HistoryPoint, HistoryPoint]]:
+        """Adjacent ``(earlier, later)`` pairs whose boundary is known to have
+        moved no tracked package, and whose ends were both judged.
 
-        Every one of these is a direct, local calibration of this series' noise:
-        the software was identical, so whatever the number did there, it did on
-        its own."""
-        return sum(
-            1 for p in self.points
-            if p.packages_changed == 0 and p.judged
-        )
+        **Adjacent** is the whole point. A release nobody could judge is a break
+        in the evidence, not a gap to reach across: pairing the release before it
+        with the release after would attribute a two-boundary move to the single
+        boundary the later release happens to record, and could call it "with no
+        stack change" while packages moved in between. Both ends must also be
+        judged, since an unread level is not a measurement of anything."""
+        pairs = []
+        for earlier, later in zip(self.points, self.points[1:]):
+            if (
+                later.packages_changed == 0
+                and earlier.judged and later.judged
+                and earlier.value is not None and later.value is not None
+            ):
+                pairs.append((earlier, later))
+        return pairs
+
+    @property
+    def quiet_boundaries(self) -> int:
+        """How many release boundaries in the tail moved **no tracked package**
+        with the metric measured on both sides.
+
+        The count behind :attr:`quiet_boundary_move`: it says how much evidence
+        that number rests on, which is the difference between one lucky quiet
+        night and a series demonstrably wobbling under identical software."""
+        return len(self._quiet_boundaries)
 
     @property
     def quiet_boundary_move(self) -> float | None:
@@ -196,20 +214,11 @@ class MetricHistory:
         """
         if not self.baseline_median:
             return None
-        largest: float | None = None
-        previous: HistoryPoint | None = None
-        for point in self.points:
-            if not point.judged or point.value is None:
-                continue  # an unread release cannot bound anything
-            if (
-                previous is not None
-                and point.packages_changed == 0
-                and previous.value is not None
-            ):
-                move = abs(point.value - previous.value) / abs(self.baseline_median)
-                largest = move if largest is None else max(largest, move)
-            previous = point
-        return largest
+        moves = [
+            abs(later.value - earlier.value) / abs(self.baseline_median)
+            for earlier, later in self._quiet_boundaries
+        ]
+        return max(moves) if moves else None
 
     @property
     def persistence(self) -> str:
@@ -240,21 +249,25 @@ class MetricHistory:
         """``(before, at onset)`` when the benchmark moved to a different
         machine exactly at the onset release, else ``None``.
 
-        Only an exact coincidence is reported. A host that changed three
-        releases earlier is not an explanation for a step that appeared now, and
-        offering it as one would hand the model a second story to prefer over
-        the diff whenever the fleet was ever touched.
+        Only an exact coincidence is reported, and only against the release
+        **immediately** before the onset. A host that changed three releases
+        earlier is not an explanation for a step that appeared now, and offering
+        it as one would hand the model a second story to prefer over the diff
+        whenever the fleet was ever touched. If that immediately preceding
+        release recorded no host, nothing is claimed: "we do not know what ran
+        the release before" is not evidence that the machine changed, and the
+        model would read it as exactly that.
         """
         onset = self.onset_point
         if onset is None or not onset.hosts:
             return None
-        before = [p for p in self.points if p.release < onset.release and p.hosts]
-        if not before:
+        at = self.points.index(onset)
+        if at == 0:
             return None
-        previous = before[-1].hosts
-        if set(previous) == set(onset.hosts):
+        previous = self.points[at - 1]
+        if not previous.hosts or set(previous.hosts) == set(onset.hosts):
             return None
-        return previous[0], onset.hosts[0]
+        return previous.hosts[0], onset.hosts[0]
 
 
 def history_from_verdict(
