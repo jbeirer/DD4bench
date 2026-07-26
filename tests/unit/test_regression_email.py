@@ -8,7 +8,13 @@ network — historical sidecars are passed in directly.
 
 from __future__ import annotations
 
-from k4bench.blame.models import BlameEntry, BlameReport, CandidatePR, RepoBlame
+from k4bench.blame.models import (
+    BlameEntry,
+    BlameReport,
+    CandidatePR,
+    RepoBlame,
+    StepAssessment,
+)
 from k4bench.regression import email
 from k4bench.regression.email import (
     _fmt_value,
@@ -393,7 +399,7 @@ def _candidate(number, score, title="Lower the step limit", desc="raises the ste
 
 
 def _blame(*candidates, base="2026-06-05", onset="2026-06-27", metric="median_time_s",
-           sub_detector=None, night="2026-06-27") -> BlameReport:
+           sub_detector=None, night="2026-06-27", assessment=None) -> BlameReport:
     entry = BlameEntry(
         detector=DET, platform=PLAT, sample=SAMPLE, label="baseline",
         metric=metric, sub_detector=sub_detector, base_release=base, onset_release=onset,
@@ -402,6 +408,7 @@ def _blame(*candidates, base="2026-06-05", onset="2026-06-27", metric="median_ti
             head_commit="c" * 40, compare_url="https://github.com/key4hep/k4geo/compare/a...c",
             status="changed", candidates=tuple(candidates),
         ),),
+        assessment=assessment,
     )
     return BlameReport(generated_at=f"{night}T06:00:00", report_night=night, entries=(entry,))
 
@@ -749,3 +756,35 @@ def test_attention_card_ci_link_falls_back_to_report_run():
 
     md = to_markdown(r, actions_url="https://ci/report-run")
     assert "[Open CI run](https://ci/report-run)" in md
+
+
+# ── The ranker's read of the step ─────────────────────────────────────────────
+
+def test_a_doubted_step_is_noted_once_above_its_candidates():
+    # The ranked list stays: the candidates are still what a reader would check.
+    # What changes is that the doubt travels with them.
+    v = _windowed(first_confirmed_run_id="2026-06-27")
+    blame = _blame(
+        _candidate(1, 88.0),
+        assessment=StepAssessment("likely_noise", "the series moves this much on its own"),
+    )
+    html = to_html(_report(_group(v)), blame=blame)
+    text = to_markdown(_report(_group(v)), blame=blame)
+    for body in (html, text):
+        assert body.count("likely measurement noise") == 1
+        assert "the series moves this much on its own" in body
+    assert "#1" in html  # the ranking itself is untouched
+
+
+def test_an_ordinary_step_carries_no_caveat_line():
+    v = _windowed(first_confirmed_run_id="2026-06-27")
+    blame = _blame(_candidate(1, 88.0), assessment=StepAssessment("real_change", "held"))
+    html = to_html(_report(_group(v)), blame=blame)
+    assert "likely measurement noise" not in html
+    assert "too little history" not in html
+
+
+def test_an_unassessed_ranking_renders_exactly_as_before():
+    v = _windowed(first_confirmed_run_id="2026-06-27")
+    html = to_html(_report(_group(v)), blame=_blame(_candidate(1, 88.0)))
+    assert "⚖️" not in html

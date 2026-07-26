@@ -96,6 +96,11 @@ class CandidatePR:
     score: float = 0.0
     description: str = ""
     ranked: bool = False
+    #: What the ranker said argues *against* this candidate. Optional even on a
+    #: ranked one — the model is asked for it but a judgement is not rejected for
+    #: lacking it — so an empty string means "none was given", never "nothing
+    #: argues against this".
+    against: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -111,6 +116,7 @@ class CandidatePR:
             "score": self.score,
             "description": self.description,
             "ranked": self.ranked,
+            "against": self.against,
         }
 
     @classmethod
@@ -149,6 +155,7 @@ class CandidatePR:
             score=score if math.isfinite(score) else 0.0,
             description=description,
             ranked=ranked,
+            against=str(d.get("against") or ""),
         )
 
 
@@ -162,10 +169,14 @@ class RepoBlame:
     it just has no ``candidates``. ``commits_unavailable`` marks a range whose
     PRs could not be enumerated at all — a compare that 404'd (``develop``
     force-pushed, base commit gone; both SHAs are still shown), a rate-limited
-    or errored resolution; ``truncated`` marks a candidate list known to be
-    incomplete — the range passed GitHub's 250-commit compare cap or a local
-    resolution bound, or a discovered PR failed to fetch. Either flag means the
-    candidate set must not be presented as the complete population of the range.
+    or errored resolution; ``truncated`` marks candidate discovery or its
+    evidence as known to be incomplete — the range passed GitHub's 250-commit
+    compare cap or a local resolution bound, a discovered PR failed to fetch,
+    or GitHub did not return every changed path for a PR. Either flag means the
+    candidate set must not be ranked or presented as fully evidenced.
+    ``truncation_reasons`` records which of those cases occurred for current
+    writers; it is empty on historical sidecars whose boolean still carries the
+    safety decision.
     """
 
     package: str  # Key4hep package name, e.g. "k4geo"
@@ -177,6 +188,9 @@ class RepoBlame:
     candidates: tuple[CandidatePR, ...] = ()
     commits_unavailable: bool = False
     truncated: bool = False
+    #: Additive diagnostic detail for :attr:`truncated`. Empty on historical
+    #: sidecars, where the boolean remains authoritative.
+    truncation_reasons: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -188,12 +202,17 @@ class RepoBlame:
             "status": self.status,
             "candidates": [c.to_dict() for c in self.candidates],
             "commits_unavailable": self.commits_unavailable,
-            "truncated": self.truncated,
+            "truncated": self.truncated or bool(self.truncation_reasons),
+            "truncation_reasons": list(self.truncation_reasons),
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> RepoBlame:
         d = _only_known(cls, data)
+        raw_reasons = d.get("truncation_reasons")
+        if raw_reasons is not None and not isinstance(raw_reasons, list | tuple):
+            raise TypeError("truncation_reasons must be a list")
+        reasons = tuple(str(r) for r in raw_reasons or ())
         return cls(
             package=str(d["package"]),
             repo=_opt_str(d["repo"]),
@@ -205,8 +224,80 @@ class RepoBlame:
                 CandidatePR.from_dict(c) for c in d.get("candidates") or ()
             ),
             commits_unavailable=bool(d.get("commits_unavailable", False)),
-            truncated=bool(d.get("truncated", False)),
+            truncated=bool(d.get("truncated", False)) or bool(reasons),
+            truncation_reasons=reasons,
         )
+
+
+#: The readings :attr:`BlameEntry.assessment` may carry, mirroring
+#: :data:`k4bench.blame.prompt.ASSESSMENT_VALUES`. Duplicated as a frozenset
+#: rather than imported so this module — the schema every consumer parses
+#: through, including the dashboard — stays free of the prompt layer; the parse
+#: below is what keeps an unrecognised word out of the readers.
+ASSESSMENT_VERDICTS = frozenset({
+    "real_change", "likely_noise", "insufficient_evidence",
+})
+
+
+@dataclass(frozen=True)
+class StepAssessment:
+    """What the ranker made of the *movement* itself, before any question of who
+    caused it.
+
+    Kept beside the candidates rather than folded into their scores because it
+    answers a different question and can contradict them: a model can score its
+    best candidate 40 and still judge the whole step to be noise, and those two
+    statements together mean "do not chase this", which neither says alone.
+
+    ``verdict`` is always one of :data:`ASSESSMENT_VERDICTS` — anything else is
+    dropped at the parse, so no consumer has to defend against a word nobody
+    defined. An entry with no assessment at all (an older sidecar, a model that
+    declined) carries ``None``, which is *not assessed* and must never be read as
+    ``real_change``.
+    """
+
+    verdict: str
+    reason: str = ""
+
+    @property
+    def likely_noise(self) -> bool:
+        """The one reading with consequences: the comment bot withholds on it."""
+        return self.verdict == "likely_noise"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"verdict": self.verdict, "reason": self.reason}
+
+    @classmethod
+    def from_dict(cls, data: object) -> StepAssessment | None:
+        """The assessment in *data*, or ``None`` when there is no readable one.
+
+        Tolerant on purpose: this is best-effort context on a best-effort
+        sidecar, and a malformed assessment must cost the assessment, never the
+        entry it rides on."""
+        if not isinstance(data, dict):
+            return None
+        verdict = str(data.get("verdict") or "")
+        if verdict not in ASSESSMENT_VERDICTS:
+            return None
+        return cls(verdict=verdict, reason=str(data.get("reason") or ""))
+
+
+def _boundary_changes(raw: object) -> dict[str, int]:
+    """``release -> packages changed entering it``, read defensively.
+
+    An entry that cannot be read as a count is *dropped* rather than defaulted:
+    the absence of a release from this map already means "unread", so dropping a
+    malformed one lands on the honest answer instead of inventing a zero that
+    would read as "the stack stood still"."""
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, int] = {}
+    for release, count in raw.items():
+        try:
+            out[str(release)] = int(count)
+        except (TypeError, ValueError):
+            continue
+    return out
 
 
 @dataclass(frozen=True)
@@ -220,6 +311,21 @@ class BlameEntry:
     ``None`` for an open-ended window. ``n_unchanged`` is the count of tracked
     packages that did *not* move — context for sizing the diff, kept as a number
     rather than a list.
+
+    ``assessment`` is the ranker's read of the step (see
+    :class:`StepAssessment`), shared by every entry of one rank group because
+    the ranker judges that group's metrics together.
+
+    ``boundary_changes`` maps a release in this metric's history tail to the
+    number of tracked packages that moved *entering* it. It is the only piece of
+    the evidence the ranker assembles that the cross-configuration pass cannot
+    recompute — that pass runs from the report and this sidecar, with no
+    provenance access of its own — so it is persisted here rather than derived
+    twice. A release **absent** from the map is unread, never unchanged: ``0``
+    means the software was identical across that boundary (the strongest local
+    measurement of a series' own noise) and a missing key means nobody looked,
+    and collapsing the two would turn an unread boundary into proof of
+    innocence.
     """
 
     detector: str
@@ -232,6 +338,8 @@ class BlameEntry:
     onset_release: str
     repos: tuple[RepoBlame, ...] = ()
     n_unchanged: int = 0
+    assessment: StepAssessment | None = None
+    boundary_changes: dict[str, int] = field(default_factory=dict)
 
     @property
     def key(self) -> tuple:
@@ -256,11 +364,15 @@ class BlameEntry:
 
     @property
     def discovery_incomplete(self) -> bool:
-        """True when any repo's candidate list is known not to be the full
-        population of its range (unavailable or truncated) — the builder then
-        refuses to rank, and completeness checks exempt this entry: calling one
-        of a partial set "most likely" would be worse than no ranking."""
-        return any(r.commits_unavailable or r.truncated for r in self.repos)
+        """True when a repo's candidate population or file evidence is
+        incomplete (unavailable or truncated) — the builder then refuses to
+        rank, and completeness checks exempt this entry: calling one of a
+        partial or partially evidenced set "most likely" would be worse than no
+        ranking."""
+        return any(
+            r.commits_unavailable or r.truncated or r.truncation_reasons
+            for r in self.repos
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -274,6 +386,10 @@ class BlameEntry:
             "onset_release": self.onset_release,
             "repos": [r.to_dict() for r in self.repos],
             "n_unchanged": self.n_unchanged,
+            "assessment": (
+                self.assessment.to_dict() if self.assessment is not None else None
+            ),
+            "boundary_changes": dict(sorted(self.boundary_changes.items())),
         }
 
     @classmethod
@@ -290,6 +406,8 @@ class BlameEntry:
             onset_release=str(d["onset_release"]),
             repos=tuple(RepoBlame.from_dict(r) for r in d.get("repos") or ()),
             n_unchanged=int(d.get("n_unchanged") or 0),
+            assessment=StepAssessment.from_dict(d.get("assessment")),
+            boundary_changes=_boundary_changes(d.get("boundary_changes")),
         )
 
 
@@ -356,8 +474,9 @@ def ranking_coverage(blame: BlameReport) -> tuple[int, int, list[str]]:
     The builder ranks each regression on its own, so every candidate of every
     entry is expected to carry the model's judgement — except entries whose
     :attr:`~BlameEntry.discovery_incomplete` is set: the builder deliberately
-    leaves those unranked (a partial candidate set must not produce a "most
-    likely" claim), so they are exempt rather than counted as failures.
+    leaves those unranked (a partial candidate set or incomplete changed-file
+    evidence must not produce a "most likely" claim), so they are exempt rather
+    than counted as failures.
 
     A zero score with a non-empty explanation is a valid ranking — it is
     :attr:`CandidatePR.ranked` that decides, never the score, precisely so an

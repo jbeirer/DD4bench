@@ -9,6 +9,7 @@ driven here by a recording fake rather than an endpoint."""
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import replace
 
 import pytest
@@ -18,6 +19,7 @@ from k4bench.blame.attribute import (
     Attribution,
     build_user_prompt,
 )
+from k4bench.blame.attribute import StepAssessment as AttrStepAssessment
 from k4bench.blame.comment import (
     CommentConfigError,
     CommentPolicy,
@@ -27,9 +29,16 @@ from k4bench.blame.comment import (
     marker_for,
     select,
 )
-from k4bench.blame.models import BlameEntry, BlameReport, CandidatePR, RepoBlame
+from k4bench.blame.models import (
+    BlameEntry,
+    BlameReport,
+    CandidatePR,
+    RepoBlame,
+    StepAssessment,
+)
 from k4bench.regression.models import (
     Direction,
+    ReleasePoint,
     MetricVerdict,
     NightlyReport,
     RunGroupReport,
@@ -145,11 +154,12 @@ class _FakeAttributor:
     (the row keeps its per-configuration score)."""
 
     def __init__(self, scores=None, *, summary="ALLEGRO moved and IDEA did not.",
-                 declines=False, raises=None):
+                 declines=False, raises=None, assessment=None):
         self.scores = scores or {}
         self.summary = summary
         self.declines = declines
         self.raises = raises
+        self.assessment = assessment
         self.requests: list = []
 
     def attribute(self, request):
@@ -158,7 +168,10 @@ class _FakeAttributor:
             raise self.raises
         if self.declines:
             return None
-        return Attribution(summary=self.summary, likelihoods=dict(self.scores))
+        return Attribution(
+            summary=self.summary, likelihoods=dict(self.scores),
+            assessment=self.assessment,
+        )
 
 
 def _plans(report, blame, policy=None):
@@ -166,11 +179,11 @@ def _plans(report, blame, policy=None):
 
 
 def _comments(report, blame, policy=None, *, attributor=None, patch_for=None,
-              dashboard_url=_DASH):
+              body_for=None, dashboard_url=_DASH):
     policy = policy or _policy()
     return build_comments(
         _plans(report, blame, policy),
-        attributor=attributor, patch_for=patch_for,
+        attributor=attributor, patch_for=patch_for, body_for=body_for,
         dashboard_url=dashboard_url, min_score=policy.min_score,
     )
 
@@ -1623,7 +1636,10 @@ def test_a_row_whose_discovery_was_incomplete_is_carried_as_unknown():
     assert by_detector["IDEA_o1_v03"].scope_state == "discovery_incomplete"
     assert by_detector["IDEA_o1_v03"].scope_score is None
     prompt = build_user_prompt(request)
-    assert "candidate discovery for this regression was incomplete" in prompt
+    assert (
+        "candidate discovery or changed-file evidence for this regression was "
+        "incomplete"
+    ) in prompt
     # An incomplete scope elsewhere does not silence a comment whose own
     # accusation rests on a complete, ranked scope — but it never lends it
     # support either.
@@ -1836,8 +1852,10 @@ def test_every_prior_state_has_its_own_wording():
         "unranked": "was a candidate for this regression but the first pass "
                     "returned no score",
         "not_candidate": "NOT among the candidates for this regression",
-        "discovery_incomplete": "candidate discovery for this regression was "
-                                "incomplete",
+        "discovery_incomplete": (
+            "candidate discovery or changed-file evidence for this regression "
+            "was incomplete"
+        ),
     }
     for state, phrase in states.items():
         mutated = replace(
@@ -2101,3 +2119,151 @@ def test_the_digest_still_notices_a_different_competitor_appearing():
         _comments(_report(v), one)[0].facts_digest
         != _comments(_report(v), two)[0].facts_digest
     )
+
+
+# ── Withholding when the movement itself is doubted ───────────────────────────
+#
+# The bot's most expensive mistake is not a missed regression: it is a confident
+# accusation, in someone else's repository, about a wobble. Both passes can now
+# say the movement is most likely noise, and either saying it withholds the
+# comment. Nothing else about the pipeline changes — the ranking is still built,
+# stored and shown on the dashboard and in the email, where a human reads it
+# with the doubt beside it.
+
+def _noisy_blame(verdicts, candidates, verdict="likely_noise", reason="wobbles"):
+    blame = _blame(verdicts, candidates)
+    return BlameReport(
+        generated_at=blame.generated_at, report_night=blame.report_night,
+        entries=tuple(
+            dataclasses.replace(
+                entry, assessment=StepAssessment(verdict, reason)
+            )
+            for entry in blame.entries
+        ),
+    )
+
+
+def test_a_step_the_ranker_calls_noise_produces_no_comment():
+    v = _verdict()
+    blame = _noisy_blame([v], [_candidate(number=607, score=95.0)])
+    assert _plans(_report(v), blame) == []
+
+
+def test_an_assessed_real_change_comments_as_usual():
+    v = _verdict()
+    blame = _noisy_blame([v], [_candidate(number=607, score=95.0)], "real_change")
+    assert [p.target for p in _plans(_report(v), blame)] == ["key4hep/k4geo#607"]
+
+
+def test_insufficient_evidence_does_not_withhold_the_comment():
+    # It says the history is too short to judge the *step*, not that the step is
+    # doubted — withholding on it would silence every young series.
+    v = _verdict()
+    blame = _noisy_blame(
+        [v], [_candidate(number=607, score=95.0)], "insufficient_evidence"
+    )
+    assert [p.target for p in _plans(_report(v), blame)] == ["key4hep/k4geo#607"]
+
+
+def test_an_unassessed_sidecar_comments_exactly_as_before():
+    # Every sidecar written before the field existed.
+    v = _verdict()
+    blame = _blame([v], [_candidate(number=607, score=95.0)])
+    assert [p.target for p in _plans(_report(v), blame)] == ["key4hep/k4geo#607"]
+
+
+def test_the_review_can_withdraw_a_comment_the_first_pass_selected():
+    # The review sees every configuration's history — strictly more than the
+    # first pass, which reads one configuration at a time — so it can overturn
+    # a high score the first pass gave, even while scoring the row highly itself.
+    v = _verdict()
+    blame = _blame([v], [_candidate(number=607, score=95.0)])
+    attributor = _FakeAttributor(
+        {"r1": 90.0}, assessment=AttrStepAssessment("likely_noise", "series wobbles"),
+    )
+    assert _comments(_report(v), blame, attributor=attributor) == []
+
+
+def test_a_review_reading_the_step_as_real_still_comments():
+    v = _verdict()
+    blame = _blame([v], [_candidate(number=607, score=95.0)])
+    attributor = _FakeAttributor(
+        {"r1": 90.0}, assessment=AttrStepAssessment("real_change", "held for 3 releases"),
+    )
+    assert len(_comments(_report(v), blame, attributor=attributor)) == 1
+
+
+def test_the_review_is_shown_each_rows_history():
+    v = dataclasses.replace(_verdict(), history=(
+        ReleasePoint("2026-07-03", 100.0, 1, 1, Severity.OK, Direction.NONE),
+        ReleasePoint("2026-07-04", 120.0, 1, 1, Severity.CONFIRMED, Direction.UP),
+    ))
+    blame = _blame([v], [_candidate(number=607, score=95.0)])
+    attributor = _FakeAttributor({"r1": 90.0})
+    _comments(_report(v), blame, attributor=attributor)
+    fact = attributor.requests[0].regressions[0]
+    assert fact.history is not None
+    assert [p.release for p in fact.history.points] == ["2026-07-03", "2026-07-04"]
+    # This pass does no provenance lookup of its own, so every boundary is
+    # honestly unread rather than silently "nothing changed".
+    assert all(p.packages_changed is None for p in fact.history.points)
+
+
+def test_the_review_receives_the_boundary_counts_the_ranker_measured():
+    # The evidence the docs promise this pass: a release where the software was
+    # identical and the metric moved anyway. This pass cannot read provenance
+    # itself, so it comes from the sidecar entry or not at all.
+    v = dataclasses.replace(_verdict(), history=(
+        ReleasePoint("2026-07-02", 100.0, 1, 1, Severity.OK, Direction.NONE),
+        ReleasePoint("2026-07-03", 100.0, 1, 1, Severity.OK, Direction.NONE),
+        ReleasePoint("2026-07-04", 120.0, 1, 1, Severity.CONFIRMED, Direction.UP),
+    ))
+    blame = _blame([v], [_candidate(number=607, score=95.0)])
+    blame = BlameReport(
+        generated_at=blame.generated_at, report_night=blame.report_night,
+        entries=tuple(
+            dataclasses.replace(e, boundary_changes={"2026-07-03": 0, "2026-07-04": 2})
+            for e in blame.entries
+        ),
+    )
+    attributor = _FakeAttributor({"r1": 90.0})
+    _comments(_report(v), blame, attributor=attributor)
+    points = attributor.requests[0].regressions[0].history.points
+    assert [p.packages_changed for p in points] == [None, 0, 2]
+
+
+def test_the_review_receives_the_reviewed_pull_requests_description():
+    v = _verdict()
+    blame = _blame([v], [_candidate(number=607, score=95.0)])
+    attributor = _FakeAttributor({"r1": 90.0})
+    _comments(
+        _report(v), blame, attributor=attributor,
+        patch_for=lambda _r, _n: "@@\n+x",
+        body_for=lambda _r, n: f"description of #{n}",
+    )
+    assert attributor.requests[0].body == "description of #607"
+
+
+def test_a_review_that_cannot_judge_the_step_says_so_in_the_comment():
+    # insufficient_evidence does not overturn the detector's own two-strike
+    # confirmation, so the comment stands — but a reader deserves to know how
+    # much weight the reviewer's paragraph carries.
+    v = _verdict()
+    blame = _blame([v], [_candidate(number=607, score=95.0)])
+    attributor = _FakeAttributor(
+        {"r1": 90.0},
+        assessment=AttrStepAssessment("insufficient_evidence", "only two releases"),
+    )
+    body = _comments(_report(v), blame, attributor=attributor)[0].body
+    assert body.count("too short for the review to judge") == 1
+    assert "confirmed by the nightly detector" in body
+
+
+def test_an_assessed_real_change_adds_no_caveat_to_the_comment():
+    v = _verdict()
+    blame = _blame([v], [_candidate(number=607, score=95.0)])
+    attributor = _FakeAttributor(
+        {"r1": 90.0}, assessment=AttrStepAssessment("real_change", "held"),
+    )
+    body = _comments(_report(v), blame, attributor=attributor)[0].body
+    assert "too short for the review to judge" not in body

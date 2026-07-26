@@ -42,6 +42,7 @@ from k4bench.blame.models import (
     BlameEntry,
     BlameReport,
     CandidatePR,
+    StepAssessment,
 )
 from k4bench.regression.models import (
     MetricVerdict,
@@ -628,6 +629,11 @@ class RankingCard:
     compare_links: list[tuple[str, str]]
     total_compares: int
     reused_from: str | None
+    #: The ranker's read of the movement itself, when it gave one. Rendered as a
+    #: single line and only when it is *not* ``real_change``: a reader looking at
+    #: a ranked list of pull requests needs to know when the model that produced
+    #: it also thought the step was probably noise.
+    assessment: StepAssessment | None = None
 
     @property
     def complete(self) -> bool:
@@ -699,6 +705,17 @@ def _ranking_cards(group: RunGroupReport, index: _BlameIndex) -> list[RankingCar
             compare_links=compare_links[:_MAX_CARD_COMPARE_LINKS],
             total_compares=len(compare_links),
             reused_from=reused_from,
+            # Every entry of a rank group carries the same assessment (one
+            # inference judges the group), so the first one that has it speaks
+            # for the card. A card built only from entries without one keeps
+            # None, which renders as nothing rather than as reassurance.
+            assessment=next(
+                (
+                    entry.assessment for _v, entry, _reused in items
+                    if entry.assessment is not None
+                ),
+                None,
+            ),
         ))
     # New confirmations are the night's decision; reused attribution is
     # supporting context and follows it even when it covers many more rows.
@@ -1091,6 +1108,37 @@ def _html_window_section(
     )
 
 
+#: How a non-ordinary reading of the movement is worded, everywhere the email
+#: says it. ``real_change`` has no entry: it is the ordinary case, and a line
+#: under every ranking saying "yes, this moved" is a line every reader learns to
+#: skip — which is how the one that matters gets skipped too.
+_ASSESSMENT_NOTE = {
+    "likely_noise": (
+        "The ranker reads this step as likely measurement noise — these "
+        "candidates are context, not suspects"
+    ),
+    "insufficient_evidence": (
+        "The ranker found too little history to judge whether this step is real"
+    ),
+}
+
+
+def _assessment_note(card: RankingCard | None) -> str:
+    """One sentence on the ranker's read of the movement, or nothing at all.
+
+    Nothing is the common case, and deliberately so: this line exists to
+    contradict the ranked list above it, and a caveat that appears every night
+    contradicts nothing."""
+    assessment = card.assessment if card is not None else None
+    if assessment is None:
+        return ""
+    note = _ASSESSMENT_NOTE.get(assessment.verdict)
+    if note is None:
+        return ""
+    reason = f" — {assessment.reason}" if assessment.reason else ""
+    return f"{note}{reason}."
+
+
 def _html_ranking_body(section: WindowSection, dashboard_url: str | None) -> str:
     """The PR-ranking part of a window section (or the honest absence of one)."""
     card = section.card
@@ -1129,11 +1177,17 @@ def _html_ranking_body(section: WindowSection, dashboard_url: str | None) -> str
             f'<p style="margin:6px 0 0;font-size:12px;color:{_C_FAINT};">'
             f"{_link(stack_url, label)}.</p>"
         )
+    note = _assessment_note(card)
+    caveat = (
+        f'<p style="margin:0 0 6px;font-size:11px;color:{_C_MUTED};">'
+        f"⚖️ {_esc(note)}</p>" if note else ""
+    )
     return (
         f'<p style="margin:0 0 3px;font-size:13px;font-weight:700;">'
         "Likely contributing pull requests</p>"
         f'<p style="margin:0 0 6px;font-size:11px;color:{_C_FAINT};font-style:italic;">'
         f"{_esc(RANKING_DISCLOSURE)}</p>"
+        f"{caveat}"
         '<table role="presentation" cellpadding="0" cellspacing="0" '
         'style="border-collapse:collapse;width:100%;table-layout:fixed;">'
         f"{rows}</table>{more}{compares}"
@@ -1500,6 +1554,9 @@ def _md_window_section(
         return lines
     lines.append("  **Likely contributing pull requests**")
     lines.append(f"  _{RANKING_DISCLOSURE}_")
+    note = _assessment_note(card)
+    if note:
+        lines.append(f"  ⚖️ {note}")
     lines.extend(
         _md_candidate(i + 1, c) for i, c in enumerate(card.candidates)
     )

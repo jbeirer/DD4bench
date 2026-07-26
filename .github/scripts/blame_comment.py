@@ -90,50 +90,68 @@ def _load_policy(path: Path, overrides: dict):
     return CommentPolicy.from_config(data)
 
 
-def _patch_source(token: str | None):
-    """``(repo, number) -> diff text`` for the cross-configuration review.
+def _text_source(token: str | None):
+    """``(patch_for, body_for)`` for the cross-configuration review — a pull
+    request's diff and its description, each ``(repo, number) -> str``.
 
-    Memoized for the whole run: one window's subject pull request is another
-    window's competitor, so a night fetches each diff once. A fetch that fails —
-    no token, a rate limit, a deleted fork — yields ``""``, which the review
-    degrades on (the pull request still appears with its paths, its size and the
-    per-configuration reason); it never raises, because a missing diff must not
-    cost the comment.
+    Memoized for the whole run and fetched **once** per pull request: one
+    window's subject is another window's competitor, and the diff and the
+    description come back in the same call, so asking for both costs nothing
+    beyond asking for one. A fetch that fails — no token, a rate limit, a deleted
+    fork — yields ``""``, which the review degrades on (the pull request still
+    appears with its paths, its size and the per-configuration reason); it never
+    raises, because missing input must not cost the comment.
 
     A rate limit *latches*: it is a statement about the whole token budget, not
     about one pull request, so every later fetch skips the call rather than
     spending a round trip on an answer already known — the same rule
     :func:`k4bench.blame.builder._resolve` follows during the nightly build.
     """
-    from k4bench.blame.github import GitHubClient, RateLimitError, fetch_pr
+    from k4bench.blame.github import GitHubClient, PRText, RateLimitError, fetch_pr
 
     client = GitHubClient(token=token)
-    cache: dict[tuple[str, int], str] = {}
+    cache: dict[tuple[str, int], PRText] = {}
     state = {"rate_limited": False}
 
-    def patch_for(repo: str, number: int) -> str:
+    def text_for(repo: str, number: int) -> PRText:
         key = (repo.lower(), number)
         if key not in cache:
-            patch = ""
+            text = PRText()
             if state["rate_limited"]:
-                return ""
+                return PRText()
             try:
                 fetched = fetch_pr(client, repo, number)
                 if fetched is not None:
-                    patch = fetched[1]
+                    text = fetched[1]
             except RateLimitError as exc:
                 state["rate_limited"] = True
                 _log.warning(
                     "blame_comment: GitHub rate limit (%s) — the review runs on "
                     "paths and titles from here on", exc,
                 )
-                return ""
+                return PRText()
             except Exception as exc:  # noqa: BLE001 — best-effort input, never fatal
                 _log.warning("blame_comment: no diff for %s#%s (%s)", repo, number, exc)
-            cache[key] = patch
+            cache[key] = text
         return cache[key]
 
-    return patch_for
+    return (
+        lambda repo, number: text_for(repo, number).patch,
+        lambda repo, number: text_for(repo, number).body,
+    )
+
+
+def _review_inputs(token: str | None, attributor) -> dict:
+    """The diff/description fetchers :func:`k4bench.blame.comment.build_comments`
+    takes, or neither when no reviewer is configured.
+
+    Kept as one helper so the two callers that build comments — the nightly job
+    and the preview tool — cannot end up handing the review different inputs,
+    which would make a preview a preview of something else."""
+    if attributor is None:
+        return {}
+    patch_for, body_for = _text_source(token)
+    return {"patch_for": patch_for, "body_for": body_for}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -277,7 +295,7 @@ def main(argv: list[str] | None = None) -> int:
     comments = build_comments(
         plans,
         attributor=attributor,
-        patch_for=_patch_source(args.read_token) if attributor else None,
+        **_review_inputs(args.read_token, attributor),
         dashboard_url=args.dashboard_url,
         min_score=policy.min_score,
     )

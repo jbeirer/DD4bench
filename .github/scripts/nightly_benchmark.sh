@@ -180,12 +180,16 @@ CONFIGS_JSON=$(
 
 # run_info.json
 python3 - "${DETECTOR}" "${SAMPLE}" "${DATE}" "${K4H_PLATFORM}" "${K4H_RELEASE}" \
-          "${N_EVENTS}" "${SWEEP}" <<PYEOF
+          "${N_EVENTS}" "${SWEEP}" "${XML_PATH}" <<PYEOF
 import json, os, sys
 
 detector, sample, date, platform, k4h_rel = sys.argv[1:6]
 n_events = int(sys.argv[6])
 sweep    = sys.argv[7] == "true"
+# The compact file this run loaded, relative to $K4GEO when it came from there.
+# Recorded so attribution can state as a *fact* which pull requests touch the
+# geometry this run actually reads, instead of inferring it from path names.
+xml_path = sys.argv[8] if len(sys.argv) > 8 else ""
 
 run_info = {
     "date":             date,
@@ -194,6 +198,7 @@ run_info = {
     "k4h_release_date": k4h_rel,
     "detector":         detector,
     "sample":           sample,
+    "xml_path":         xml_path,
     "github_run_id":    os.environ["GITHUB_RUN_ID"],
     "github_run_url": (
         f"{os.environ['GITHUB_SERVER_URL']}"

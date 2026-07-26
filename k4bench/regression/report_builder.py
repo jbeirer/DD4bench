@@ -11,6 +11,7 @@ window of runs into the local cache, rebuilds the trend frames with
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import math
 from datetime import datetime, timezone
@@ -26,15 +27,19 @@ from k4bench.analysis.trend import (
 from k4bench.regression.engine import (
     BASELINE_WINDOW_RUNS,
     evaluate_series,
+    release_key,
 )
+from k4bench.regression.history import history_tail, host_facts, release_points
 from k4bench.regression.models import (
     Direction,
+    HostFact,
     MetricVerdict,
     NightlyReport,
     RunGroupReport,
     SeriesId,
     Severity,
 )
+from k4bench.regression.regions import region_deltas
 from k4bench.remote import (
     fetch_runs_windowed,
     list_detectors,
@@ -159,6 +164,41 @@ def unjudged_value_verdicts(
     return out
 
 
+def _with_history(
+    history: pd.DataFrame,
+    verdicts: list[MetricVerdict],
+    hosts: dict[str, HostFact],
+) -> list[MetricVerdict]:
+    """*verdicts* with a release-level history tail attached to the confirmed
+    ones.
+
+    Only the confirmed ones, because they are the only verdicts anything reads a
+    history *for*: a confirmed step is what gets attributed to a pull request,
+    and attributing it means weighing it against the series it stepped out of.
+    Attaching the tail everywhere would grow ``report.json`` by a history per
+    metric per night to no reader's benefit.
+
+    Each tail ends at its own verdict's release rather than at the newest one —
+    a night can re-benchmark an older release, and a verdict must not carry
+    history from after the state it judged (see
+    :func:`~k4bench.regression.history.history_tail`). The points are computed
+    once for the series and sliced per verdict.
+    """
+    if not any(v.severity is Severity.CONFIRMED for v in verdicts):
+        return verdicts
+    points = release_points(history, verdicts, hosts=hosts)
+    return [
+        dataclasses.replace(
+            v,
+            history=history_tail(
+                points, upto=release_key(v.run_date, v.run_id)
+            ),
+        )
+        if v.severity is Severity.CONFIRMED else v
+        for v in verdicts
+    ]
+
+
 def evaluate_group_series(
     *,
     detector: str,
@@ -167,6 +207,7 @@ def evaluate_group_series(
     results_df: pd.DataFrame | None,
     event_df: pd.DataFrame | None,
     reliability: dict[str, bool | None],
+    hosts: dict[str, HostFact] | None = None,
 ) -> dict[SeriesId, list[MetricVerdict]]:
     """Run the step detector over every run/event metric series of one run
     group. Region timings are not walked.
@@ -175,6 +216,11 @@ def evaluate_group_series(
     report takes each series' verdict for the report night, while the
     dashboard drill-down and the retrospective threshold validation consume
     the whole walk.
+
+    *hosts* (from :func:`~k4bench.regression.history.host_facts`) names the
+    machine behind each run, and only reaches the history tails attached to
+    confirmed verdicts; it never enters the judgement itself. Omitted, the tails
+    simply carry no host.
     """
     out: dict[SeriesId, list[MetricVerdict]] = {}
 
@@ -182,7 +228,7 @@ def evaluate_group_series(
         history = _series_history(df, mask, series.metric, reliability)
         verdicts = evaluate_series(history, series=series)
         if verdicts:
-            out[series] = verdicts
+            out[series] = _with_history(history, verdicts, hosts or {})
 
     if results_df is not None and not results_df.empty:
         df = _with_cpu_efficiency(results_df)
@@ -304,6 +350,7 @@ def _group_report_from_frames(
     event_df: pd.DataFrame | None,
     reliability: dict[str, bool | None],
     tonight: str,
+    hosts: dict[str, HostFact] | None = None,
 ) -> RunGroupReport | None:
     """Build one triple's report for *tonight* from already-parsed trend
     frames (already windowed to whatever trailing span "tonight" should be
@@ -322,23 +369,28 @@ def _group_report_from_frames(
 
     k4h_release = ""
     github_run_url = None
+    geometry_path = ""
     if not no_results:
         tonight_rows = results_df[results_df["run_id"] == tonight]
         if not tonight_rows.empty:
             k4h_release = str(tonight_rows["k4h_release"].iloc[0])
             url = tonight_rows["github_run_url"].iloc[0]
             github_run_url = url if pd.notna(url) else None
+            if "xml_path" in tonight_rows.columns:
+                xml = tonight_rows["xml_path"].iloc[0]
+                geometry_path = str(xml) if pd.notna(xml) and xml else ""
 
     group = RunGroupReport(
         detector=detector, platform=platform, sample=sample,
         k4h_release=k4h_release, run_date=tonight, run_id=tonight,
         reliable=reliability.get(tonight), github_run_url=github_run_url,
+        geometry_path=geometry_path,
     )
 
     series = evaluate_group_series(
         detector=detector, platform=platform, sample=sample,
         results_df=results_df, event_df=event_df,
-        reliability=reliability,
+        reliability=reliability, hosts=hosts,
     )
     # Only verdicts issued *for tonight's run* belong in tonight's report; a
     # series with no verdict for tonight simply was not judged tonight.
@@ -377,6 +429,49 @@ def _group_report_from_frames(
     return group
 
 
+def _with_region_deltas(
+    group: RunGroupReport, run_dirs: tuple[str, ...]
+) -> RunGroupReport:
+    """*group* with each confirmed **timing** regression told where inside the
+    detector its step landed (:mod:`k4bench.regression.regions`).
+
+    Attached here rather than in the series walk because this is the one place
+    that has both the finished verdicts and the run directories the region files
+    live in — the same seam the host facts use.
+
+    Deliberately narrow, because region files are per configuration and hold
+    per-event arrays: only ``CONFIRMED`` verdicts, only the ``time`` family
+    (region data is per-event time and says nothing about a memory step), only
+    the two releases of that verdict's own window, and one computation per
+    ``(label, window)`` however many metrics share it. On the overwhelming
+    majority of nights nothing is confirmed and this does no I/O at all.
+    """
+    windows = {
+        (v.label, v.last_accepted_run_date, v.onset_run_date)
+        for v in group.verdicts
+        if v.severity is Severity.CONFIRMED
+        and v.metric_family == "time"
+        and v.last_accepted_run_date and v.onset_run_date
+    }
+    if not windows:
+        return group
+    computed = {
+        window: region_deltas(
+            run_dirs, label=window[0],
+            base_release=window[1], onset_release=window[2],
+        )
+        for window in windows
+    }
+    group.verdicts = [
+        dataclasses.replace(v, region_deltas=deltas)
+        if (deltas := computed.get(
+            (v.label, v.last_accepted_run_date, v.onset_run_date)
+        )) else v
+        for v in group.verdicts
+    ]
+    return group
+
+
 def group_report_from_run_dirs(
     detector: str,
     platform: str,
@@ -392,11 +487,13 @@ def group_report_from_run_dirs(
     machine_df = build_machine_info_trend(run_dirs)
     reliability = run_reliability_map(results_df, machine_df)
     tonight = max(Path(d).name for d in run_dirs)
-    return _group_report_from_frames(
+    group = _group_report_from_frames(
         detector, platform, sample,
         results_df=results_df, event_df=event_df,
         reliability=reliability, tonight=tonight,
+        hosts=host_facts(machine_df),
     )
+    return None if group is None else _with_region_deltas(group, run_dirs)
 
 
 def build_nightly_report(

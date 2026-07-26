@@ -3,6 +3,8 @@ verdict↔entry join that keeps ``blame.json`` decoupled from ``report.json``.""
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from k4bench.blame.models import (
@@ -11,6 +13,7 @@ from k4bench.blame.models import (
     BlameSchemaError,
     CandidatePR,
     RepoBlame,
+    StepAssessment,
     ranking_coverage,
 )
 from k4bench.regression.models import Direction, MetricVerdict, Severity
@@ -51,6 +54,25 @@ def test_round_trips_through_json():
     )
     restored = BlameReport.from_json(report.to_json())
     assert restored == report
+
+
+def test_truncation_reasons_round_trip_and_imply_the_legacy_boolean():
+    repo = RepoBlame(
+        package="k4geo", repo="key4hep/k4geo", base_commit="a" * 40,
+        head_commit="c" * 40, compare_url=None, status="changed",
+        truncation_reasons=("changed_files_incomplete",),
+    )
+    restored = RepoBlame.from_dict(repo.to_dict())
+
+    assert restored.truncated is True
+    assert restored.truncation_reasons == ("changed_files_incomplete",)
+
+    legacy = repo.to_dict()
+    del legacy["truncation_reasons"]
+    legacy["truncated"] = True
+    restored_legacy = RepoBlame.from_dict(legacy)
+    assert restored_legacy.truncated is True
+    assert restored_legacy.truncation_reasons == ()
 
 
 def test_from_json_drops_unknown_keys():
@@ -156,6 +178,16 @@ def test_from_json_raises_schema_error_on_malformed_shapes():
         {"entries": [{}]},                        # entry missing required fields
         {"entries": ["not-an-object"]},
         {"entries": [_entry().to_dict() | {"repos": [{"candidates": ["x"]}]}]},
+        {
+            "entries": [
+                _entry().to_dict() | {
+                    "repos": [
+                        _entry().repos[0].to_dict()
+                        | {"truncation_reasons": "not-a-list"}
+                    ]
+                }
+            ]
+        },
     ):
         with pytest.raises(BlameSchemaError):
             BlameReport.from_json(data)
@@ -286,3 +318,71 @@ def test_the_flat_ledger_puts_the_unjudged_after_the_judged():
         ),
     ),))
     assert [c.number for c in entry.candidates] == [2, 1]
+
+
+# ── The step assessment and the counter-evidence ──────────────────────────────
+
+def test_the_assessment_round_trips():
+    entry = _entry(assessment=StepAssessment("likely_noise", "series wobbles"))
+    restored = BlameEntry.from_dict(entry.to_dict())
+    assert restored.assessment == StepAssessment("likely_noise", "series wobbles")
+    assert restored.assessment.likely_noise is True
+
+
+def test_a_sidecar_written_before_the_field_existed_is_unassessed():
+    # Not "real_change": the comment gate reads this, and an absent judgement
+    # restored as a positive one would silently re-enable the accusation the
+    # field exists to withhold.
+    raw = _entry().to_dict()
+    del raw["assessment"]
+    assert BlameEntry.from_dict(raw).assessment is None
+
+
+def test_an_assessment_verdict_nobody_defined_is_dropped_not_surfaced():
+    raw = _entry().to_dict()
+    raw["assessment"] = {"verdict": "probably_fine", "reason": "hmm"}
+    entry = BlameEntry.from_dict(raw)
+    assert entry.assessment is None
+    # And the entry itself survives: a malformed assessment costs the
+    # assessment, never the blame it rides on.
+    assert entry.candidates and entry.onset_release == "2026-07-04"
+
+
+def test_a_malformed_assessment_costs_only_the_assessment():
+    raw = _entry().to_dict()
+    raw["assessment"] = "likely_noise"  # a string where the object belongs
+    assert BlameEntry.from_dict(raw).assessment is None
+
+
+def test_counter_evidence_round_trips_and_defaults_to_empty():
+    entry = _entry(repos=(RepoBlame(
+        package="k4geo", repo="key4hep/k4geo",
+        base_commit="a" * 40, head_commit="c" * 40, compare_url=None,
+        status="changed",
+        candidates=(dataclasses.replace(_pr(1, score=80.0),
+                                        against="without_HCAL moved too"),),
+    ),))
+    restored = BlameEntry.from_dict(entry.to_dict())
+    assert restored.candidates[0].against == "without_HCAL moved too"
+
+    raw = _entry().to_dict()
+    for candidate in raw["repos"][0]["candidates"]:
+        del candidate["against"]
+    assert BlameEntry.from_dict(raw).candidates[0].against == ""
+
+
+def test_the_boundary_counts_round_trip_and_keep_unread_unread():
+    entry = _entry(boundary_changes={"2026-07-03": 0, "2026-07-04": 2})
+    restored = BlameEntry.from_dict(entry.to_dict())
+    assert restored.boundary_changes == {"2026-07-03": 0, "2026-07-04": 2}
+
+    # A sidecar written before the field, and a malformed count: both land on
+    # "unread", which is what an absent release means — never "the stack stood
+    # still", which is what a defaulted 0 would claim.
+    raw = _entry().to_dict()
+    del raw["boundary_changes"]
+    assert BlameEntry.from_dict(raw).boundary_changes == {}
+
+    raw = _entry(boundary_changes={"2026-07-04": 1}).to_dict()
+    raw["boundary_changes"]["2026-07-05"] = "a few"
+    assert BlameEntry.from_dict(raw).boundary_changes == {"2026-07-04": 1}

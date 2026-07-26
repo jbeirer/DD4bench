@@ -22,6 +22,19 @@ import os
 import sys
 from pathlib import Path
 
+# Executing a file below ``.github/scripts`` otherwise puts that directory—not
+# the checkout root—first on sys.path. Prefer the mounted checkout over a stale
+# k4bench installation in long-lived CI/dev virtual environments: without this
+# the report is built by whatever version happens to be installed, which reads
+# as a code change silently not taking effect. The same preamble guards
+# ``blame_report.py``.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+try:
+    sys.path.remove(str(_REPO_ROOT))
+except ValueError:
+    pass
+sys.path.insert(0, str(_REPO_ROOT))
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)

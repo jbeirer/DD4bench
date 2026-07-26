@@ -70,6 +70,88 @@ class SeriesId:
 
 
 @dataclass(frozen=True)
+class HostFact:
+    """The machine a release's nights were benchmarked on.
+
+    Recorded alongside the measurement because a benchmark host is part of what
+    produced the number: a step that lands exactly where the runs moved to a
+    different machine — or to the same machine with a different core count — has
+    an explanation that no code change competes with. The nightly reliability
+    check already rejects a *contended* host, but a perfectly healthy host that
+    is simply a different one is invisible to it, and that is the case this
+    carries.
+
+    ``cpu_cores`` is the logical core count, ``None`` when the run recorded no
+    machine info.
+    """
+
+    name: str
+    cpu_cores: int | None = None
+
+
+@dataclass(frozen=True)
+class RegionDelta:
+    """How much one sub-detector region's per-event time moved across a change
+    window.
+
+    A run-level step is a single number, and a single number names no mechanism:
+    "ALLEGRO got 21% slower" and "the HCAL barrel got 14× slower while everything
+    else stood still" are the same measurement, but only the second can be
+    matched against a diff. The region timing that answers this is recorded by
+    the ``k4BenchRegionTimingAction`` plugin on every run; this is that
+    decomposition, computed across the two releases the change entered between.
+
+    ``base``/``onset`` are the per-event median times (seconds) on each end of
+    the window, ``None`` when that end recorded nothing for the region — a region
+    that only appears on one side is a real event (a detector added or removed)
+    and must stay distinguishable from one that stayed flat. ``delta`` is the
+    signed move, and is what the regions are ranked by.
+    """
+
+    region: str
+    base: float | None
+    onset: float | None
+    delta: float
+
+
+@dataclass(frozen=True)
+class ReleasePoint:
+    """One Key4hep release in a metric's recent history.
+
+    The unit is the **release**, not the night, because that is the unit the
+    engine judges on: nights sharing a ``run_date`` are repeat measurements of
+    one software state, and rendering them as separate data points would show a
+    stable metric wobbling under a stack that never changed.
+
+    ``value`` is the median of the release's *judged* nights — the same values
+    the engine's own release-median rule reads — falling back to whatever the
+    release recorded when none of its nights could be judged. ``n_runs`` and
+    ``n_judged`` are what makes that fallback readable rather than misleading:
+    ``n_judged=0`` says the level shown was never assessed (an unreliable host,
+    or a series still warming up), which is a different fact from a release that
+    was measured and found flat. A release that recorded nothing at all is not a
+    point here — a gap in the tail is a gap, never a zero.
+
+    ``severity``/``direction`` are the engine's own read of the release (its
+    worst night, and which way that night moved), so a history tail carries not
+    just the levels but which of them were flagged at the time — the difference
+    between a series that has stepped once and one that trips every other week.
+
+    ``hosts`` names the machines that produced the release's nights (see
+    :class:`HostFact`) — normally one, and more only when a release was measured
+    on several.
+    """
+
+    run_date: str
+    value: float | None
+    n_runs: int = 0
+    n_judged: int = 0
+    severity: Severity = Severity.UNKNOWN
+    direction: Direction = Direction.NONE
+    hosts: tuple[HostFact, ...] = ()
+
+
+@dataclass(frozen=True)
 class MetricVerdict:
     """The engine's judgement of one metric on one night.
 
@@ -119,6 +201,19 @@ class MetricVerdict:
     last_accepted_run_id: str | None = None
     last_accepted_run_date: str | None = None
     first_confirmed_run_id: str | None = None
+    #: A bounded, release-level tail of this metric's own history, oldest first
+    #: and ending at this verdict's release (see
+    #: :mod:`k4bench.regression.history`). Carried on ``CONFIRMED`` verdicts
+    #: only: it exists so a reader — the blame ranker above all — can weigh a
+    #: step against the series it stepped out of, and every other severity is
+    #: either not attributed or not a step. Empty everywhere else, and empty on
+    #: reports written before the field existed.
+    history: tuple[ReleasePoint, ...] = ()
+    #: Where inside the detector this step landed (see :class:`RegionDelta`),
+    #: largest movement first. Carried on ``CONFIRMED`` *timing* verdicts only —
+    #: region data is per-event time, so it explains a time step and says nothing
+    #: about a memory one — and empty when the run recorded no region timing.
+    region_deltas: tuple[RegionDelta, ...] = ()
 
     @property
     def flagged(self) -> bool:
@@ -178,6 +273,13 @@ class RunGroupReport:
     notes: list[str] = field(default_factory=list)
     reliable: bool | None = None
     github_run_url: str | None = None
+    #: The compact geometry file this group's runs loaded, relative to the k4geo
+    #: checkout (``FCCee/ALLEGRO/compact/ALLEGRO_o1_v03/ALLEGRO_o1_v03.xml``).
+    #: Carried so attribution can state which candidate pull requests touch the
+    #: geometry this run actually reads rather than inferring it from path names.
+    #: Empty for every run benchmarked before it was recorded, which means
+    #: *unknown* — never "this run loads no geometry".
+    geometry_path: str = ""
 
     def _select(self, severity: Severity) -> list[MetricVerdict]:
         return [v for v in self.verdicts if v.severity is severity]

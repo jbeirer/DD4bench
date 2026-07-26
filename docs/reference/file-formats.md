@@ -143,6 +143,54 @@ Underscore-prefixed top-level directories are reserved for non-detector data:
 `regression-report` CI job, rendered by the dashboard's Regressions tab) and is
 skipped by detector discovery.
 
+### Metric history on confirmed verdicts (`report.json`)
+
+Every **confirmed** verdict in `report.json` carries a bounded `history`: a tail
+of up to twelve *releases* (never nights — nights sharing a release are repeat
+measurements of one software state), oldest first, ending at the release that
+verdict judged. Each point records the release date, its level, how many nights
+it aggregates and how many of those the detector could actually judge, the
+severity and direction it was flagged with, and the machine(s) that ran it:
+
+```json
+"history": [
+  {"run_date": "2026-07-03", "value": 100.2, "n_runs": 2, "n_judged": 2,
+   "severity": "OK", "direction": "NONE",
+   "hosts": [{"name": "bench01", "cpu_cores": 64}]},
+  {"run_date": "2026-07-04", "value": 120.4, "n_runs": 1, "n_judged": 1,
+   "severity": "CONFIRMED", "direction": "UP",
+   "hosts": [{"name": "bench01", "cpu_cores": 64}]}
+],
+"region_deltas": [
+  {"region": "HCAL_barrel", "base": 0.31, "onset": 4.52, "delta": 4.21},
+  {"region": "ECAL_barrel", "base": 1.02, "onset": 1.03, "delta": 0.01}
+]
+```
+
+`n_judged: 0` means the release was measured but never assessed — an unreliable
+host, or a series still warming up — so its level must not be read as a flat
+night. A release that recorded nothing at all is simply absent: a gap is a gap,
+never a zero.
+
+The field exists for attribution. A step is only evidence that something changed
+if the series it came out of does not move that much by itself, and one number
+cannot say which. Only confirmed verdicts carry it (they are the only ones
+anything attributes), and older reports carry none — every reader treats an
+empty history as "no history recorded", never as a quiet series.
+
+`region_deltas` answers the other half: *where inside the detector* a timing step
+landed, from the per-region timing the `k4BenchRegionTimingAction` plugin records
+on every run (`{config}_regions.json`). Each entry is one top-level detector
+region's per-event median time on each end of the change window, largest movement
+first — so "ALLEGRO got 21% slower" becomes "the HCAL barrel went from 0.31 to
+4.52 s/event and nothing else moved", which is a claim a code diff can be checked
+against. Carried on confirmed **timing** verdicts only (region data is per-event
+time and says nothing about a memory step), and empty when either end of the
+window recorded no region file — with only one side measured there is no
+comparison, and treating the missing side as zero would report the whole detector
+as newly appearing. A region present on one end only keeps `null` on the other:
+it genuinely appeared or disappeared.
+
 ### Blame sidecar (`blame.json`)
 
 For each confirmed regression whose blame window spans two *different* releases,
@@ -165,6 +213,11 @@ confirmed, attributable regression).
       "label": "baseline", "metric": "wall_time_s", "sub_detector": null,
       "base_release": "2026-07-03", "onset_release": "2026-07-04",
       "n_unchanged": 60,
+      "boundary_changes": {"2026-07-03": 0, "2026-07-04": 2},
+      "assessment": {
+        "verdict": "real_change",
+        "reason": "flat within ±0.4% for six releases, and the new level held"
+      },
       "repos": [
         {
           "package": "k4geo", "repo": "key4hep/k4geo",
@@ -178,7 +231,8 @@ confirmed, attributable regression).
               "url": "https://github.com/key4hep/k4geo/pull/1234",
               "merged_at": "2026-07-04T…", "files": ["FCCee/ALLEGRO/…"],
               "additions": 20, "deletions": 4,
-              "score": 72, "description": "raises the tracker step count, plausibly slower"
+              "score": 72, "description": "raises the tracker step count, plausibly slower",
+              "against": "the without_Tracker run stepped by the same amount"
             }
           ]
         }
@@ -196,8 +250,9 @@ remote sidecar on a rerun that produces none) can never attach to a regression
 whose window it did not examine. The pipeline collects every PR in each
 changed repo's commit range;
 a separate **ranking stage** then scores each candidate *for that group* —
-`score` is a 0–100 likelihood it is the cause and `description` a one-line
-reason, judged once per detector/platform/sample/window (every metric — and
+`score` is a 0–100 likelihood it is the cause, `description` a one-line
+reason and `against` (optional) what the model said argues against it, judged
+once per detector/platform/sample/window (every metric — and
 every benchmark-config label, e.g. a removal sweep's `baseline` vs.
 `without_<detector>` — sharing that group and window shares one ranking,
 applied to all of them). A *different* detector or sample sharing the same
@@ -210,8 +265,32 @@ claim of cause. Readers
 drop unknown keys, so the schema can gain fields without breaking an older
 dashboard; structurally malformed sidecars are hidden, never fatal.
 
-The ranking stage is a **language model** that reads the metric that moved and
-each candidate PR's actual code diff, and is configured entirely by environment —
+`boundary_changes` maps a release in the metric's history tail to the number of
+tracked packages that moved *entering* it. It is the one piece of the ranker's
+evidence the cross-configuration pass cannot recompute — that pass runs from the
+report and this sidecar with no provenance access — so it is persisted rather
+than derived twice. A release **absent** from the map is unread, never unchanged:
+`0` says the software was identical across that boundary and the metric moved
+anyway (the sharpest measurement of a series' own noise this suite produces),
+while a missing key says nobody looked.
+
+`assessment` is the ranker's judgement of the **movement itself**, before any
+question of who caused it: `real_change`, `likely_noise`, or
+`insufficient_evidence`, with a one-line reason. It is shared by every entry of
+a rank group, and absent (`null`) when no model was configured, when the reply
+gave none, or on a sidecar written before the field existed — absent means *not
+assessed*, never `real_change`. A `likely_noise` window is still ranked, written
+and rendered on the dashboard and in the email, each carrying one line of the
+verdict beside the candidates; what it does *not* do is produce a pull-request
+comment, since an accusation in someone else's repository about a wobble is the
+most expensive mistake this pipeline can make.
+
+The ranking stage is a **language model** that reads the metric that moved, its
+recent release-by-release history, where inside the detector the time went, the
+configurations that measured the same window without moving, how much of the
+tracked stack stood still, and each candidate PR's own description and code diff
+(descriptions and diffs both arrive fenced as untrusted data). It is
+configured entirely by environment —
 `K4BENCH_LLM_URL`, `K4BENCH_LLM_MODEL`, `K4BENCH_LLM_API_KEY` and optional
 `K4BENCH_LLM_MAX_TOKENS` (any OpenAI-compatible `/chat/completions` endpoint;
 the model is a config value, not pinned in code). Transient connection, timeout,

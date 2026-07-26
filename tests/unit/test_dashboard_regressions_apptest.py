@@ -11,6 +11,7 @@ one directly. All remote calls are stubbed; nothing touches the network.
 
 from __future__ import annotations
 
+import dataclasses
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -1122,3 +1123,70 @@ def test_trend_window_has_14_history_releases_and_7_future_releases():
     assert after_anchor == {f"key4hep-r{i:02d}" for i in range(21, 28)}
     assert "key4hep-r28" not in {tag for _, tag in selected}
     assert selected.count(((d0 + timedelta(days=22)).isoformat(), "key4hep-r21")) == 1
+
+
+def test_counter_evidence_shares_the_why_cell_rather_than_adding_a_column():
+    # What argues against a candidate is the fastest way to dismiss a wrong
+    # lead, and the worst thing to give a column of its own: the ledger is meant
+    # to be scanned. Streamlit truncates the cell and shows the rest on hover.
+    from dashboard.tabs import _regression_flags as flags
+    from k4bench.blame.models import CandidatePR
+
+    candidate = CandidatePR(
+        repo="key4hep/k4geo", number=1, title="Judged", author="alice",
+        url="https://github.com/key4hep/k4geo/pull/1",
+        score=72.0, description="raises the step count",
+        against="without_HCAL moved too", ranked=True,
+    )
+    captured = {}
+    original = flags.st.dataframe
+    try:
+        flags.st.dataframe = lambda data, **kw: captured.update(frame=data)
+        flags._render_candidate_rows([candidate])
+    finally:
+        flags.st.dataframe = original
+
+    why = list(captured["frame"]["Why"])[0]
+    assert why == "raises the step count · Against: without_HCAL moved too"
+    assert list(captured["frame"].columns) == [
+        "Likelihood", "Pull request", "Open", "Title", "Author", "Merged", "Why",
+    ]
+
+
+def test_a_doubted_step_is_captioned_above_its_own_ranking(monkeypatch):
+    # A reader looking at "91%" needs to see that the model which produced it
+    # also thought the movement was probably noise. One line, above the ledger.
+    from dashboard.tabs import _regression_flags as flags
+    from k4bench.blame.models import BlameEntry, StepAssessment
+
+    captions: list[str] = []
+    monkeypatch.setattr(flags.st, "caption", captions.append)
+    entry = BlameEntry(
+        detector="ALLEGRO_o1_v03", platform="x86_64-almalinux9-gcc14.2.0-opt",
+        sample="single_e", label="baseline", metric="wall_time_s",
+        sub_detector=None, base_release="2026-07-03", onset_release="2026-07-04",
+        assessment=StepAssessment("likely_noise", "the series wobbles weekly"),
+    )
+    flags.render_step_assessment(entry)
+    assert len(captions) == 1
+    assert "likely measurement noise" in captions[0]
+    assert "the series wobbles weekly" in captions[0]
+
+
+def test_an_ordinary_step_adds_no_caption_at_all(monkeypatch):
+    # A caveat that appears every night is a line every reader learns to skip —
+    # which is how the one that matters gets skipped too.
+    from dashboard.tabs import _regression_flags as flags
+    from k4bench.blame.models import BlameEntry, StepAssessment
+
+    captions: list[str] = []
+    monkeypatch.setattr(flags.st, "caption", captions.append)
+    entry = BlameEntry(
+        detector="ALLEGRO_o1_v03", platform="x86_64-almalinux9-gcc14.2.0-opt",
+        sample="single_e", label="baseline", metric="wall_time_s",
+        sub_detector=None, base_release="2026-07-03", onset_release="2026-07-04",
+        assessment=StepAssessment("real_change", "held for three releases"),
+    )
+    flags.render_step_assessment(entry)
+    flags.render_step_assessment(dataclasses.replace(entry, assessment=None))
+    assert captions == []

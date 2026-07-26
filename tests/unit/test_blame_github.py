@@ -11,6 +11,7 @@ from k4bench.blame import github as gh_mod
 from k4bench.blame.github import (
     GitHubClient,
     RateLimitError,
+    low_signal_path,
     parse_pr_number,
     resolve_repo_prs,
 )
@@ -132,6 +133,7 @@ def test_truncation_flag_when_compare_caps_commits():
     }
     res = resolve_repo_prs(_client(routes), "key4hep/k4geo", "a" * 40, "c" * 40)
     assert res.truncated is True
+    assert res.truncation_reasons == {"compare_commit_cap"}
     assert [c.number for c in res.candidates] == [10]
 
 
@@ -180,6 +182,7 @@ def test_pr_cap_marks_truncated(monkeypatch):
     res = resolve_repo_prs(_client(routes), "key4hep/k4geo", "a" * 40, "c" * 40)
     assert [c.number for c in res.candidates] == [10]
     assert res.truncated is True
+    assert res.truncation_reasons == {"pull_request_cap"}
 
 
 def test_exhausted_fallback_lookups_mark_truncated(monkeypatch):
@@ -201,6 +204,7 @@ def test_exhausted_fallback_lookups_mark_truncated(monkeypatch):
     res = resolve_repo_prs(_client(routes), "key4hep/k4geo", "a" * 40, "c" * 40)
     assert [c.number for c in res.candidates] == [55]
     assert res.truncated is True
+    assert res.truncation_reasons == {"commit_lookup_cap"}
 
 
 def test_failed_pr_fetch_marks_truncated():
@@ -219,6 +223,7 @@ def test_failed_pr_fetch_marks_truncated():
     res = resolve_repo_prs(_client(routes), "key4hep/k4geo", "a" * 40, "c" * 40)
     assert [c.number for c in res.candidates] == [10]
     assert res.truncated is True
+    assert res.truncation_reasons == {"pull_request_unreadable"}
 
 
 def test_deduplicates_prs_across_commits():
@@ -284,6 +289,70 @@ def test_total_patch_bounded_across_many_files():
     patch = res.patches[10]
     assert "… (truncated)" in patch
     assert len(patch) < 7000  # per-PR cap holds even when each file is sizeable
+
+
+def test_reads_every_changed_file_page_and_keeps_late_geometry_evidence():
+    first = [{"filename": f"docs/generated-{i}.md"} for i in range(100)]
+    second = [
+        {"filename": "FCCee/ALLEGRO/compact/x.xml", "patch": "@@\n+new material"},
+        *({"filename": f"src/generated-{i}.cpp"} for i in range(49)),
+    ]
+    body = dict(_pr_body(10), changed_files=150)
+    client = _client({
+        "/compare/aaa...ccc": _Resp(200, {
+            "commits": [_commit("s1", "Wide change (#10)")],
+            "total_commits": 1,
+        }),
+        "/pulls/10/files": [_Resp(200, first), _Resp(200, second)],
+        "/pulls/10": _Resp(200, body),
+    })
+
+    res = resolve_repo_prs(client, "key4hep/k4geo", "aaa", "ccc")
+
+    assert not res.truncated
+    assert len(res.candidates[0].files) == 150
+    assert "FCCee/ALLEGRO/compact/x.xml" in res.candidates[0].files
+    assert "new material" in res.patches[10]
+
+
+def test_changed_file_count_mismatch_marks_the_resolution_truncated(caplog):
+    first = [{"filename": f"src/f{i}.cpp"} for i in range(100)]
+    body = dict(_pr_body(10), changed_files=125)
+    client = _client({
+        "/compare/aaa...ccc": _Resp(200, {
+            "commits": [_commit("s1", "Wide change (#10)")],
+            "total_commits": 1,
+        }),
+        "/pulls/10/files": [_Resp(200, first), _Resp(200, [])],
+        "/pulls/10": _Resp(200, body),
+    })
+
+    res = resolve_repo_prs(client, "key4hep/k4geo", "aaa", "ccc")
+
+    assert res.truncated
+    assert res.truncation_reasons == {"changed_files_incomplete"}
+    assert len(res.candidates[0].files) == 100
+    assert "received=100 expected=125" in caplog.text
+
+
+def test_changed_file_page_cap_marks_the_resolution_truncated(monkeypatch):
+    monkeypatch.setattr(gh_mod, "_MAX_FILE_PAGES", 1)
+    first = [{"filename": f"src/f{i}.cpp"} for i in range(100)]
+    body = dict(_pr_body(10), changed_files=101)
+    client = _client({
+        "/compare/aaa...ccc": _Resp(200, {
+            "commits": [_commit("s1", "Wide change (#10)")],
+            "total_commits": 1,
+        }),
+        "/pulls/10/files": _Resp(200, first),
+        "/pulls/10": _Resp(200, body),
+    })
+
+    res = resolve_repo_prs(client, "key4hep/k4geo", "aaa", "ccc")
+
+    assert res.truncated
+    assert res.truncation_reasons == {"changed_files_incomplete"}
+    assert len(res.candidates[0].files) == 100
 
 
 # ── Pull-request comments ─────────────────────────────────────────────────────
@@ -369,3 +438,81 @@ def test_comment_write_raises_on_rate_limit():
                                                {"X-RateLimit-Remaining": "0"})}
     with pytest.raises(RateLimitError):
         gh_mod.create_issue_comment(_client(routes), "key4hep/k4geo", 7, "hi")
+
+
+# ── The author's own account of the change ────────────────────────────────────
+
+def test_a_pull_requests_description_is_carried_as_transient_input():
+    # Frequently states the mechanism, and sometimes the cost, more plainly than
+    # the diff shows it — and it was previously thrown away.
+    body = dict(_pr_body(10), body="Raises the step limit; expect ~15% slower.")
+    client = _client({
+        "/compare/aaa...ccc": _Resp(200, {
+            "commits": [_commit("s1", "Lower the step limit (#10)")],
+            "total_commits": 1,
+        }),
+        "/pulls/10/files": _Resp(200, [
+            {"filename": "src/a.cpp", "patch": "@@\n+x"},
+        ]),
+        "/pulls/10": _Resp(200, body),
+    })
+    res = resolve_repo_prs(client, "key4hep/k4geo", "aaa", "ccc")
+    assert res.bodies[10] == "Raises the step limit; expect ~15% slower."
+    # Never persisted on the candidate: it is re-fetchable from GitHub forever.
+    assert not hasattr(res.candidates[0], "body")
+
+
+def test_a_missing_description_is_simply_absent():
+    client = _client({
+        "/compare/aaa...ccc": _Resp(200, {
+            "commits": [_commit("s1", "Lower the step limit (#10)")],
+            "total_commits": 1,
+        }),
+        "/pulls/10/files": _Resp(200, [{"filename": "src/a.cpp", "patch": "@@\n+x"}]),
+        "/pulls/10": _Resp(200, _pr_body(10)),
+    })
+    assert resolve_repo_prs(client, "key4hep/k4geo", "aaa", "ccc").bodies == {}
+
+
+# ── Which hunks the diff budget is spent on ───────────────────────────────────
+
+def test_only_unambiguous_documentation_is_low_signal():
+    for path in (
+        "README.md", "docs/guide.rst", "doc/design.txt", "LICENSE",
+        "LICENCE.txt", "CHANGELOG.md", "CODE_OF_CONDUCT.md",
+    ):
+        assert low_signal_path(path), path
+    # Build inputs, workflows, dependency state, notebooks, and names that only
+    # happen to start with a documentation word all remain potentially causal.
+    for path in (
+        "src/a.cpp", "FCCee/ALLEGRO/compact/x.xml", "python/steer.py",
+        "cmake/Modules/FindGeant4.cmake", "CMakeLists.txt", "poetry.lock",
+        ".github/workflows/ci.yml", "src/license_manager.cpp",
+        "analysis/performance.ipynb", "assets/runtime.svg",
+    ):
+        assert not low_signal_path(path), path
+
+
+def test_the_diff_budget_is_spent_on_code_before_prose():
+    # With a small budget and GitHub returning the changelog first, leaving the
+    # order alone would send the model a diff containing no code at all.
+    filler = "@@\n" + "+doc\n" * 4000
+    client = _client({
+        "/compare/aaa...ccc": _Resp(200, {
+            "commits": [_commit("s1", "Lower the step limit (#10)")],
+            "total_commits": 1,
+        }),
+        "/pulls/10/files": _Resp(200, [
+            {"filename": "CHANGELOG.md", "patch": filler},
+            {"filename": "docs/guide.md", "patch": filler},
+            {"filename": "src/stepping.cpp", "patch": "@@\n+ the real change"},
+        ]),
+        "/pulls/10": _Resp(200, _pr_body(10)),
+    })
+    res = resolve_repo_prs(client, "key4hep/k4geo", "aaa", "ccc")
+    assert "the real change" in res.patches[10]
+    # The paths still arrive in the pull request's own order — they are its
+    # shape, and cheap enough to keep whole.
+    assert res.candidates[0].files == (
+        "CHANGELOG.md", "docs/guide.md", "src/stepping.cpp",
+    )

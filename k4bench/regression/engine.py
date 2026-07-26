@@ -170,6 +170,22 @@ def _identity(row) -> tuple[str, str]:
     return str(row.run_id), _fmt_date(row.run_date)
 
 
+def release_key(run_date, run_id) -> str:
+    """The release a night measured: its date, or its run id when the date is
+    unknown.
+
+    The walk below groups on this, and so does every consumer that has to line
+    a night up with the software state it measured (see
+    :mod:`k4bench.regression.history`). One definition, because a night placed
+    in one release here and another release there would compare a metric
+    against a baseline it was never judged under. A row with no usable date
+    keys on its run id and therefore forms a single-night group of its own,
+    which is what makes the degradation explicit rather than silently pooling
+    every undated night together.
+    """
+    return _fmt_date(run_date) or str(run_id)
+
+
 def evaluate_series(
     history: pd.DataFrame,
     *,
@@ -278,7 +294,7 @@ def evaluate_series(
     # same snapshot. A row with no usable date keys on its run_id, so it forms
     # a single-night group and the walk stays night-by-night for it.
     def _release_key(row) -> str:
-        return _fmt_date(row.run_date) or str(row.run_id)
+        return release_key(row.run_date, row.run_id)
 
     for release_date, group in groupby(df.itertuples(index=False), key=_release_key):
         # Per-release state, reset at every boundary.

@@ -46,6 +46,7 @@ def parse_run_dir(run_dir: Path) -> dict:
             "k4h_release_date": pd.NaT,
             "k4h_packages":     {},
             "sample":           "unknown",
+            "xml_path":         None,
             "github_run_url":   None,
             "commit_sha":       None,
             "n_events":         None,
@@ -75,6 +76,10 @@ def parse_run_dir(run_dir: Path) -> dict:
                 # could not be read — an empty map means "unknown", never "unchanged".
                 "k4h_packages":     info.get("k4h_packages") or {},
                 "sample":           info.get("sample", "unknown") or "unknown",
+                # The compact file this run loaded, relative to $K4GEO. Absent
+                # for every run benchmarked before it was captured, which reads
+                # as "unknown" — never as "this run loads nothing".
+                "xml_path":         info.get("xml_path"),
                 "github_run_url":   info.get("github_run_url"),
                 "commit_sha":       info.get("commit_sha"),
                 "n_events":         info.get("n_events"),
@@ -145,6 +150,7 @@ def build_results_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
         df["k4h_release"]      = meta["k4h_release"]
         df["k4h_release_date"] = meta["k4h_release_date"]
         df["github_run_url"]   = meta["github_run_url"]
+        df["xml_path"]         = meta["xml_path"]
         frames.append(df)
     if not frames:
         return None
