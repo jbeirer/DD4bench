@@ -41,7 +41,12 @@ _TIMEOUT = 15
 #: Bound per repo/PR so one sweeping range can't explode the call count or the
 #: file lists stored in ``blame.json``.
 _MAX_PRS_PER_REPO = 40
-_MAX_FILES_PER_PR = 100
+_FILES_PER_PAGE = 100
+#: GitHub exposes at most 3000 changed files for one pull request. Keep the
+#: request budget explicit even if that upstream bound changes: reaching it
+#: leaves the repository marked truncated rather than silently treating a
+#: partial path list as complete.
+_MAX_FILE_PAGES = 30
 #: Fallback ``/commits/{sha}/pulls`` lookups per range. A non-squash repo whose
 #: subjects carry no ``(#N)`` pays one API call per commit, and a compare can
 #: hold up to 250 — bound that spend the same way the PR fetches are bounded.
@@ -154,6 +159,11 @@ class PRText:
 
     patch: str = ""
     body: str = ""
+    #: Whether ``CandidatePR.files`` contains every path GitHub says the pull
+    #: request changed. This is transient collection state: an incomplete list
+    #: makes geometry reach and diff ranking unsafe, so the enclosing resolution
+    #: is marked truncated and never ranked.
+    files_complete: bool = True
 
 
 @dataclass
@@ -167,13 +177,24 @@ class RepoResolution:
     hands to the ranking stage, keyed alongside ``candidates`` but deliberately
     **not** part of the persisted :class:`CandidatePR`: both are re-fetchable
     from GitHub forever, so ``blame.json`` keeps only the file paths and the
-    ranker's verdict."""
+    ranker's verdict. ``truncated`` also covers incomplete per-PR file evidence,
+    because ranking a complete candidate population from partial paths can be
+    just as misleading as ranking a partial candidate population."""
 
     candidates: list[CandidatePR] = field(default_factory=list)
     patches: dict[int, str] = field(default_factory=dict)
     bodies: dict[int, str] = field(default_factory=dict)
     commits_unavailable: bool = False
     truncated: bool = False
+    #: Machine-readable causes copied into ``blame.json`` for operators. Kept
+    #: alongside the compatibility boolean because older readers only know
+    #: ``truncated``.
+    truncation_reasons: set[str] = field(default_factory=set)
+
+    def mark_truncated(self, reason: str) -> None:
+        """Record one known completeness failure without losing earlier ones."""
+        self.truncated = True
+        self.truncation_reasons.add(reason)
 
 
 def parse_pr_number(subject: str) -> int | None:
@@ -219,7 +240,7 @@ def resolve_repo_prs(
     if total > len(commits):
         # The compare endpoint caps at 250 commits; a one-night window never
         # approaches it, but a wide backfill window could.
-        result.truncated = True
+        result.mark_truncated("compare_commit_cap")
 
     pr_numbers: list[int] = []
     seen: set[int] = set()
@@ -228,7 +249,7 @@ def resolve_repo_prs(
         if len(pr_numbers) >= _MAX_PRS_PER_REPO:
             # Commits remain past the PR cap — the list may not be the range's
             # full population, and a partial set must say so.
-            result.truncated = True
+            result.mark_truncated("pull_request_cap")
             break
         subject = (commit.get("commit") or {}).get("message", "")
         number = parse_pr_number(subject)
@@ -236,7 +257,7 @@ def resolve_repo_prs(
             if lookups_left <= 0:
                 # A commit whose PR is unknowable within the lookup budget: it
                 # may belong to a PR the list misses.
-                result.truncated = True
+                result.mark_truncated("commit_lookup_cap")
                 continue
             lookups_left -= 1
             number = _pr_for_commit(client, slug, commit.get("sha", ""))
@@ -249,14 +270,25 @@ def resolve_repo_prs(
         if fetched is None:
             # A PR known to be in the range but unreadable right now — the
             # candidate list is incomplete, not merely smaller.
-            result.truncated = True
+            result.mark_truncated("pull_request_unreadable")
             continue
         pr, text = fetched
         result.candidates.append(pr)
+        if not text.files_complete:
+            # The candidate itself is known, but its path/diff evidence is not
+            # complete. In particular, a geometry file on an unread page could
+            # reverse the ranker's reach judgement, so fail closed exactly as
+            # for an incomplete candidate population.
+            result.mark_truncated("changed_files_incomplete")
         if text.patch:
             result.patches[number] = text.patch
         if text.body:
             result.bodies[number] = text.body
+    if result.truncation_reasons:
+        _log.warning(
+            "resolve_repo_prs: %s %s..%s incomplete (%s)",
+            slug, base, head, ", ".join(sorted(result.truncation_reasons)),
+        )
     return result
 
 
@@ -296,8 +328,18 @@ def fetch_pr(
         data = resp.json()
     except ValueError:
         return None
-    files, patch = _fetch_pr_files(client, slug, number)
-    text = PRText(patch=patch, body=str(data.get("body") or "")[:MAX_BODY_CHARS])
+    try:
+        changed_files = int(data["changed_files"])
+    except (KeyError, TypeError, ValueError):
+        changed_files = None
+    files, patch, files_complete = _fetch_pr_files(
+        client, slug, number, changed_files=changed_files
+    )
+    text = PRText(
+        patch=patch,
+        body=str(data.get("body") or "")[:MAX_BODY_CHARS],
+        files_complete=files_complete,
+    )
     pr = CandidatePR(
         repo=slug,
         number=number,
@@ -312,21 +354,19 @@ def fetch_pr(
     return pr, text
 
 
-#: Paths whose hunks are shown last, because they cannot cause a simulation to
-#: get slower or heavier: prose, licences, and the machinery that builds and
-#: tests the repository rather than what it runs. Deliberately conservative —
-#: anything not listed here counts as code, since mis-ranking a source file as
-#: noise is a far worse error than the reverse.
-_LOW_SIGNAL_SUFFIXES = (
-    ".md", ".rst", ".txt", ".png", ".jpg", ".svg", ".pdf",
-    ".lock", ".ipynb",
+#: Paths whose hunks are shown last because they are unambiguously prose.
+#: Deliberately narrow: build definitions, workflows, lockfiles, notebooks, and
+#: runtime assets can all affect what is built or executed. Mis-ranking one of
+#: those as noise is much worse than spending a little diff budget on it.
+_LOW_SIGNAL_PREFIXES = ("docs/", "doc/")
+_LOW_SIGNAL_BASENAMES = (
+    "readme", "license", "licence", "copying", "notice", "changelog",
+    "authors", "contributing", "code_of_conduct",
 )
-_LOW_SIGNAL_PREFIXES = ("docs/", ".github/", "doc/")
-_LOW_SIGNAL_NAMES = ("license", "licence", "copying", "changelog", "authors")
 
 
 def low_signal_path(path: str) -> bool:
-    """Whether *path* is documentation, packaging or CI rather than code.
+    """Whether *path* is unambiguously documentation rather than code.
 
     Public because two callers need exactly the same conservative judgement: the
     diff budget spends on code last-resort-last (:func:`_diff_priority`), and the
@@ -335,9 +375,11 @@ def low_signal_path(path: str) -> bool:
     lowered = path.lower()
     name = lowered.rsplit("/", 1)[-1]
     return (
-        lowered.endswith(_LOW_SIGNAL_SUFFIXES)
-        or lowered.startswith(_LOW_SIGNAL_PREFIXES)
-        or any(name.startswith(stem) for stem in _LOW_SIGNAL_NAMES)
+        lowered.startswith(_LOW_SIGNAL_PREFIXES)
+        or any(
+            name == basename or name.startswith(f"{basename}.")
+            for basename in _LOW_SIGNAL_BASENAMES
+        )
     )
 
 
@@ -349,17 +391,23 @@ def _diff_priority(entry: dict) -> tuple:
 
 
 def _fetch_pr_files(
-    client: GitHubClient, slug: str, number: int
-) -> tuple[tuple[str, ...], str]:
+    client: GitHubClient, slug: str, number: int, *, changed_files: int | None
+) -> tuple[tuple[str, ...], str, bool]:
     """A PR's changed paths and a bounded sample of its unified diff.
 
-    One page (``per_page=100``) of ``/pulls/{n}/files`` carries both the paths
-    the ranker keys on — persisted on the :class:`CandidatePR` — and each file's
-    ``patch`` hunk, which is assembled into the transient diff sample. The paths
-    are always kept (cheap, high-signal); the diff is capped per file and per PR
-    (see the ``_MAX_PATCH_*`` bounds) with overflow marked ``… (truncated)``.
-    Binary files and pure renames carry no ``patch``, so they contribute their
-    path but no diff text.
+    Every page of ``/pulls/{n}/files`` (up to :data:`_MAX_FILE_PAGES`) carries
+    both the paths the ranker keys on — persisted on the
+    :class:`CandidatePR` — and each file's ``patch`` hunk, which is assembled
+    into the transient diff sample. The PR metadata's ``changed_files`` count
+    is the completeness check; when older/malformed metadata lacks it, a short
+    final page is the fallback proof. A failed page, a count mismatch, or the
+    page cap returns ``files_complete=False`` so the enclosing resolution is
+    disclosed as truncated and ranking is skipped.
+
+    Complete paths are always kept (cheap, high-signal); the diff is capped per
+    file and per PR (see the ``_MAX_PATCH_*`` bounds) with overflow marked
+    ``… (truncated)``. Binary files and pure renames carry no ``patch``, so they
+    contribute their path but no diff text.
 
     The budget is spent in *relevance* order, not in GitHub's order (see
     :func:`_diff_priority`). The paths keep the order GitHub gave them — they are
@@ -369,15 +417,46 @@ def _fetch_pr_files(
     reaches the model is then a diff with no code in it. On a wide window, where
     each pull request gets barely a kilobyte, that is the difference between a
     sample and a decoy."""
-    resp = client.get(
-        f"/repos/{slug}/pulls/{number}/files", params={"per_page": _MAX_FILES_PER_PR}
-    )
-    if resp.status_code != 200:
-        return (), ""
-    try:
-        files = resp.json()
-    except ValueError:
-        return (), ""
+    files: list[dict] = []
+    reached_end = False
+    read_failed = False
+    pages_attempted = 0
+    for page in range(1, _MAX_FILE_PAGES + 1):
+        pages_attempted = page
+        resp = client.get(
+            f"/repos/{slug}/pulls/{number}/files",
+            params={"per_page": _FILES_PER_PAGE, "page": page},
+        )
+        if resp.status_code != 200:
+            read_failed = True
+            break
+        try:
+            page_files = resp.json()
+        except ValueError:
+            read_failed = True
+            break
+        if not isinstance(page_files, list):
+            read_failed = True
+            break
+        files.extend(e for e in page_files if isinstance(e, dict))
+        if changed_files is not None and len(files) >= changed_files:
+            reached_end = True
+            break
+        if len(page_files) < _FILES_PER_PAGE:
+            reached_end = True
+            break
+
+    if changed_files is not None:
+        files_complete = not read_failed and len(files) == changed_files
+    else:
+        files_complete = not read_failed and reached_end
+    if not files_complete:
+        expected = str(changed_files) if changed_files is not None else "unknown"
+        _log.warning(
+            "fetch_pr: %s#%s changed-file evidence incomplete "
+            "(received=%d expected=%s pages_attempted=%d read_failed=%s)",
+            slug, number, len(files), expected, pages_attempted, read_failed,
+        )
 
     paths = [str(e["filename"]) for e in files if e.get("filename")]
     chunks: list[str] = []
@@ -405,7 +484,7 @@ def _fetch_pr_files(
     patch_text = "\n".join(chunks)
     if truncated and patch_text:
         patch_text += _PATCH_TRUNCATION_MARK
-    return tuple(paths), patch_text
+    return tuple(paths), patch_text, files_complete
 
 
 # ── Pull-request comments ─────────────────────────────────────────────────────

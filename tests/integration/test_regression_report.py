@@ -20,6 +20,7 @@ _SCRIPT = _SCRIPTS / "regression_report.py"
 _BLAME_SCRIPT = _SCRIPTS / "blame_report.py"
 _PLAT = "x86_64-almalinux9-gcc14.2.0-opt"
 _STACK = "key4hep-2026-01-01"
+_GEOMETRY = "FCCee/DET/compact/d.xml"
 
 
 def _write_run(run_dir: Path, night: str, wall_time_s: float, stack: str = _STACK) -> None:
@@ -175,6 +176,7 @@ def _write_run_with_provenance(
     run_dir.mkdir(parents=True)
     (run_dir / "run_info.json").write_text(json.dumps({
         "date": night, "platform": _PLAT, "k4h_release": stack, "sample": "single_e",
+        "xml_path": _GEOMETRY,
         "k4h_packages": {
             "k4geo": {"commit": k4geo_commit, "version": "develop", "repo_url": _K4GEO},
             "dd4hep": {"commit": "d" * 40, "version": "develop", "repo_url": _DD4HEP},
@@ -471,6 +473,7 @@ def test_the_whole_evidence_chain_reaches_the_cross_configuration_review(
     confirmed = next(v for v in report.regressions if v.metric == "wall_time_s")
     assert confirmed.history, "a confirmed verdict must carry its release tail"
     assert confirmed.history[-1].hosts[0].name == "host-a"
+    assert report.groups[0].geometry_path == _GEOMETRY
     hcal = next(d for d in confirmed.region_deltas if d.region == "HCAL")
     assert hcal.delta > 0.15  # the HCAL absorbed the step; the ECAL did not
     assert all(abs(d.delta) < 0.01 for d in confirmed.region_deltas if d.region == "ECAL")
@@ -510,6 +513,7 @@ def test_the_whole_evidence_chain_reaches_the_cross_configuration_review(
     # ── What the *ranker* was shown, over the real tree ──────────────────────
     step = seen[0].metrics[0]
     assert step.history is not None and step.regions
+    assert seen[0].geometry_tree == _GEOMETRY
     assert seen[0].candidates[0].body.startswith("Raises the step limit")
     # Every night here ran on one release, so each boundary of the tail is a
     # real, read boundary — the evidence a model needs to calibrate the step.

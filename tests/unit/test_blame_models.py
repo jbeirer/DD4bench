@@ -56,6 +56,25 @@ def test_round_trips_through_json():
     assert restored == report
 
 
+def test_truncation_reasons_round_trip_and_imply_the_legacy_boolean():
+    repo = RepoBlame(
+        package="k4geo", repo="key4hep/k4geo", base_commit="a" * 40,
+        head_commit="c" * 40, compare_url=None, status="changed",
+        truncation_reasons=("changed_files_incomplete",),
+    )
+    restored = RepoBlame.from_dict(repo.to_dict())
+
+    assert restored.truncated is True
+    assert restored.truncation_reasons == ("changed_files_incomplete",)
+
+    legacy = repo.to_dict()
+    del legacy["truncation_reasons"]
+    legacy["truncated"] = True
+    restored_legacy = RepoBlame.from_dict(legacy)
+    assert restored_legacy.truncated is True
+    assert restored_legacy.truncation_reasons == ()
+
+
 def test_from_json_drops_unknown_keys():
     # blame.json is read by whatever dashboard is deployed; a newer writer adding
     # a field must not break an older reader.
@@ -159,6 +178,16 @@ def test_from_json_raises_schema_error_on_malformed_shapes():
         {"entries": [{}]},                        # entry missing required fields
         {"entries": ["not-an-object"]},
         {"entries": [_entry().to_dict() | {"repos": [{"candidates": ["x"]}]}]},
+        {
+            "entries": [
+                _entry().to_dict() | {
+                    "repos": [
+                        _entry().repos[0].to_dict()
+                        | {"truncation_reasons": "not-a-list"}
+                    ]
+                }
+            ]
+        },
     ):
         with pytest.raises(BlameSchemaError):
             BlameReport.from_json(data)

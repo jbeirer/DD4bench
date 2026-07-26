@@ -9,6 +9,7 @@ surfaces share.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import math
 
@@ -112,6 +113,35 @@ def test_json_roundtrip_and_sanitization():
     assert all(v.severity is Severity.CONFIRMED for v in rebuilt.regressions)
     assert rebuilt.groups[0].job_failures == report.groups[0].job_failures
     assert rebuilt.has_alertable
+
+
+def test_every_run_group_field_survives_the_json_roundtrip():
+    # Keep this constructor exhaustive on purpose. If RunGroupReport gains a
+    # field, the test must choose a non-default value for it; otherwise a writer
+    # can serialize the field while this production reader silently resets it
+    # to its default.
+    values = {
+        "detector": "DET",
+        "platform": "PLAT",
+        "sample": "single_e",
+        "k4h_release": "key4hep-2026-01-12",
+        "run_date": "2026-01-12",
+        "run_id": "run-12",
+        "verdicts": [_verdict()],
+        "job_failures": ["missing variant"],
+        "notes": ["host evidence unavailable"],
+        "reliable": False,
+        "github_run_url": "https://github.example/actions/runs/12",
+        "geometry_path": "FCCee/DET/compact/d.xml",
+    }
+    assert set(values) == {f.name for f in dataclasses.fields(RunGroupReport)}
+    group = RunGroupReport(**values)
+
+    restored = from_json(to_json(
+        NightlyReport(generated_at="2026-01-12T06:00:00+00:00", groups=[group])
+    )).groups[0]
+
+    assert restored == group
 
 
 def test_summary_splits_new_and_reconfirmed():

@@ -1636,7 +1636,10 @@ def test_a_row_whose_discovery_was_incomplete_is_carried_as_unknown():
     assert by_detector["IDEA_o1_v03"].scope_state == "discovery_incomplete"
     assert by_detector["IDEA_o1_v03"].scope_score is None
     prompt = build_user_prompt(request)
-    assert "candidate discovery for this regression was incomplete" in prompt
+    assert (
+        "candidate discovery or changed-file evidence for this regression was "
+        "incomplete"
+    ) in prompt
     # An incomplete scope elsewhere does not silence a comment whose own
     # accusation rests on a complete, ranked scope — but it never lends it
     # support either.
@@ -1849,8 +1852,10 @@ def test_every_prior_state_has_its_own_wording():
         "unranked": "was a candidate for this regression but the first pass "
                     "returned no score",
         "not_candidate": "NOT among the candidates for this regression",
-        "discovery_incomplete": "candidate discovery for this regression was "
-                                "incomplete",
+        "discovery_incomplete": (
+            "candidate discovery or changed-file evidence for this regression "
+            "was incomplete"
+        ),
     }
     for state, phrase in states.items():
         mutated = replace(

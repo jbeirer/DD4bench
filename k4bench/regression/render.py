@@ -374,6 +374,7 @@ def from_json(data: dict) -> NightlyReport:
             notes=list(g.get("notes", [])),
             reliable=g.get("reliable"),
             github_run_url=g.get("github_run_url"),
+            geometry_path=str(g.get("geometry_path") or ""),
         ))
     return NightlyReport(generated_at=data.get("generated_at", ""), groups=groups)
 

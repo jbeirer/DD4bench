@@ -112,9 +112,10 @@ _log = logging.getLogger(__name__)
 #:   is not in the commit range that produced this regression.
 #: * ``"unranked"`` — it was a candidate, but the first pass returned no
 #:   judgement about it (a partial ranking response). Unknown, not zero.
-#: * ``"discovery_incomplete"`` — the candidate population for that scope is not
-#:   known to be complete (a truncated or unavailable range, or no sidecar entry
-#:   at all), so absence proves nothing and presence is not a full field.
+#: * ``"discovery_incomplete"`` — the candidate population or changed-file
+#:   evidence for that scope is not known to be complete (a truncated or
+#:   unavailable range, or no sidecar entry at all), so absence proves nothing
+#:   and presence is not fully evidenced.
 #:
 #: Kept as explicit states rather than folded into a likelihood prior: three of
 #: the four have no honest numeric value, and inventing one — 0 for "we never
@@ -750,8 +751,9 @@ def _prior_phrase(fact: RegressionFact) -> str:
             "change is not in it. Weigh that as evidence"
         )
     return (
-        "candidate discovery for this regression was incomplete, so nothing "
-        "follows from whether this pull request appears in it"
+        "candidate discovery or changed-file evidence for this regression was "
+        "incomplete, so nothing follows from whether this pull request appears "
+        "in it or how relevant its visible files look"
     )
 
 

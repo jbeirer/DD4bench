@@ -169,10 +169,14 @@ class RepoBlame:
     it just has no ``candidates``. ``commits_unavailable`` marks a range whose
     PRs could not be enumerated at all — a compare that 404'd (``develop``
     force-pushed, base commit gone; both SHAs are still shown), a rate-limited
-    or errored resolution; ``truncated`` marks a candidate list known to be
-    incomplete — the range passed GitHub's 250-commit compare cap or a local
-    resolution bound, or a discovered PR failed to fetch. Either flag means the
-    candidate set must not be presented as the complete population of the range.
+    or errored resolution; ``truncated`` marks candidate discovery or its
+    evidence as known to be incomplete — the range passed GitHub's 250-commit
+    compare cap or a local resolution bound, a discovered PR failed to fetch,
+    or GitHub did not return every changed path for a PR. Either flag means the
+    candidate set must not be ranked or presented as fully evidenced.
+    ``truncation_reasons`` records which of those cases occurred for current
+    writers; it is empty on historical sidecars whose boolean still carries the
+    safety decision.
     """
 
     package: str  # Key4hep package name, e.g. "k4geo"
@@ -184,6 +188,9 @@ class RepoBlame:
     candidates: tuple[CandidatePR, ...] = ()
     commits_unavailable: bool = False
     truncated: bool = False
+    #: Additive diagnostic detail for :attr:`truncated`. Empty on historical
+    #: sidecars, where the boolean remains authoritative.
+    truncation_reasons: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -195,12 +202,17 @@ class RepoBlame:
             "status": self.status,
             "candidates": [c.to_dict() for c in self.candidates],
             "commits_unavailable": self.commits_unavailable,
-            "truncated": self.truncated,
+            "truncated": self.truncated or bool(self.truncation_reasons),
+            "truncation_reasons": list(self.truncation_reasons),
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> RepoBlame:
         d = _only_known(cls, data)
+        raw_reasons = d.get("truncation_reasons")
+        if raw_reasons is not None and not isinstance(raw_reasons, list | tuple):
+            raise TypeError("truncation_reasons must be a list")
+        reasons = tuple(str(r) for r in raw_reasons or ())
         return cls(
             package=str(d["package"]),
             repo=_opt_str(d["repo"]),
@@ -212,7 +224,8 @@ class RepoBlame:
                 CandidatePR.from_dict(c) for c in d.get("candidates") or ()
             ),
             commits_unavailable=bool(d.get("commits_unavailable", False)),
-            truncated=bool(d.get("truncated", False)),
+            truncated=bool(d.get("truncated", False)) or bool(reasons),
+            truncation_reasons=reasons,
         )
 
 
@@ -351,11 +364,15 @@ class BlameEntry:
 
     @property
     def discovery_incomplete(self) -> bool:
-        """True when any repo's candidate list is known not to be the full
-        population of its range (unavailable or truncated) — the builder then
-        refuses to rank, and completeness checks exempt this entry: calling one
-        of a partial set "most likely" would be worse than no ranking."""
-        return any(r.commits_unavailable or r.truncated for r in self.repos)
+        """True when a repo's candidate population or file evidence is
+        incomplete (unavailable or truncated) — the builder then refuses to
+        rank, and completeness checks exempt this entry: calling one of a
+        partial or partially evidenced set "most likely" would be worse than no
+        ranking."""
+        return any(
+            r.commits_unavailable or r.truncated or r.truncation_reasons
+            for r in self.repos
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -457,8 +474,9 @@ def ranking_coverage(blame: BlameReport) -> tuple[int, int, list[str]]:
     The builder ranks each regression on its own, so every candidate of every
     entry is expected to carry the model's judgement — except entries whose
     :attr:`~BlameEntry.discovery_incomplete` is set: the builder deliberately
-    leaves those unranked (a partial candidate set must not produce a "most
-    likely" claim), so they are exempt rather than counted as failures.
+    leaves those unranked (a partial candidate set or incomplete changed-file
+    evidence must not produce a "most likely" claim), so they are exempt rather
+    than counted as failures.
 
     A zero score with a non-empty explanation is a valid ranking — it is
     :attr:`CandidatePR.ranked` that decides, never the score, precisely so an

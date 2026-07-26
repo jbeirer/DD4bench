@@ -27,10 +27,10 @@ must pass:
   judgement;
 * the ranker's likelihood is at or above ``min_score`` (default 80);
 * the pull request is **merged** — an open PR cannot have shipped in a release;
-* the blame entry's candidate discovery was **complete**
+* the blame entry's candidate discovery and changed-file evidence were **complete**
   (:attr:`~k4bench.blame.models.BlameEntry.discovery_incomplete`) — naming one PR
-  out of a knowingly partial set is exactly the overclaim the ranker itself
-  refuses to make;
+  out of a knowingly partial set, or from partial path evidence, is exactly the
+  overclaim the ranker itself refuses to make;
 * the night is under the ``max_comments`` cap — a storm is a bug, not a night;
 * and, when a cross-configuration review ran, it did not acquit the pull request
   outright (:func:`build_comments`'s withdrawal gate).

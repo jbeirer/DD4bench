@@ -285,6 +285,35 @@ def _two_candidates(monkeypatch):
     _stub_resolve(monkeypatch, fake_resolve)
 
 
+def test_truncation_reason_reaches_sidecar_and_suppresses_ranking(monkeypatch):
+    def incomplete_files(client, slug, base, head):
+        return RepoResolution(
+            candidates=[
+                CandidatePR(
+                    repo=slug, number=10, title="wide PR", author="a", url="u"
+                ),
+            ],
+            truncation_reasons={"changed_files_incomplete"},
+        )
+
+    _stub_resolve(monkeypatch, incomplete_files)
+    ranker = _FakeRanker({
+        ("key4hep/k4geo", 10): Ranking(99.0, "must never be used"),
+    })
+
+    blame = build_blame_report(
+        _report([_verdict()]), packages_for_release=_MOVED,
+        github=GitHubClient(), ranker=ranker,
+    )
+    repo = blame.entries[0].repos[0]
+
+    assert repo.truncated
+    assert repo.truncation_reasons == ("changed_files_incomplete",)
+    assert ranker.requests == []
+    restored = type(blame).from_json(blame.to_json()).entries[0].repos[0]
+    assert restored.truncation_reasons == ("changed_files_incomplete",)
+
+
 def test_ranker_scores_land_on_the_right_candidate(monkeypatch):
     _two_candidates(monkeypatch)
     ranker = _FakeRanker({("key4hep/k4geo", 10): Ranking(72.0, "raises the step count")})

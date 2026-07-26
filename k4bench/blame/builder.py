@@ -306,7 +306,8 @@ def _repo_blame(change: PackageChange, resolution: RepoResolution) -> RepoBlame:
         status=change.status,
         candidates=tuple(resolution.candidates),
         commits_unavailable=resolution.commits_unavailable,
-        truncated=resolution.truncated,
+        truncated=resolution.truncated or bool(resolution.truncation_reasons),
+        truncation_reasons=tuple(sorted(resolution.truncation_reasons)),
     )
 
 
@@ -407,16 +408,28 @@ def _rank_group(
     *not* part of this key — those still collapse into one verdict, each
     metric just carries its own label into the prompt.
 
-    Ranking is skipped entirely when any repo's candidate discovery came back
-    incomplete (unavailable or truncated): the model would judge a partial set,
-    and its "most likely" would overclaim. An empty result (the ranker declined,
-    raised, or was skipped) leaves the candidates unranked.
+    Ranking is skipped entirely when any repo's candidate discovery or file
+    evidence came back incomplete (unavailable or truncated): the model would
+    judge a partial or partially evidenced set, and its "most likely" would
+    overclaim. An empty result (the ranker declined, raised, or was skipped)
+    leaves the candidates unranked.
     """
-    if any(r.commits_unavailable or r.truncated for r in repos):
+    if any(
+        r.commits_unavailable or r.truncated or r.truncation_reasons
+        for r in repos
+    ):
+        details = ", ".join(
+            f"{r.repo or r.package}: "
+            f"{', '.join(r.truncation_reasons) if r.truncation_reasons else 'unspecified'}"
+            for r in repos
+            if r.commits_unavailable or r.truncated or r.truncation_reasons
+        )
         _log.warning(
-            "blame: %s/%s %s: candidate discovery incomplete — leaving unranked",
+            "blame: %s/%s %s: candidate discovery or file evidence incomplete "
+            "— leaving unranked (%s)",
             verdicts[0].detector, verdicts[0].sample,
             ", ".join(f"{v.metric} ({v.label})" for v in verdicts),
+            details,
         )
         return RankResult()
     if rank_group not in rank_cache:
