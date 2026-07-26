@@ -31,6 +31,7 @@ from k4bench.regression.models import (
     Direction,
     MetricVerdict,
     NightlyReport,
+    ReleasePoint,
     RunGroupReport,
     Severity,
 )
@@ -269,6 +270,36 @@ def to_json(report: NightlyReport) -> dict:
 _VERDICT_FIELDS = frozenset(f.name for f in dataclasses.fields(MetricVerdict))
 
 
+def _history(raw: object) -> tuple[ReleasePoint, ...]:
+    """A verdict's release history, rebuilt from JSON.
+
+    Best-effort by design, and the only field read this way: the history is
+    *context* for a step, never part of the judgement, so a report whose tail
+    cannot be read must still deliver its verdicts. A point that is not an
+    object, or carries a severity this build has never heard of, is dropped —
+    the tail comes back shorter, which the readers already handle (most verdicts
+    have no history at all), rather than taking the report down with it.
+    """
+    if not isinstance(raw, list):
+        return ()
+    points = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        try:
+            points.append(ReleasePoint(
+                run_date=str(item.get("run_date", "")),
+                value=None if item.get("value") is None else float(item["value"]),
+                n_runs=int(item.get("n_runs") or 0),
+                n_judged=int(item.get("n_judged") or 0),
+                severity=Severity(item.get("severity", Severity.UNKNOWN.value)),
+                direction=Direction(item.get("direction", Direction.NONE.value)),
+            ))
+        except (TypeError, ValueError):
+            continue
+    return tuple(points)
+
+
 def from_json(data: dict) -> NightlyReport:
     """Rebuild a :class:`NightlyReport` from :func:`to_json` output (used by
     the dashboard when reading ``_reports/{date}/report.json`` off EOS)."""
@@ -279,6 +310,7 @@ def from_json(data: dict) -> NightlyReport:
                 **{k: val for k, val in v.items() if k in _VERDICT_FIELDS},
                 "severity": Severity(v["severity"]),
                 "direction": Direction(v["direction"]),
+                "history": _history(v.get("history")),
             })
             for v in g.get("verdicts", [])
         ]

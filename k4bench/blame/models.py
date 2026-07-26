@@ -96,6 +96,11 @@ class CandidatePR:
     score: float = 0.0
     description: str = ""
     ranked: bool = False
+    #: What the ranker said argues *against* this candidate. Optional even on a
+    #: ranked one — the model is asked for it but a judgement is not rejected for
+    #: lacking it — so an empty string means "none was given", never "nothing
+    #: argues against this".
+    against: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -111,6 +116,7 @@ class CandidatePR:
             "score": self.score,
             "description": self.description,
             "ranked": self.ranked,
+            "against": self.against,
         }
 
     @classmethod
@@ -149,6 +155,7 @@ class CandidatePR:
             score=score if math.isfinite(score) else 0.0,
             description=description,
             ranked=ranked,
+            against=str(d.get("against") or ""),
         )
 
 
@@ -209,6 +216,59 @@ class RepoBlame:
         )
 
 
+#: The readings :attr:`BlameEntry.assessment` may carry, mirroring
+#: :data:`k4bench.blame.prompt.ASSESSMENT_VALUES`. Duplicated as a frozenset
+#: rather than imported so this module — the schema every consumer parses
+#: through, including the dashboard — stays free of the prompt layer; the parse
+#: below is what keeps an unrecognised word out of the readers.
+ASSESSMENT_VERDICTS = frozenset({
+    "real_change", "likely_noise", "insufficient_evidence",
+})
+
+
+@dataclass(frozen=True)
+class StepAssessment:
+    """What the ranker made of the *movement* itself, before any question of who
+    caused it.
+
+    Kept beside the candidates rather than folded into their scores because it
+    answers a different question and can contradict them: a model can score its
+    best candidate 40 and still judge the whole step to be noise, and those two
+    statements together mean "do not chase this", which neither says alone.
+
+    ``verdict`` is always one of :data:`ASSESSMENT_VERDICTS` — anything else is
+    dropped at the parse, so no consumer has to defend against a word nobody
+    defined. An entry with no assessment at all (an older sidecar, a model that
+    declined) carries ``None``, which is *not assessed* and must never be read as
+    ``real_change``.
+    """
+
+    verdict: str
+    reason: str = ""
+
+    @property
+    def likely_noise(self) -> bool:
+        """The one reading with consequences: the comment bot withholds on it."""
+        return self.verdict == "likely_noise"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"verdict": self.verdict, "reason": self.reason}
+
+    @classmethod
+    def from_dict(cls, data: object) -> StepAssessment | None:
+        """The assessment in *data*, or ``None`` when there is no readable one.
+
+        Tolerant on purpose: this is best-effort context on a best-effort
+        sidecar, and a malformed assessment must cost the assessment, never the
+        entry it rides on."""
+        if not isinstance(data, dict):
+            return None
+        verdict = str(data.get("verdict") or "")
+        if verdict not in ASSESSMENT_VERDICTS:
+            return None
+        return cls(verdict=verdict, reason=str(data.get("reason") or ""))
+
+
 @dataclass(frozen=True)
 class BlameEntry:
     """Blame for one confirmed regression.
@@ -220,6 +280,10 @@ class BlameEntry:
     ``None`` for an open-ended window. ``n_unchanged`` is the count of tracked
     packages that did *not* move — context for sizing the diff, kept as a number
     rather than a list.
+
+    ``assessment`` is the ranker's read of the step (see
+    :class:`StepAssessment`), shared by every entry of one rank group because
+    the ranker judges that group's metrics together.
     """
 
     detector: str
@@ -232,6 +296,7 @@ class BlameEntry:
     onset_release: str
     repos: tuple[RepoBlame, ...] = ()
     n_unchanged: int = 0
+    assessment: StepAssessment | None = None
 
     @property
     def key(self) -> tuple:
@@ -274,6 +339,9 @@ class BlameEntry:
             "onset_release": self.onset_release,
             "repos": [r.to_dict() for r in self.repos],
             "n_unchanged": self.n_unchanged,
+            "assessment": (
+                self.assessment.to_dict() if self.assessment is not None else None
+            ),
         }
 
     @classmethod
@@ -290,6 +358,7 @@ class BlameEntry:
             onset_release=str(d["onset_release"]),
             repos=tuple(RepoBlame.from_dict(r) for r in d.get("repos") or ()),
             n_unchanged=int(d.get("n_unchanged") or 0),
+            assessment=StepAssessment.from_dict(d.get("assessment")),
         )
 
 

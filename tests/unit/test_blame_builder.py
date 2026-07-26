@@ -3,15 +3,19 @@ injected provenance/GitHub access into a :class:`BlameReport`, offline."""
 
 from __future__ import annotations
 
+import dataclasses
+
 from k4bench.blame import builder as builder_mod
 from k4bench.blame.builder import build_blame_report
 from k4bench.blame.github import GitHubClient, RateLimitError, RepoResolution
-from k4bench.blame.models import CandidatePR
-from k4bench.blame.rank import Ranking
+from k4bench.blame.models import CandidatePR, StepAssessment
+from k4bench.blame.rank import Ranking, RankResult
+from k4bench.blame.rank import StepAssessment as RankStepAssessment
 from k4bench.regression.models import (
     Direction,
     MetricVerdict,
     NightlyReport,
+    ReleasePoint,
     RunGroupReport,
     Severity,
 )
@@ -247,18 +251,19 @@ def test_watch_verdict_gets_no_blame():
 # ── Ranking stage ─────────────────────────────────────────────────────────────
 
 class _FakeRanker:
-    """Records the requests it sees and returns a scripted mapping (or raises)."""
+    """Records the requests it sees and returns a scripted result (or raises)."""
 
-    def __init__(self, mapping=None, exc=None):
+    def __init__(self, mapping=None, exc=None, assessment=None):
         self.mapping = mapping or {}
         self.exc = exc
+        self.assessment = assessment
         self.requests = []
 
     def rank(self, request):
         self.requests.append(request)
         if self.exc is not None:
             raise self.exc
-        return self.mapping
+        return RankResult(rankings=self.mapping, assessment=self.assessment)
 
 
 _MOVED = _provenance({
@@ -401,3 +406,168 @@ def test_different_labels_sharing_a_run_group_and_window_still_collapse(monkeypa
     assert len(blame.entries) == 2
     for entry in blame.entries:
         assert next(c for c in entry.candidates if c.number == 10).score == 60.0
+
+
+# ── Evidence handed to the ranker ─────────────────────────────────────────────
+
+def _with_history(verdict: MetricVerdict, points) -> MetricVerdict:
+    return dataclasses.replace(verdict, history=tuple(points))
+
+
+def _release(date, value, severity=Severity.OK, direction=Direction.NONE):
+    return ReleasePoint(run_date=date, value=value, n_runs=1, n_judged=1,
+                        severity=severity, direction=direction)
+
+
+def test_the_ranker_is_shown_the_metrics_measurement_and_history(monkeypatch):
+    _two_candidates(monkeypatch)
+    ranker = _FakeRanker({("key4hep/k4geo", 10): Ranking(60.0, "x")})
+    verdict = _with_history(_verdict(), [
+        _release("2026-07-02", 100.0),
+        _release("2026-07-03", 100.0),
+        _release("2026-07-04", 120.0, Severity.CONFIRMED, Direction.UP),
+    ])
+    build_blame_report(
+        _report([verdict]), packages_for_release=_MOVED,
+        github=GitHubClient(), ranker=ranker,
+    )
+    step = ranker.requests[0].metrics[0]
+    assert (step.value, step.baseline_median, step.z_score) == (120.0, 100.0, 6.0)
+    assert step.history is not None
+    assert [p.release for p in step.history.points] == [
+        "2026-07-02", "2026-07-03", "2026-07-04",
+    ]
+
+
+def test_each_history_boundary_is_annotated_with_what_moved_in_the_stack(monkeypatch):
+    # The calibration that lets a model say "this series moves this much on its
+    # own": between 07-02 and 07-03 nothing in the stack changed at all.
+    _two_candidates(monkeypatch)
+    provenance = _provenance({
+        (_PLAT, "2026-07-02"): {"k4geo": _pkgs("a" * 40)},
+        (_PLAT, "2026-07-03"): {"k4geo": _pkgs("a" * 40)},
+        (_PLAT, "2026-07-04"): {"k4geo": _pkgs("c" * 40)},
+    })
+    ranker = _FakeRanker({("key4hep/k4geo", 10): Ranking(60.0, "x")})
+    verdict = _with_history(_verdict(), [
+        _release("2026-07-02", 100.0),
+        _release("2026-07-03", 100.0),
+        _release("2026-07-04", 120.0, Severity.CONFIRMED, Direction.UP),
+    ])
+    build_blame_report(
+        _report([verdict]), packages_for_release=provenance,
+        github=GitHubClient(), ranker=ranker,
+    )
+    points = ranker.requests[0].metrics[0].history.points
+    # The oldest point has no predecessor in the tail, so its boundary is unread
+    # rather than quiet — "nobody looked" and "nothing changed" stay apart.
+    assert points[0].packages_changed is None
+    assert points[1].packages_changed == 0
+    assert points[2].packages_changed == 1
+
+
+def test_a_boundary_with_no_provenance_stays_unread(monkeypatch):
+    _two_candidates(monkeypatch)
+    ranker = _FakeRanker({("key4hep/k4geo", 10): Ranking(60.0, "x")})
+    verdict = _with_history(_verdict(), [
+        _release("2026-05-01", 100.0),   # no provenance recorded this far back
+        _release("2026-07-03", 100.0),
+        _release("2026-07-04", 120.0, Severity.CONFIRMED, Direction.UP),
+    ])
+    build_blame_report(
+        _report([verdict]), packages_for_release=_MOVED,
+        github=GitHubClient(), ranker=ranker,
+    )
+    points = ranker.requests[0].metrics[0].history.points
+    assert points[1].packages_changed is None
+
+
+def test_provenance_is_asked_once_per_release_however_many_metrics_ask(monkeypatch):
+    # A twelve-release tail per metric per detector would otherwise re-glob the
+    # run cache — or refetch over the network — for releases already answered.
+    _two_candidates(monkeypatch)
+    asked = []
+
+    def counting(platform, release):
+        asked.append((platform, release))
+        return _MOVED(platform, release)
+
+    tail = [
+        _release("2026-07-02", 100.0),
+        _release("2026-07-03", 100.0),
+        _release("2026-07-04", 120.0, Severity.CONFIRMED, Direction.UP),
+    ]
+    report = _report([
+        _with_history(_verdict(metric="wall_time_s"), tail),
+        _with_history(_verdict(metric="peak_rss_mb"), tail),
+    ])
+    build_blame_report(
+        report, packages_for_release=counting, github=GitHubClient(),
+        ranker=_FakeRanker({("key4hep/k4geo", 10): Ranking(60.0, "x")}),
+    )
+    assert len(asked) == len(set(asked))
+
+
+def test_the_ranker_is_shown_the_configurations_that_stayed_flat(monkeypatch):
+    # The cross-configuration evidence the first pass previously had none of.
+    _two_candidates(monkeypatch)
+    ranker = _FakeRanker({("key4hep/k4geo", 10): Ranking(60.0, "x")})
+    flat = MetricVerdict(**{
+        **_verdict(detector="IDEA_o1_v03", sample="single_e").__dict__,
+        "severity": Severity.OK, "direction": Direction.NONE,
+        "onset_run_id": None, "onset_run_date": None,
+        "last_accepted_run_id": None, "last_accepted_run_date": None,
+    })
+    report = _report_groups(
+        ("ALLEGRO_o1_v03", "single_e", [_verdict()]),
+        ("IDEA_o1_v03", "single_e", [flat]),
+    )
+    for group in report.groups:
+        group.reliable = True
+    build_blame_report(
+        report, packages_for_release=_MOVED, github=GitHubClient(), ranker=ranker,
+    )
+    assert [o.detector for o in ranker.requests[0].outcomes] == ["IDEA_o1_v03"]
+
+
+# ── The step assessment on the entry ──────────────────────────────────────────
+
+def test_the_rankers_read_of_the_step_is_stored_on_every_entry(monkeypatch):
+    _two_candidates(monkeypatch)
+    ranker = _FakeRanker(
+        {("key4hep/k4geo", 10): Ranking(60.0, "x")},
+        assessment=RankStepAssessment("likely_noise", "the series wobbles"),
+    )
+    report = _report([_verdict(metric="wall_time_s"), _verdict(metric="peak_rss_mb")])
+    blame = build_blame_report(
+        report, packages_for_release=_MOVED, github=GitHubClient(), ranker=ranker,
+    )
+    assert len(blame.entries) == 2
+    for entry in blame.entries:
+        assert entry.assessment == StepAssessment("likely_noise", "the series wobbles")
+        assert entry.assessment.likely_noise is True
+
+
+def test_no_assessment_leaves_the_entry_unassessed(monkeypatch):
+    # Never "real_change": an absent judgement is not a positive one, and the
+    # comment gate reads this field.
+    _two_candidates(monkeypatch)
+    ranker = _FakeRanker({("key4hep/k4geo", 10): Ranking(60.0, "x")})
+    blame = build_blame_report(
+        _report([_verdict()]), packages_for_release=_MOVED,
+        github=GitHubClient(), ranker=ranker,
+    )
+    assert blame.entries[0].assessment is None
+
+
+def test_counter_evidence_reaches_the_sidecar(monkeypatch):
+    _two_candidates(monkeypatch)
+    ranker = _FakeRanker({
+        ("key4hep/k4geo", 10): Ranking(60.0, "touches HCAL", "without_HCAL moved too"),
+    })
+    blame = build_blame_report(
+        _report([_verdict()]), packages_for_release=_MOVED,
+        github=GitHubClient(), ranker=ranker,
+    )
+    scored = next(c for c in blame.entries[0].candidates if c.number == 10)
+    assert scored.against == "without_HCAL moved too"

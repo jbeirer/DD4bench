@@ -347,7 +347,7 @@ def test_blame_report_with_ranker_over_local_tree(tmp_path, monkeypatch):
     from k4bench.blame.builder import build_blame_report
     from k4bench.blame.github import GitHubClient, RepoResolution
     from k4bench.blame.models import CandidatePR
-    from k4bench.blame.rank import Ranking
+    from k4bench.blame.rank import Ranking, RankResult, StepAssessment
     from k4bench.regression.render import from_json as report_from_json
 
     # Provenance from the local tree, via the real CLI helper (no network).
@@ -373,7 +373,10 @@ def test_blame_report_with_ranker_over_local_tree(tmp_path, monkeypatch):
                 for c in request.candidates
             }
             scored[("key4hep/ghost", 999)] = Ranking(100.0, "invented")  # must vanish
-            return scored
+            return RankResult(
+                rankings=scored,
+                assessment=StepAssessment("real_change", "the level held"),
+            )
 
     report = report_from_json(json.loads((out_dir / "report.json").read_text()))
     blame = build_blame_report(
@@ -388,6 +391,9 @@ def test_blame_report_with_ranker_over_local_tree(tmp_path, monkeypatch):
     assert cand["number"] == 1234
     assert cand["score"] == 88.0
     assert cand["description"] == "raises the tracker step count"
+    # The ranker's read of the movement rides on the entry, shared by every
+    # metric of the rank group, and survives the round trip to disk.
+    assert entry["assessment"] == {"verdict": "real_change", "reason": "the level held"}
     assert "patch" not in cand  # the transient diff is never persisted
     all_numbers = {
         c["number"] for e in data["entries"] for r in e["repos"] for c in r["candidates"]

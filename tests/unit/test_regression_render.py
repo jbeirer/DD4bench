@@ -188,6 +188,9 @@ _WINDOW_FIELDS = {
 #: The repeat marker added with release-grouped verdicts (the night a change
 #: was first confirmed for its release, letting reruns render as reconfirmed).
 _REPEAT_FIELDS = {"first_confirmed_run_id"}
+#: The release-level history tail carried on confirmed verdicts, so a reader can
+#: weigh a step against the series it stepped out of.
+_HISTORY_FIELDS = {"history"}
 #: The verdict schema a reader deployed before these features knew about. The
 #: compatibility contract is that the new fields are *purely additive* to this
 #: set — anything else (a renamed or dropped field) breaks an old reader in a
@@ -209,7 +212,9 @@ def test_new_report_is_additive_over_the_pre_window_schema():
     data = to_json(_full_report())
     for g in data["groups"]:
         for v in g["verdicts"]:
-            assert v.keys() == _PRE_WINDOW_FIELDS | _WINDOW_FIELDS | _REPEAT_FIELDS
+            assert v.keys() == (
+                _PRE_WINDOW_FIELDS | _WINDOW_FIELDS | _REPEAT_FIELDS | _HISTORY_FIELDS
+            )
             old_view = {k: val for k, val in v.items() if k in _PRE_WINDOW_FIELDS}
             MetricVerdict(**{
                 **old_view,

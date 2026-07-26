@@ -14,6 +14,14 @@ configured by ``K4BENCH_LLM_*`` env and off by default — its *output* is store
 never the mechanism. With no model configured, candidates are still collected,
 just left unscored.
 
+A diff alone cannot answer a causal question, so both stages are also given the
+evidence that is not a diff (:mod:`k4bench.blame.evidence`): the metric's own
+recent releases — how much it moves when the software is held identical, whether
+a new level held, which machine produced it — and the configurations that
+measured the same window without moving. That is what lets either stage answer
+"nothing here caused this", which is a conclusion a list of candidates and one
+percentage cannot express.
+
 That ranking is per benchmark configuration, which is what the dashboard and the
 sidecar want. The pull-request comments ask a second, transposed question — *which
 of this window's regressions did this one pull request cause?* — over every
@@ -30,6 +38,7 @@ report and its email. Different failure domain ⇒ different file.
 - :mod:`k4bench.blame.models`    — the serialized shapes.
 - :mod:`k4bench.blame.github`    — the one network-touching module.
 - :mod:`k4bench.blame.builder`   — assemble a :class:`~k4bench.blame.models.BlameReport`.
+- :mod:`k4bench.blame.evidence`  — the evidence that is not a diff.
 - :mod:`k4bench.blame.llm`       — the shared model transport.
 - :mod:`k4bench.blame.prompt`    — the vocabulary both prompts are written in.
 - :mod:`k4bench.blame.rank`      — score candidates for one configuration.

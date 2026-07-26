@@ -19,6 +19,8 @@ import pytest
 import requests
 
 from k4bench.blame import attribute as attr_mod
+from k4bench.blame import attribute as attribute_mod
+from k4bench.blame.evidence import HistoryPoint, MetricHistory
 from k4bench.blame.attribute import (
     AttributionRequest,
     CompetingPR,
@@ -106,6 +108,7 @@ def _fact(row_id="r1", detector="ALLEGRO_o1_v03", metric="wall_time_s",
         scope_score=kw.pop("scope_score", 91.0),
         scope_reason=kw.pop("scope_reason", "raises the step count"),
         scope_state=kw.pop("scope_state", "ranked"),
+        history=kw.pop("history", None),
     )
 
 
@@ -527,3 +530,100 @@ def test_the_summary_model_overrides_the_ranker_model_for_this_pass(monkeypatch)
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
+
+
+# ── The metric's own history ──────────────────────────────────────────────────
+#
+# The cross-configuration evidence answers "which rows did this pull request
+# cause". The history answers a question it cannot: whether the rows are a
+# change at all. Without it a review can only redistribute blame, never decline
+# to assign it.
+
+def _history(points=None, **kw) -> MetricHistory:
+    points = points or (
+        HistoryPoint("2026-06-20", 0.348, 1, 1, "OK", "NONE", (), 2),
+        HistoryPoint("2026-06-27", 0.349, 1, 1, "OK", "NONE", (), 0),
+        HistoryPoint("2026-07-04", 0.412, 1, 1, "CONFIRMED", "UP", (), 3),
+    )
+    return MetricHistory(
+        points=tuple(points),
+        baseline_median=kw.get("median", 0.348), baseline_mad=kw.get("mad", 0.002),
+        base_release="2026-06-27", onset_release="2026-07-04",
+    )
+
+
+def test_every_row_carries_its_history_in_one_clause():
+    prompt = build_user_prompt(_request(regressions=(
+        _fact("r1", history=_history()),
+    )))
+    assert "history: series ±0.6%" in prompt
+
+
+def test_the_largest_movements_get_the_full_table():
+    prompt = build_user_prompt(_request(regressions=(
+        _fact("r1", history=_history()),
+    )))
+    assert "Recent history of the metrics that moved most" in prompt
+    assert "stack unchanged" in prompt
+
+
+def test_history_tables_are_capped_and_the_remainder_is_counted():
+    rows = tuple(
+        _fact(f"r{i}", metric=f"metric_{i}", pct_change=0.2 - i / 1000,
+              history=_history())
+        for i in range(attribute_mod._MAX_HISTORY_BLOCKS + 2)
+    )
+    prompt = build_user_prompt(_request(regressions=rows))
+    assert prompt.count("[r0] ALLEGRO_o1_v03 · metric_0") == 1
+    assert "2 further scored row(s)" in prompt
+
+
+def test_a_row_without_history_simply_has_none():
+    prompt = build_user_prompt(_request(regressions=(_fact("r1"),)))
+    assert "history:" not in prompt
+    assert "Recent history of the metrics" not in prompt
+
+
+# ── The step assessment ───────────────────────────────────────────────────────
+
+def _assessed_reply(verdict, *, reason="the series does this on its own", **likelihoods):
+    return json.dumps({
+        "step_assessment": {"verdict": verdict, "reason": reason},
+        "summary": "ALLEGRO moved and IDEA did not.",
+        "attributions": [
+            {"id": row_id, "likelihood": value}
+            for row_id, value in likelihoods.items()
+        ],
+    })
+
+
+def test_a_noise_verdict_is_carried_back_with_the_scores():
+    result = _attributor([
+        _completion(_assessed_reply("likely_noise", r1=80)),
+    ]).attribute(_request())
+    assert result.assessment.verdict == "likely_noise"
+    assert result.assessment.likely_noise is True
+    assert result.likelihoods == {"r1": 80.0}
+
+
+def test_a_reply_with_no_assessment_is_unassessed_never_a_real_change():
+    result = _attributor([_completion(_reply(r1=80))]).attribute(_request())
+    assert result.assessment is None
+
+
+def test_an_undefined_verdict_is_dropped_and_the_review_still_stands():
+    result = _attributor([
+        _completion(_assessed_reply("probably_fine", r1=80)),
+    ]).attribute(_request())
+    assert result.assessment is None
+    assert result.likelihoods == {"r1": 80.0}
+
+
+def test_the_first_rounds_reading_survives_the_completion_rounds():
+    first = _assessed_reply("likely_noise", r1=80)
+    second = _assessed_reply("real_change", r2=40)
+    result = _attributor([
+        _completion(first), _completion(second),
+    ]).attribute(_request(regressions=(_fact("r1"), _fact("r2"))))
+    assert result.assessment.verdict == "likely_noise"
+    assert result.likelihoods == {"r1": 80.0, "r2": 40.0}

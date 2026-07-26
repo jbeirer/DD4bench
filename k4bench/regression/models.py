@@ -70,6 +70,63 @@ class SeriesId:
 
 
 @dataclass(frozen=True)
+class HostFact:
+    """The machine a release's nights were benchmarked on.
+
+    Recorded alongside the measurement because a benchmark host is part of what
+    produced the number: a step that lands exactly where the runs moved to a
+    different machine — or to the same machine with a different core count — has
+    an explanation that no code change competes with. The nightly reliability
+    check already rejects a *contended* host, but a perfectly healthy host that
+    is simply a different one is invisible to it, and that is the case this
+    carries.
+
+    ``cpu_cores`` is the logical core count, ``None`` when the run recorded no
+    machine info.
+    """
+
+    name: str
+    cpu_cores: int | None = None
+
+
+@dataclass(frozen=True)
+class ReleasePoint:
+    """One Key4hep release in a metric's recent history.
+
+    The unit is the **release**, not the night, because that is the unit the
+    engine judges on: nights sharing a ``run_date`` are repeat measurements of
+    one software state, and rendering them as separate data points would show a
+    stable metric wobbling under a stack that never changed.
+
+    ``value`` is the median of the release's *judged* nights — the same values
+    the engine's own release-median rule reads — falling back to whatever the
+    release recorded when none of its nights could be judged. ``n_runs`` and
+    ``n_judged`` are what makes that fallback readable rather than misleading:
+    ``n_judged=0`` says the level shown was never assessed (an unreliable host,
+    or a series still warming up), which is a different fact from a release that
+    was measured and found flat. A release that recorded nothing at all is not a
+    point here — a gap in the tail is a gap, never a zero.
+
+    ``severity``/``direction`` are the engine's own read of the release (its
+    worst night, and which way that night moved), so a history tail carries not
+    just the levels but which of them were flagged at the time — the difference
+    between a series that has stepped once and one that trips every other week.
+
+    ``hosts`` names the machines that produced the release's nights (see
+    :class:`HostFact`) — normally one, and more only when a release was measured
+    on several.
+    """
+
+    run_date: str
+    value: float | None
+    n_runs: int = 0
+    n_judged: int = 0
+    severity: Severity = Severity.UNKNOWN
+    direction: Direction = Direction.NONE
+    hosts: tuple[HostFact, ...] = ()
+
+
+@dataclass(frozen=True)
 class MetricVerdict:
     """The engine's judgement of one metric on one night.
 
@@ -119,6 +176,14 @@ class MetricVerdict:
     last_accepted_run_id: str | None = None
     last_accepted_run_date: str | None = None
     first_confirmed_run_id: str | None = None
+    #: A bounded, release-level tail of this metric's own history, oldest first
+    #: and ending at this verdict's release (see
+    #: :mod:`k4bench.regression.history`). Carried on ``CONFIRMED`` verdicts
+    #: only: it exists so a reader — the blame ranker above all — can weigh a
+    #: step against the series it stepped out of, and every other severity is
+    #: either not attributed or not a step. Empty everywhere else, and empty on
+    #: reports written before the field existed.
+    history: tuple[ReleasePoint, ...] = ()
 
     @property
     def flagged(self) -> bool:

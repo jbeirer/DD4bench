@@ -246,6 +246,22 @@ def has_ranking(candidates: list[CandidatePR]) -> bool:
     return any(c.ranked for c in candidates)
 
 
+def _why(candidate: CandidatePR) -> str:
+    """A candidate's reasoning cell: why the ranker scored it there, and — when
+    it gave one — what it said argues against it.
+
+    Both in one cell rather than a second column: the counter-evidence is what
+    lets a reader dismiss a wrong lead in a glance, and it is exactly the kind of
+    text that turns a scannable ledger into a wall when it gets a column of its
+    own. Streamlit truncates the cell and shows the rest on hover, so the ledger
+    keeps its shape at any length."""
+    if not candidate.ranked:
+        return "Not scored by the ranker"
+    if not candidate.against:
+        return candidate.description
+    return f"{candidate.description} · Against: {candidate.against}"
+
+
 def _render_candidate_rows(candidates: list[CandidatePR]) -> None:
     """Render the complete candidate ledger using Streamlit's native sizing.
 
@@ -261,7 +277,7 @@ def _render_candidate_rows(candidates: list[CandidatePR]) -> None:
             "Title": c.title,
             "Author": c.author or "—",
             "Merged": (c.merged_at or "")[:10] or "—",
-            "Why": c.description if c.ranked else "Not scored by the ranker",
+            "Why": _why(c),
         }
         for c in candidates
     ]
@@ -298,10 +314,46 @@ def _render_candidate_rows(candidates: list[CandidatePR]) -> None:
             ),
             "Why": st.column_config.TextColumn(
                 "Why",
-                help="The ranking stage's one-line reasoning for this candidate.",
+                help="The ranking stage's one-line reasoning for this "
+                     "candidate, and what it said argues against it.",
             ),
         },
     )
+
+
+#: How the ranker's read of the *movement* is shown, when it is worth showing.
+#: ``real_change`` is absent on purpose: it is the ordinary case, and a caption
+#: on every ranking would be one more line to skip past on the way to the
+#: ledger. Only a reading that should change how the table is read earns a line.
+_ASSESSMENT_CAPTION = {
+    "likely_noise": (
+        "⚖️ The ranker reads this step as **likely measurement noise** — the "
+        "candidates below are shown for completeness, not as suspects"
+    ),
+    "insufficient_evidence": (
+        "⚖️ The ranker found **too little history** to judge whether this step "
+        "is real"
+    ),
+}
+
+
+def render_step_assessment(entry) -> None:
+    """One caption for the ranker's read of the movement, when it is not the
+    ordinary one.
+
+    The counterweight to a ledger of confident-looking percentages: a reader who
+    sees "91%" against a step the same model called noise should see both at
+    once, and the two disagreeing is itself the useful signal. Nothing renders
+    for an unassessed entry — an older sidecar, or a model that declined — since
+    silence there means *not assessed*, never *fine*."""
+    assessment = getattr(entry, "assessment", None)
+    if assessment is None:
+        return
+    caption = _ASSESSMENT_CAPTION.get(assessment.verdict)
+    if caption is None:
+        return
+    reason = f" — {assessment.reason}" if assessment.reason else ""
+    st.caption(f"{caption}{reason}.")
 
 
 def candidate_table(candidates: list[CandidatePR]) -> None:
@@ -337,5 +389,6 @@ def render_candidate_ranking(
             st.caption("🤖 No AI PR ranking is stored for this regression.")
         return False
     st.caption(f"🤖 {RANKING_DISCLOSURE}")
+    render_step_assessment(entry)
     candidate_table(entry.candidates)
     return True

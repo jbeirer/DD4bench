@@ -75,8 +75,13 @@ from k4bench.blame.attribute import (
     PackageChangeFact,
     RegressionFact,
     ScopeCandidateState,
-    ScopeOutcome,
     competitor_order,
+)
+from k4bench.blame.evidence import (
+    ScopeOutcome,
+    history_from_verdict,
+    outcomes_for_window,
+    steps_in_window,
 )
 from k4bench.blame.models import (
     RANKING_DISCLOSURE,
@@ -85,7 +90,7 @@ from k4bench.blame.models import (
     CandidatePR,
 )
 from k4bench.labels import pretty_platform, pretty_sample
-from k4bench.regression.models import MetricVerdict, NightlyReport, Severity
+from k4bench.regression.models import MetricVerdict, NightlyReport
 from k4bench.regression.render import (
     regression_href,
     stack_changes_href,
@@ -132,11 +137,6 @@ _MAX_SUMMARY_CHARS = 700
 #: constant rather than a count of the platforms actually present, so the table's
 #: shape is a decision someone made, not an accident of one night's data.
 _SHOW_PLATFORM_COLUMN = False
-
-#: Metric names named in a "moved but did not confirm" outcome line. Enough to
-#: show *what* is drifting there, not so many that the negative evidence turns
-#: into a second report.
-_MAX_WATCHED_METRICS = 6
 
 #: Where the comment's own footer points: the page describing how a regression
 #: is attributed to a pull request, on the published docs site (``site_url`` in
@@ -594,11 +594,28 @@ def _targets(
 
     A target needs one *complete* first-pass judgement clearing every gate —
     allowlisted repo, merged, ranked, at or above ``min_score``, from an entry
-    whose candidate discovery was complete. Evidence is gathered afterwards
-    (:func:`_collect_window`), so no row can widen or narrow the field here."""
+    whose candidate discovery was complete, and whose step the ranker did not
+    read as noise. Evidence is gathered afterwards (:func:`_collect_window`), so
+    no row can widen or narrow the field here."""
     plans: dict[tuple[str, int, str | None, str], CommentPlan] = {}
     for _verdict, _stack, entry in confirmed:
         if entry is None or entry.discovery_incomplete:
+            continue
+        if entry.assessment is not None and entry.assessment.likely_noise:
+            # The ranker scored these candidates *and* concluded the movement
+            # itself is most likely this series' own noise. Those two statements
+            # together say "there is probably nothing here", and a comment in
+            # someone else's repository is exactly the wrong thing to do with
+            # them — a high score under a noise verdict is the overconfident
+            # attribution this assessment exists to catch. The entry is still
+            # written, ranked and rendered on the dashboard and in the email,
+            # where a human reads it with the verdict beside it; only the
+            # outward-facing accusation is withheld.
+            _log.info(
+                "select: %s/%s %s — ranker reads the step as likely noise; "
+                "no pull-request comment for this window",
+                entry.detector, entry.sample, entry.metric,
+            )
             continue
         for candidate in entry.candidates:
             if not policy.allows(candidate):
@@ -631,14 +648,14 @@ def _collect_window(confirmed: list[_Confirmed], plan: CommentPlan) -> None:
     Every confirmed regression whose onset falls inside the window is a row,
     whatever the subject's standing in it — that is what makes this a review of
     the window rather than of the accusation. The same predicate
-    (:func:`_steps_in_window`) decides here and in :func:`_outcomes_for`, so the
-    two partition the night exactly: a configuration that stepped in this window
+    (:func:`~k4bench.blame.evidence.steps_in_window`) decides here and in the
+    control set, so the two partition the night exactly: a configuration that stepped in this window
     is a row, and one that did not is a candidate control. Nothing falls between
     them."""
     window = (plan.base_release, plan.onset_release)
     ident = (plan.repo.lower(), plan.number)
     for verdict, stack, entry in confirmed:
-        if not _steps_in_window(verdict, window):
+        if not steps_in_window(verdict, window):
             continue
         state, candidate = _scope_state(entry, ident)
         # Recorded whether or not the sidecar has an entry: a platform whose
@@ -759,103 +776,26 @@ def _record_packages(plan: CommentPlan, entry: BlameEntry, platform: str) -> Non
 def _outcomes_for(
     report: NightlyReport, plan: CommentPlan
 ) -> tuple[ScopeOutcome, ...]:
-    """The benchmark configurations that measured this window and did **not**
-    confirm.
+    """The configurations that measured this plan's window and did not confirm.
 
-    The negative evidence the cross-configuration review turns on: "ALLEGRO
-    moved and IDEA did not" is only readable if the *did not* is stated, and so
-    is the sharper within-detector version — "baseline moved and without_HCAL
-    did not" — which is why a configuration, not a run group, is the unit here.
-    Excluding a whole group because one of its configurations regressed would
-    delete exactly the control the prompt asks the model to reason from: the
-    baseline that stepped and the detector-removal run that did not live in the
-    *same* group.
+    A thin adapter over :func:`k4bench.blame.evidence.outcomes_for_window`,
+    which both passes share: the controls are the same evidence whether the
+    question is "which pull request caused this configuration's regressions" or
+    "which regressions did this pull request cause", and two implementations of
+    "did this configuration stay flat" would be two answers.
 
-    A configuration counts only when it genuinely produced a clean measurement
-    to compare against — it ran the same release the regressed rows were
-    measured on, its host was judged reliable, its group had no job failure, it
-    recorded no metric failure of its own, it confirmed no step inside this
-    window, and at least one of its metrics could actually be judged. Everything
-    else is silence from a run that did not happen or cannot be read, and silence
-    must never be rendered as evidence of absence: ``reliable is None`` means *no
-    evidence either way*, so it is treated like an unreliable run rather than
-    like a clean one, and a metric with too little history to judge
-    (``UNKNOWN``) is unread rather than flat — it never contributes to the clean
-    verdict, and the ones that remain are counted onto the outcome so the prompt
-    can state the gap."""
-    window = (plan.base_release, plan.onset_release)
-    regressed = plan.scopes
-    stacks = {row.stack for row in plan.rows}
-    outcomes = []
-    for group in report.groups:
-        if group.reliable is not True or group.job_failures:
-            continue  # a run that cannot be trusted is not a clean result
-        # The comparison that matters is against the *same measurement* the
-        # regressed rows came from — the release this night ran, which is
-        # generally long past the window's onset (a step that entered on
-        # 2026-06-25 is still being re-measured on 2026-06-27). Comparing
-        # against the onset release instead would find nothing, since no group
-        # in tonight's report measured it. A group that ran a different release
-        # than the regressed rows is not a like-for-like control.
-        if group.k4h_release not in stacks:
-            continue
-        by_label: dict[str, list[MetricVerdict]] = {}
-        for verdict in group.verdicts:
-            by_label.setdefault(verdict.label, []).append(verdict)
-        for label, verdicts in by_label.items():
-            if any(_steps_in_window(v, window) for v in verdicts):
-                continue  # stepped in this very window — it is not a control
-            if any(v.severity is Severity.FAILURE for v in verdicts):
-                continue  # a configuration that partly failed did not run clean
-            unjudged = sum(1 for v in verdicts if v.severity is Severity.UNKNOWN)
-            if unjudged == len(verdicts):
-                # Nothing here was judged at all — the configuration ran, but
-                # every metric is still warming up. "No evidence" rendered as
-                # "did not move" is the false control this whole function is
-                # written to avoid.
-                continue
-            watched = tuple(sorted(
-                {v.metric for v in verdicts if v.severity is Severity.WATCH}
-            ))[:_MAX_WATCHED_METRICS]
-            outcomes.append(ScopeOutcome(
-                detector=group.detector, platform=group.platform,
-                sample=group.sample, label=label,
-                status="watch" if watched else "clean", watched=watched,
-                unjudged=unjudged,
-            ))
-    # Controls from a run group that *did* regress first: those are the
-    # like-for-like comparisons — same detector, same sample, same platform,
-    # same night — and the prompt lists only the first
-    # :data:`~k4bench.blame.attribute._MAX_OUTCOMES_LISTED` of these.
-    return tuple(sorted(
-        outcomes,
-        key=lambda o: (
-            (o.detector, o.platform, o.sample) not in regressed,
-            o.detector, o.sample, o.platform, o.label,
-        ),
-    ))
-
-
-def _steps_in_window(
-    verdict: MetricVerdict, window: tuple[str | None, str]
-) -> bool:
-    """Does *verdict* place a confirmed step inside this comment's window?
-
-    Onset, not the whole ``(base, onset)`` pair: the base is *inferred* per
-    metric series — the last release that metric was settled on — so the same
-    step can be reported against different bases by different metrics, and
-    requiring both to match would read a configuration that stepped on exactly
-    this release as one that never moved. Anything that stepped strictly inside
-    the window is ours too; a step onsetting after it left this window flat and
-    is still a control for it. An unplaceable onset counts as inside, because a
-    step nobody can date is not evidence of flatness."""
-    if verdict.severity is not Severity.CONFIRMED:
-        return False
-    base, onset = window
-    at = verdict.onset_run_date
-    if at is None:
-        return True
-    return at <= onset and (base is None or at > base)
+    The stacks come from the rows themselves — the releases the regressed rows
+    were actually measured on, which is generally well past the window's onset —
+    and the regressed scopes only order the result, keeping the like-for-like
+    controls at the front of whatever the prompt's cap keeps.
+    """
+    return outcomes_for_window(
+        report,
+        base_release=plan.base_release,
+        onset_release=plan.onset_release,
+        stacks={row.stack for row in plan.rows},
+        regressed_scopes=plan.scopes,
+    )
 
 
 # ── Building ──────────────────────────────────────────────────────────────────
@@ -951,6 +891,22 @@ def build_comments(
                 "build_comments: %s withdrawn — the cross-configuration review "
                 "left every regression under %g%% (highest %.0f%%)",
                 plan.target, min_score, effective_top,
+            )
+            continue
+        if attribution is not None and attribution.assessment is not None \
+                and attribution.assessment.likely_noise:
+            # The review saw every configuration's history — strictly more than
+            # the first pass, which reads one configuration at a time — and
+            # concluded the movements are most likely the series' own noise. It
+            # may still have scored a row highly; those two readings together are
+            # exactly the case where an accusation should not be posted, and the
+            # review is the better-informed of the two. Withdrawal only ever
+            # narrows the bot, which is the property this pass is allowed to
+            # affect.
+            _log.info(
+                "build_comments: %s withdrawn — the cross-configuration review "
+                "reads these movements as likely measurement noise: %s",
+                plan.target, attribution.assessment.reason or "no reason given",
             )
             continue
         comments.append(
@@ -1055,6 +1011,12 @@ def _fact(row: RegressionRow) -> RegressionFact:
         baseline_median=v.baseline_median, z_score=v.z_score,
         scope_score=row.scope_score, scope_reason=row.scope_reason,
         scope_state=row.scope_state,
+        # The release-boundary package counts the ranker annotates a history
+        # with are not available here — this pass runs from the sidecar and the
+        # report, with no provenance lookup of its own — so the tail arrives
+        # without them and the prompt renders those boundaries as unread. That
+        # is the honest rendering: "nobody looked" is what happened.
+        history=history_from_verdict(v),
     )
 
 

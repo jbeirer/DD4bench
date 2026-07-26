@@ -13,6 +13,8 @@ underneath it belongs to :mod:`k4bench.blame.llm` and is tested in
 
 from __future__ import annotations
 
+import dataclasses
+
 from types import SimpleNamespace
 
 import pytest
@@ -22,12 +24,20 @@ from k4bench.blame import prompt as prompt_mod
 from k4bench.blame import rank as rank_mod
 from k4bench.blame.llm import ChatClient
 from k4bench.labels import pretty_sample
+from k4bench.blame.evidence import HistoryPoint, MetricHistory, ScopeOutcome
+from k4bench.blame.prompt import (
+    ASSESSMENT_RULE,
+    NOISE_RULE,
+    SCORE_BAND_RULE,
+    UNTRUSTED_EVIDENCE_RULE,
+)
 from k4bench.blame.rank import (
     MetricStep,
     OpenAICompatRanker,
     RankCandidate,
     RankRequest,
     Ranking,
+    StepAssessment,
     _build_user_prompt,
     ranker_from_env,
 )
@@ -307,7 +317,7 @@ def test_parses_a_good_response_scoring_each_pr_independently():
         {"repo": "key4hep/k4geo", "pr": 10, "likelihood": 80, "reason": "raises step count"},
         {"repo": "AIDASoft/DD4hep", "pr": 20, "likelihood": 15, "reason": "unrelated cleanup"},
     )
-    result = _ranker([_completion(body)]).rank(_request())
+    result = _ranker([_completion(body)]).rank(_request()).rankings
     assert result[("key4hep/k4geo", 10)] == Ranking(80.0, "raises step count")
     assert result[("AIDASoft/DD4hep", 20)] == Ranking(15.0, "unrelated cleanup")
 
@@ -330,7 +340,7 @@ def test_parses_json_wrapped_in_code_fences():
         {"repo": "key4hep/k4geo", "pr": 10, "likelihood": 50, "reason": "maybe"},
         {"repo": "AIDASoft/DD4hep", "pr": 20, "likelihood": 5, "reason": "low"},
     ) + "\n```"
-    result = _ranker([_completion(body)]).rank(_request())
+    result = _ranker([_completion(body)]).rank(_request()).rankings
     assert result[("key4hep/k4geo", 10)].score == 50.0
 
 
@@ -339,7 +349,7 @@ def test_parses_json_embedded_in_prose():
         {"repo": "key4hep/k4geo", "pr": 10, "likelihood": 42, "reason": "plausible"},
         {"repo": "AIDASoft/DD4hep", "pr": 20, "likelihood": 5, "reason": "low"},
     ) + " Hope this helps."
-    result = _ranker([_completion(body)]).rank(_request())
+    result = _ranker([_completion(body)]).rank(_request()).rankings
     assert result[("key4hep/k4geo", 10)].score == 42.0
 
 
@@ -352,7 +362,7 @@ def test_invented_pr_is_dropped():
         {"repo": "AIDASoft/DD4hep", "pr": 20, "likelihood": 5, "reason": "low"},
         {"repo": "key4hep/ghost", "pr": 999, "likelihood": 99, "reason": "hallucinated"},
     )
-    result = _ranker([_completion(body)]).rank(_request())
+    result = _ranker([_completion(body)]).rank(_request()).rankings
     assert set(result) == {("key4hep/k4geo", 10), ("AIDASoft/DD4hep", 20)}
     assert ("key4hep/ghost", 999) not in result
 
@@ -362,7 +372,7 @@ def test_scores_are_clamped_to_0_100():
         {"repo": "key4hep/k4geo", "pr": 10, "likelihood": 150, "reason": "over"},
         {"repo": "AIDASoft/DD4hep", "pr": 20, "likelihood": -5, "reason": "under"},
     )
-    result = _ranker([_completion(body)]).rank(_request())
+    result = _ranker([_completion(body)]).rank(_request()).rankings
     assert result[("key4hep/k4geo", 10)].score == 100.0
     assert result[("AIDASoft/DD4hep", 20)].score == 0.0
 
@@ -373,7 +383,7 @@ def test_description_is_collapsed_to_one_line():
          "reason": "line one\nline two\t  with   spaces"},
         {"repo": "AIDASoft/DD4hep", "pr": 20, "likelihood": 5, "reason": "low"},
     )
-    result = _ranker([_completion(body)]).rank(_request())
+    result = _ranker([_completion(body)]).rank(_request()).rankings
     assert result[("key4hep/k4geo", 10)].description == "line one line two with spaces"
 
 
@@ -385,7 +395,7 @@ def test_non_numeric_likelihood_rejects_the_row():
         {"repo": "key4hep/k4geo", "pr": 10, "likelihood": "very high", "reason": "x"},
         {"repo": "AIDASoft/DD4hep", "pr": 20, "likelihood": 5, "reason": "low"},
     )
-    result = _ranker([_completion(body), _completion(body)]).rank(_request())
+    result = _ranker([_completion(body), _completion(body)]).rank(_request()).rankings
     assert ("key4hep/k4geo", 10) not in result
     assert result[("AIDASoft/DD4hep", 20)].score == 5.0
 
@@ -402,7 +412,7 @@ def test_empty_reason_rejects_the_row_and_is_recovered_by_the_retry():
         {"repo": "key4hep/k4geo", "pr": 10, "likelihood": 70, "reason": "explains it"},
     )
     ranker = _ranker([_completion(first), _completion(second)])
-    result = ranker.rank(_request())
+    result = ranker.rank(_request()).rankings
     assert result[("key4hep/k4geo", 10)] == Ranking(70.0, "explains it")
     assert result[("AIDASoft/DD4hep", 20)].score == 5.0
     assert len(_calls(ranker)) == 2
@@ -413,7 +423,7 @@ def test_missing_and_non_finite_likelihoods_reject_the_row():
         {"repo": "key4hep/k4geo", "pr": 10, "reason": "no likelihood at all"},
         {"repo": "AIDASoft/DD4hep", "pr": 20, "likelihood": float("nan"), "reason": "nan"},
     )
-    result = _ranker([_completion(body), _completion(body)]).rank(_request())
+    result = _ranker([_completion(body), _completion(body)]).rank(_request()).rankings
     assert result == {}
 
 
@@ -423,7 +433,7 @@ def test_malformed_json_yields_empty_and_warns(caplog):
     result = _ranker([
         _completion("I cannot help with that."),
         _completion("I cannot help with that."),
-    ]).rank(_request())
+    ]).rank(_request()).rankings
     assert result == {}
     assert "no usable ranking (0/2 candidates" in caplog.text
     assert "response prefix='I cannot help with that.'" in caplog.text
@@ -433,7 +443,7 @@ def test_missing_rankings_key_yields_empty():
     result = _ranker([
         _completion('{"something_else": 1}'),
         _completion('{"something_else": 1}'),
-    ]).rank(_request())
+    ]).rank(_request()).rankings
     assert result == {}
 
 
@@ -445,25 +455,25 @@ def test_partial_response_is_completed_by_one_followup_call():
         {"repo": "AIDASoft/DD4hep", "pr": 20, "likelihood": 5, "reason": "low"}
     )
     ranker = _ranker([_completion(first), _completion(second)])
-    result = ranker.rank(_request())
+    result = ranker.rank(_request()).rankings
     assert set(result) == {("key4hep/k4geo", 10), ("AIDASoft/DD4hep", 20)}
     assert len(_calls(ranker)) == 2
 
 
 def test_http_error_yields_empty_after_retry():
     ranker = _ranker([_FakeResp({}, status=500) for _ in range(4)])
-    assert ranker.rank(_request()) == {}
+    assert ranker.rank(_request()).rankings == {}
     assert len(_calls(ranker)) == 4
 
 
 def test_timeout_yields_empty():
     ranker = _ranker([requests.Timeout("slow") for _ in range(4)])
-    assert ranker.rank(_request()) == {}
+    assert ranker.rank(_request()).rankings == {}
 
 
 def test_no_candidates_short_circuits_without_calling_the_model():
     ranker = _ranker([])  # no queued action; a post() would IndexError
-    assert ranker.rank(_request(candidates=())) == {}
+    assert ranker.rank(_request(candidates=())).rankings == {}
     assert _calls(ranker) == []
 
 
@@ -497,3 +507,153 @@ def test_ranker_from_env_builds_ranker_when_configured(monkeypatch):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# ── The step assessment ───────────────────────────────────────────────────────
+#
+# The field exists so a model handed one number and a list of pull requests can
+# say "nothing here caused this" instead of only being able to express it by
+# scoring everybody low — which reads downstream exactly like "I looked and
+# found nothing", and loses the conclusion a human most needs.
+
+def _assessed_json(verdict, *, reason="the series does this on its own", rows=None):
+    import json
+    rows = rows or [
+        {"repo": "key4hep/k4geo", "pr": 10, "likelihood": 5, "reason": "unrelated"},
+        {"repo": "AIDASoft/DD4hep", "pr": 20, "likelihood": 5, "reason": "unrelated"},
+    ]
+    return json.dumps({
+        "step_assessment": {"verdict": verdict, "reason": reason},
+        "rankings": rows,
+    })
+
+
+def test_a_noise_verdict_is_carried_back_with_its_reason():
+    result = _ranker([_completion(_assessed_json("likely_noise"))]).rank(_request())
+    assert result.assessment.verdict == "likely_noise"
+    assert result.assessment.likely_noise is True
+    assert result.assessment.reason == "the series does this on its own"
+    # The candidates are still scored: the assessment qualifies the ranking, it
+    # does not replace it.
+    assert len(result.rankings) == 2
+
+
+def test_a_reply_with_no_assessment_is_unassessed_never_a_real_change():
+    body = _rankings_json(
+        {"repo": "key4hep/k4geo", "pr": 10, "likelihood": 80, "reason": "x"},
+        {"repo": "AIDASoft/DD4hep", "pr": 20, "likelihood": 5, "reason": "y"},
+    )
+    assert _ranker([_completion(body)]).rank(_request()).assessment is None
+
+
+def test_a_verdict_nobody_defined_is_dropped_rather_than_surfaced():
+    result = _ranker([
+        _completion(_assessed_json("probably_fine")),
+    ]).rank(_request())
+    assert result.assessment is None
+    assert len(result.rankings) == 2  # the rankings themselves still stand
+
+
+def test_a_bare_verdict_string_is_accepted():
+    import json
+    body = json.dumps({
+        "step_assessment": "likely_noise",
+        "rankings": [
+            {"repo": "key4hep/k4geo", "pr": 10, "likelihood": 5, "reason": "a"},
+            {"repo": "AIDASoft/DD4hep", "pr": 20, "likelihood": 5, "reason": "b"},
+        ],
+    })
+    result = _ranker([_completion(body)]).rank(_request())
+    assert result.assessment == StepAssessment("likely_noise", "")
+
+
+def test_the_first_reading_of_the_step_survives_a_completing_retry():
+    # The retry exists to fill in rows the reply ran out of room for. The
+    # assessment judges the window, so re-reading it from a prompt asking for
+    # something else would overwrite a considered answer with an incidental one.
+    first = _assessed_json("likely_noise", rows=[
+        {"repo": "key4hep/k4geo", "pr": 10, "likelihood": 5, "reason": "a"},
+    ])
+    second = _assessed_json("real_change", rows=[
+        {"repo": "AIDASoft/DD4hep", "pr": 20, "likelihood": 5, "reason": "b"},
+    ])
+    result = _ranker([_completion(first), _completion(second)]).rank(_request())
+    assert result.assessment.verdict == "likely_noise"
+    assert len(result.rankings) == 2
+
+
+def test_counter_evidence_is_kept_when_given_and_optional_when_not():
+    body = _rankings_json(
+        {"repo": "key4hep/k4geo", "pr": 10, "likelihood": 60, "reason": "touches HCAL",
+         "against": "without_HCAL moved too"},
+        {"repo": "AIDASoft/DD4hep", "pr": 20, "likelihood": 5, "reason": "unrelated"},
+    )
+    result = _ranker([_completion(body)]).rank(_request()).rankings
+    assert result[("key4hep/k4geo", 10)].against == "without_HCAL moved too"
+    # A judgement is never rejected for lacking it: that would trade a real
+    # ranking for a stylistic one and leave the candidate reading as unjudged.
+    assert result[("AIDASoft/DD4hep", 20)].against == ""
+
+
+# ── History and controls in the prompt ────────────────────────────────────────
+
+def _history() -> MetricHistory:
+    return MetricHistory(
+        points=(
+            HistoryPoint("2026-07-01", 12.0, 1, 1, "OK", "NONE", (), 2),
+            HistoryPoint("2026-07-03", 12.1, 1, 1, "OK", "NONE", (), 0),
+            HistoryPoint("2026-07-04", 14.5, 1, 1, "CONFIRMED", "UP", (), 3),
+        ),
+        baseline_median=12.0, baseline_mad=0.06,
+        base_release="2026-07-03", onset_release="2026-07-04",
+    )
+
+
+def test_the_prompt_shows_the_measurement_not_only_the_percentage():
+    prompt = rank_mod._build_user_prompt(_request(metrics=(
+        MetricStep(metric="wall_time_s", metric_family="time", direction="UP",
+                   pct_change=0.2, label="baseline",
+                   value=14.5, baseline_median=12.0, z_score=41.6),
+    )))
+    assert "14.5 vs 12 baseline, z=41.6" in prompt
+
+
+def test_the_prompt_carries_the_metrics_history():
+    prompt = rank_mod._build_user_prompt(_request(metrics=(
+        MetricStep(metric="wall_time_s", metric_family="time", direction="UP",
+                   pct_change=0.2, label="baseline", history=_history()),
+    )))
+    assert "Recent history of this metric" in prompt
+    assert "stack unchanged" in prompt
+    assert "normal spread is ±0.5%" in prompt
+
+
+def test_history_blocks_are_capped_and_the_remainder_is_counted():
+    metrics = tuple(
+        MetricStep(metric=f"metric_{i}", metric_family="time", direction="UP",
+                   pct_change=0.2 - i / 1000, label="baseline", history=_history())
+        for i in range(rank_mod._MAX_HISTORY_BLOCKS + 3)
+    )
+    prompt = rank_mod._build_user_prompt(_request(metrics=metrics))
+    assert prompt.count("Recent history of this metric") == rank_mod._MAX_HISTORY_BLOCKS
+    assert "3 further metric(s) stepped in this window" in prompt
+
+
+def test_the_prompt_carries_the_configurations_that_stayed_flat():
+    request = dataclasses.replace(_request(), outcomes=(
+        ScopeOutcome(detector="ALLEGRO_o1_v03",
+                     platform="x86_64-almalinux9-gcc14.2.0-opt",
+                     sample="single_mu-", label="without_HCAL", status="clean"),
+    ))
+    prompt = rank_mod._build_user_prompt(request)
+    assert "did NOT confirm a step" in prompt
+    assert "without_HCAL" in prompt
+
+
+def test_the_rules_the_second_pass_is_judged_under_are_the_same_ones():
+    # Both passes score 0-100 and the second revises the first. Two wordings of
+    # what 70 means would make that revision meaningless.
+    from k4bench.blame import attribute as attribute_mod
+    for rule in (SCORE_BAND_RULE, NOISE_RULE, ASSESSMENT_RULE, UNTRUSTED_EVIDENCE_RULE):
+        assert rule in rank_mod._SYSTEM_PROMPT
+        assert rule in attribute_mod._SYSTEM_PROMPT

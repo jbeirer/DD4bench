@@ -116,6 +116,19 @@ Three rules bound it:
   authors of the changes under review. Both system prompts say so, and diffs
   arrive fenced between explicit markers: they are artifacts to analyse, never
   instructions to follow.
+- **The step itself is judged first.** Both passes are shown each metric's own
+  recent history — its release-by-release level, how much it moves across
+  boundaries where *no tracked package changed at all*, whether the new level
+  held afterwards, and whether the benchmark host changed at the onset — and
+  both must report a `step_assessment` before scoring anyone. Without a place to
+  say "this movement is most likely noise", a model asked only to rank
+  candidates can express that solely by scoring everybody low, which reads
+  downstream exactly like "I looked and found nothing". A `likely_noise` verdict
+  from *either* pass withholds the comment: the ranking is still written and
+  still rendered on the dashboard and in the email, with the doubt beside it,
+  but nothing is posted to anyone's repository. Both passes also score against
+  the same published likelihood bands, so a step that merely *sounds* related to
+  a candidate's title cannot reach the high end of the scale.
 
 Both passes use the same `K4BENCH_LLM_*` configuration and are off by default;
 `K4BENCH_LLM_SUMMARY_MODEL` optionally points this pass alone at a stronger
@@ -135,6 +148,7 @@ being wrong about far less often than it is worth being silent.
 | Likelihood | The ranker's score is at or above `min_score` (default 80). |
 | Merged | The PR is merged — an open PR cannot have shipped in a release. |
 | Complete discovery | The blame entry's candidate search was complete. Naming one PR out of a knowingly partial set is the overclaim the ranker itself refuses to make. |
+| The step is not read as noise | Neither pass concluded the movement is `likely_noise`. Each is shown the metric's recent release-by-release history — how much the series moves on its own, whether the level held, whether the benchmark host changed underneath it — and either saying "this is probably noise" withholds the comment, however high the candidate scored. |
 | Confirmed tonight | Selection is driven from the *report*'s confirmed regressions, so a comment can only describe a regression that is confirmed in tonight's report. |
 | Not a storm | More than `max_comments` (default 10) comments in one night suppresses **all** of them: a night that loud is a bug, not a night. |
 | Not withdrawn | When the cross-configuration review ran and left *every* regression in the window below `min_score`, the comment is dropped. See [Two passes](#two-passes). |
