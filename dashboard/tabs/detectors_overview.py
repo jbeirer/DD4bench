@@ -36,6 +36,7 @@ from tabs._regression_flags import (
     SEVERITY_RANK,
     add_severity_markers,
     attention_key,
+    metric_option,
     pretty_metric,
     render_flag_pills,
 )
@@ -829,9 +830,7 @@ def _render_flag_trend(
         return
     st.markdown("###### Flagged-metric trend")
     options = ["—"] + [
-        f"{'🔴' if v.severity is Severity.CONFIRMED else '⚠️'} · {v.detector} · "
-        f"{pretty_metric(v)} · {v.label}"
-        for v in choices
+        metric_option(v, include_detector=True) for v in choices
     ]
     _reset_widget_on_scope(
         "det_ov_flag_trend", (platform, sample, tuple(options)),

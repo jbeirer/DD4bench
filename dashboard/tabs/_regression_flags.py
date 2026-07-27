@@ -22,7 +22,7 @@ import streamlit as st
 from k4bench.blame.models import RANKING_DISCLOSURE, BlameReport, CandidatePR
 from k4bench.regression.models import MetricVerdict, Severity
 from k4bench.labels import pretty_sample
-from k4bench.regression.render import _fmt
+from k4bench.regression.render import _badge, _fmt, _fmt_pct
 from ui_utils import _METRIC_LABELS, _to_rgba
 
 #: Trend-flag marker specs keyed on verdict severity, matching the Regressions
@@ -144,6 +144,31 @@ def pretty_metric(v: MetricVerdict) -> str:
     region-level rows (``wall time · VertexBarrel``)."""
     name = _METRIC_LABELS.get(v.metric, v.metric)
     return f"{name} · {v.sub_detector}" if v.sub_detector else name
+
+
+def metric_option(
+    verdict: MetricVerdict, *, include_detector: bool = False,
+    include_scope: bool = False, include_window: bool = False,
+) -> str:
+    """Compact selector label for one flagged metric — severity, identity, and
+    the size of the step, in the one wording every trend picker uses.
+
+    Stack Changes can widen across detectors and can contain repeated steps of
+    one series, so it opts into the scope and window suffixes. Regressions is
+    already scoped to one group/night and keeps the shorter form. Overview's
+    Regression Status view spans the detectors of a single scope, so it leads
+    with the detector instead — the order the roster above it is read in.
+    """
+    parts = [_badge(verdict)]
+    if include_detector:
+        parts.append(verdict.detector)
+    parts += [pretty_metric(verdict), verdict.label]
+    if include_scope:
+        parts.append(f"{verdict.detector}, {pretty_sample(verdict.sample)}")
+    if include_window:
+        base = verdict.last_accepted_run_date or "?"
+        parts.append(f"{base} → {verdict.onset_run_date}")
+    return " · ".join(parts) + f" — Δ {_fmt_pct(verdict.pct_change)}"
 
 
 #: Cap on ledger rows: beyond this, keep the worst so one sweep night can't

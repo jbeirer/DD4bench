@@ -283,9 +283,14 @@ def test_status_view_previews_the_worst_flags_trend():
     assert roster.iloc[0]["Detector"] == "CLD_o2_v08"
     assert roster.iloc[0]["Worst flag"] == "wall time · baseline_all"
     # The trend preview opens on that flag and draws the chart, with no run
-    # downloads (everything comes from the stubbed reports).
+    # downloads (everything comes from the stubbed reports). Its options read
+    # exactly like the Regressions tab's picker — same badge wording, same Δ —
+    # with the detector leading, since this view spans them.
     preview = at.selectbox(key="det_ov_flag_trend")
-    assert "CLD_o2_v08" in preview.value and preview.value.startswith("🔴")
+    assert preview.options[1] == (
+        "🔴 Regression · CLD_o2_v08 · wall time · baseline_all — Δ +20.0%"
+    )
+    assert preview.value == preview.options[1]
     assert len(at.get("plotly_chart")) == 1
 
 
