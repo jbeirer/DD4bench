@@ -28,7 +28,10 @@
 #                                   cross-configuration review only (step 5c);
 #                                   defaults to K4BENCH_LLM_MODEL
 #   K4BENCH_BLAME_TIMEOUT         — wall-clock limit for the isolated blame
-#                                   step (default: 15m; GNU timeout syntax)
+#                                   step (default: 1h; GNU timeout syntax). One
+#                                   model call per rank group, plus one more
+#                                   wherever the ranker asks to read an earlier
+#                                   release boundary
 #   K4BENCH_PR_COMMENT_TOKEN      — token with pull-requests:write on the repos
 #                                   listed in .github/blame-comments.yml; enables
 #                                   the PR comments. Unset ⇒ they are only logged
@@ -133,7 +136,7 @@ echo "::endgroup::"
 # connections but never makes useful progress.
 echo "::group::5b. Blame sidecar"
 {
-    timeout --signal=TERM --kill-after=30s "${K4BENCH_BLAME_TIMEOUT:-15m}" \
+    timeout --signal=TERM --kill-after=30s "${K4BENCH_BLAME_TIMEOUT:-1h}" \
       python .github/scripts/blame_report.py \
         --report report/report.json \
         --output-dir report \

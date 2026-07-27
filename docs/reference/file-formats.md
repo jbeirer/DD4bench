@@ -313,6 +313,84 @@ stored here (they are re-fetchable from GitHub); the sidecar keeps only the file
 candidates it is given — a PR number it did not receive is dropped, so
 `blame.json` can never surface an invented PR.
 
+### On-demand historical evidence
+
+`historical_evidence` records the pull requests from **older** release
+boundaries that the ranker asked to read before judging this window. Each entry
+is a reference — `boundary_id`, the boundary's `base_release`/`onset_release`,
+the `package`, the `repo` slug, the `pr` number, its title, changed `files` and
+churn — and never a patch or a description: those are re-fetchable from GitHub
+forever, and the cross-configuration pass fetches them again from exactly this
+reference. Absent on every sidecar written before the field existed, and empty
+on every ranking that used none.
+
+The retrieval is a two-stage protocol, not a browsing tool:
+
+1. The ranker's prompt carries a lightweight **index** of the older boundaries
+   in the metric's own history tail — package names, repository slugs,
+   add/change/remove status — under application-generated opaque ids (`h1`,
+   `h2`, …). Building it costs no GitHub call. Boundaries whose release diff
+   could not be read are listed as unreadable rather than omitted, because a gap
+   in a list of dates would read as a boundary where nothing changed. Both
+   listing caps — 8 boundaries, 25 packages per boundary — are **stated when
+   they bite** ("showing 25 of 37 changed packages; the other 12 are not listed
+   and cannot be requested"), for the same reason: a shortened list that does not
+   admit to being short is read as a complete one, and would let a display bound
+   exculpate a package nobody measured.
+2. The model may answer with a `historical_evidence_request` naming ids and
+   package names **from that index only**. An invented id, a package nobody
+   offered, a boundary the index called unreadable, a request with no stated
+   reason, or a selection past a cap is a *decline*: the window is left
+   unranked, and any preliminary rankings written alongside the request are
+   discarded — the model said it wanted the code before judging, so its
+   judgement without the code is not the one to publish.
+3. The application retrieves the validated selection through the same
+   authenticated GitHub client and the same `(repo, base, head)` resolution
+   cache the current window's candidates used, then asks once more with the code
+   attached. That answer is the authoritative ranking — unless it asks *again*,
+   which is a decline: there is no round left to honour it with, so a reply that
+   says it is still not ready to judge does not get its scores published beside
+   the statement. (A historical PR body is attacker-reachable prose and can try
+   to induce that member; all it buys is a refusal.)
+
+Bounds: at most 2 boundaries and 2 packages per boundary per request, 4 pull
+requests in total, one retrieval round, and one extra model call per rank group.
+The historical diffs get their own rendering budget (10 000 chars, waterfilled)
+so they can never take a character from the current window's candidates. Any way
+the retrieval falls short — a rate limit, a 404, an incomplete PR discovery or
+changed-file pagination, more pull requests than the cap can read completely —
+leaves the window **unranked** rather than ranked on a partial view of evidence
+the model itself said mattered.
+
+Historical pull requests are **analogues, never candidates**. They shipped before
+the window opened, so they cannot have caused it: they never enter
+`RepoBlame.candidates`, the ranking-coverage gate, the dashboard's candidate
+ledger, or a comment target, and one echoed back as a ranking is dropped by the
+existing only-reorder rule. Their descriptions and diffs are fenced as untrusted
+input exactly like a current candidate's.
+
+The feature is **on by default** wherever ranking and `GITHUB_TOKEN` are
+configured. `K4BENCH_LLM_HISTORICAL_DIFFS=0` (or `false`/`no`/`off`) turns it
+off, and off means the prompts, model-call count, GitHub-call count and artifacts
+are exactly what they were before the feature existed.
+
+When a comment is written about such a window, the cross-configuration review is
+handed the *same* analogues, re-fetched from these references and rendered under
+the same "historical, not a candidate" label — a review that revised the first
+pass without the evidence the first pass rested on would not be a second opinion.
+If a reference yields neither a diff nor a description it is unreadable and
+**no comment is posted that night**, the same fail-closed rule an unusable review
+already follows. (An empty *patch* alone is not a failure: a binary-only or
+pure-rename pull request has no textual hunk, and the first pass accepted it on
+its paths and prose.) One comment carries at most 12 analogues in total —
+`MAX_PRS` bounds one rank group, but a comment window unions every rank group
+inside it — and exceeding that suppresses the comment *before any fetch* rather
+than dropping analogues, since dropping some would silently leave the two passes
+weighing different evidence. The references are part
+of the comment's facts digest, so a materially different evidence set produces a
+replaceable comment rather than a frozen one; the analogues themselves are never
+rendered as accused pull requests in the public body.
+
 ## See also
 
 - [Analysis](../user-guide/features/analysis.md) — the loaders that parse these.

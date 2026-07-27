@@ -100,6 +100,16 @@ Three rules bound it:
   edit it — the degraded body would stand forever however many later reviews
   succeeded. Skipping the night keeps comment quality monotonic: no comment,
   then a reviewed comment, and never back the other way.
+- **Both passes weigh the same evidence.** When the first pass asked to read the
+  code behind an older release boundary before scoring
+  ([historical evidence](../../reference/file-formats.md#on-demand-historical-evidence)),
+  the review is handed the same analogues — re-fetched from the references
+  `blame.json` persists, and labelled to it as history rather than as candidates.
+  A revision made without the evidence the original judgement rested on is not a
+  second opinion; it is a different question answered against a smaller world.
+  If any of those references cannot be re-fetched, nothing is posted that night,
+  the same rule an unusable review follows. The analogues are never rendered as
+  accused pull requests in the comment.
 - **Narrowing at the target level.** This pass never *causes* a comment on a
   pull request selection did not already implicate: selection happens entirely
   on the first pass's scores, and the only outcome this pass adds is
@@ -163,6 +173,7 @@ being wrong about far less often than it is worth being silent.
 | Not a storm | More than `max_comments` (default 10) comments in one night suppresses **all** of them: a night that loud is a bug, not a night. |
 | Not withdrawn | When the cross-configuration review ran and left *every* regression in the window below `min_score`, the comment is dropped. See [Two passes](#two-passes). |
 | Reviewed, when a reviewer is configured | If a model is configured but returns nothing usable, nothing is posted that night — never a first-pass-only fallback, which a later successful review could not replace. See [Two passes](#two-passes). |
+| The review saw the same evidence | If the first pass read historical analogues and any of them cannot be re-fetched for the review, nothing is posted that night. See [Two passes](#two-passes). |
 
 Most nights nothing is posted at all — most nights have no confirmed
 regression, let alone a confidently attributed one.

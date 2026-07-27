@@ -282,6 +282,83 @@ class StepAssessment:
         return cls(verdict=verdict, reason=str(data.get("reason") or ""))
 
 
+@dataclass(frozen=True)
+class HistoricalRef:
+    """One pull request from an *older* release boundary that the ranker asked to
+    see before judging this window (:mod:`k4bench.blame.history`).
+
+    A **reference**, deliberately: enough to fetch the same evidence again — the
+    repository, the number, the boundary it belongs to — and nothing more. The
+    diff and the description that were actually put in front of the model are
+    not here, for the same reason a current candidate's are not: they are
+    re-fetchable from GitHub forever, they are the largest thing in the pipeline,
+    and a sidecar the dashboard parses has no business carrying a mirror of
+    somebody's patch. The cross-configuration pass re-fetches them from this
+    reference exactly as it re-fetches a competitor's.
+
+    Historical pull requests are **analogues, never candidates**. Nothing in this
+    schema lets one become a :class:`CandidatePR`: they live on their own field,
+    they carry no score, and no consumer joins them to the candidate ledger. They
+    shipped before the window opened, so they cannot have caused it — the whole
+    point of showing them to a model is calibration, and the whole point of
+    keeping them apart here is that a calibration aid must never be able to
+    surface as an accusation.
+
+    The field is newer than the sidecars already on EOS, so it is additive and
+    absent means empty — a historical ranking simply carried none.
+    """
+
+    boundary_id: str
+    base_release: str
+    onset_release: str
+    package: str
+    repo: str  # "owner/repo" slug on GitHub
+    pr: int
+    title: str = ""
+    files: tuple[str, ...] = ()
+    additions: int = 0
+    deletions: int = 0
+
+    @property
+    def key(self) -> tuple[str, int]:
+        """``(repo, number)`` — how the comment pass de-duplicates references."""
+        return (self.repo, self.pr)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "boundary_id": self.boundary_id,
+            "base_release": self.base_release,
+            "onset_release": self.onset_release,
+            "package": self.package,
+            "repo": self.repo,
+            "pr": self.pr,
+            "title": self.title,
+            "files": list(self.files),
+            "additions": self.additions,
+            "deletions": self.deletions,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> HistoricalRef:
+        """Typed read at the same schema boundary every other shape uses: a
+        malformed reference raises (and :meth:`BlameReport.from_json` turns that
+        into a :class:`BlameSchemaError`) rather than reaching a re-fetch as a
+        request for a repository nobody wrote."""
+        d = _only_known(cls, data)
+        return cls(
+            boundary_id=str(d["boundary_id"]),
+            base_release=str(d["base_release"]),
+            onset_release=str(d["onset_release"]),
+            package=str(d["package"]),
+            repo=str(d["repo"]),
+            pr=int(d["pr"]),
+            title=str(d.get("title") or ""),
+            files=tuple(str(f) for f in d.get("files") or ()),
+            additions=int(d.get("additions") or 0),
+            deletions=int(d.get("deletions") or 0),
+        )
+
+
 def _boundary_changes(raw: object) -> dict[str, int]:
     """``release -> packages changed entering it``, read defensively.
 
@@ -340,6 +417,17 @@ class BlameEntry:
     n_unchanged: int = 0
     assessment: StepAssessment | None = None
     boundary_changes: dict[str, int] = field(default_factory=dict)
+    #: The older-boundary pull requests the ranker asked to read before scoring
+    #: this window (:class:`HistoricalRef`), empty on every entry that used none
+    #: — which is every entry until ``K4BENCH_LLM_HISTORICAL_DIFFS`` is set.
+    #:
+    #: Shared by every entry of one rank group, because the ranker judges that
+    #: group's metrics in one call and therefore asks for one set of analogues.
+    #: The repetition across those entries is the price of leaving the artifact's
+    #: shape alone, and it is what lets the comment pass reconstruct the evidence
+    #: from whichever entry it happens to hold. It is never a candidate list:
+    #: these pull requests shipped before the window opened.
+    historical_evidence: tuple[HistoricalRef, ...] = ()
 
     @property
     def key(self) -> tuple:
@@ -390,11 +478,15 @@ class BlameEntry:
                 self.assessment.to_dict() if self.assessment is not None else None
             ),
             "boundary_changes": dict(sorted(self.boundary_changes.items())),
+            "historical_evidence": [h.to_dict() for h in self.historical_evidence],
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> BlameEntry:
         d = _only_known(cls, data)
+        raw_historical = d.get("historical_evidence")
+        if raw_historical is not None and not isinstance(raw_historical, list | tuple):
+            raise TypeError("historical_evidence must be a list")
         return cls(
             detector=str(d["detector"]),
             platform=str(d["platform"]),
@@ -408,6 +500,9 @@ class BlameEntry:
             n_unchanged=int(d.get("n_unchanged") or 0),
             assessment=StepAssessment.from_dict(d.get("assessment")),
             boundary_changes=_boundary_changes(d.get("boundary_changes")),
+            historical_evidence=tuple(
+                HistoricalRef.from_dict(h) for h in raw_historical or ()
+            ),
         )
 
 

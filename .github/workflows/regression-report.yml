@@ -85,6 +85,12 @@ jobs:
           K4BENCH_LLM_MODEL:         ${{ vars.K4BENCH_LLM_MODEL }}
           K4BENCH_LLM_API_KEY:       ${{ secrets.K4BENCH_LLM_API_KEY }}
           K4BENCH_LLM_MAX_TOKENS:    ${{ vars.K4BENCH_LLM_MAX_TOKENS || '16384' }}
+          # The ranker may ask, once per window, to read the code behind an
+          # older release boundary in the metric's own history before judging —
+          # one extra model call and a bounded GitHub read, and an unranked
+          # window rather than a guess whenever it cannot be completed. On by
+          # default; set this variable to 0 to turn it off.
+          K4BENCH_LLM_HISTORICAL_DIFFS: ${{ vars.K4BENCH_LLM_HISTORICAL_DIFFS }}
           # The pull-request comments below review each selected PR against its
           # whole change window — one call per comment, at most ten a night,
           # feeding the only outward-facing artifact. This optionally spends a
@@ -92,7 +98,12 @@ jobs:
           K4BENCH_LLM_SUMMARY_MODEL: ${{ vars.K4BENCH_LLM_SUMMARY_MODEL }}
           # Bounds the entire optional GitHub+LLM attribution stage. A timeout
           # skips blame.json but cannot affect report.json or notification.
-          K4BENCH_BLAME_TIMEOUT:     ${{ vars.K4BENCH_BLAME_TIMEOUT || '15m' }}
+          # Generous, because the stage is one model call per rank group and a
+          # wide night has many — plus, where the ranker asks to read an earlier
+          # boundary, one more. The limit is there to bound a provider that
+          # accepts connections and never progresses, not to pace a healthy run:
+          # cutting a working night short costs the whole sidecar.
+          K4BENCH_BLAME_TIMEOUT:     ${{ vars.K4BENCH_BLAME_TIMEOUT || '1h' }}
           # Comments on the pull requests the blame ranker holds responsible.
           # The built-in GITHUB_TOKEN above cannot do this: it is read-only and
           # scoped to k4Bench, while these comments land in the Key4hep package
@@ -119,7 +130,8 @@ jobs:
             -e GITHUB_RUN_URL -e GITHUB_TOKEN \
             -e K4BENCH_LLM_URL -e K4BENCH_LLM_MODEL -e K4BENCH_LLM_API_KEY \
             -e K4BENCH_LLM_SUMMARY_MODEL \
-            -e K4BENCH_LLM_MAX_TOKENS -e K4BENCH_BLAME_TIMEOUT \
+            -e K4BENCH_LLM_MAX_TOKENS -e K4BENCH_LLM_HISTORICAL_DIFFS \
+            -e K4BENCH_BLAME_TIMEOUT \
             -e K4BENCH_PR_COMMENT_TOKEN -e K4BENCH_PR_COMMENT_DRY_RUN \
             -e K4BENCH_PR_COMMENT_TIMEOUT \
             "${{ env.CONTAINER_IMAGE }}" \

@@ -40,7 +40,21 @@ from k4bench.blame.github import (
     low_signal_path,
     resolve_repo_prs,
 )
-from k4bench.blame.models import BlameEntry, BlameReport, RepoBlame, StepAssessment
+from k4bench.blame.history import (
+    HistoricalEvidence,
+    HistoricalIndex,
+    HistoricalPR,
+    HistoricalRequest,
+    build_index,
+    cap_evidence,
+)
+from k4bench.blame.models import (
+    BlameEntry,
+    BlameReport,
+    HistoricalRef,
+    RepoBlame,
+    StepAssessment,
+)
 from k4bench.blame.rank import (
     MetricStep,
     RankCandidate,
@@ -55,6 +69,24 @@ from k4bench.regression.models import MetricVerdict, NightlyReport
 _log = logging.getLogger(__name__)
 
 PackagesForRelease = Callable[[str, str], "dict | None"]
+
+
+@dataclasses.dataclass(frozen=True)
+class _CallableProvider:
+    """A :class:`~k4bench.blame.history.HistoricalProvider` over one closure.
+
+    The retrieval logic belongs inside :func:`build_blame_report`, where the
+    provenance lookup, the resolution cache and the rate-limit latch already
+    live; the protocol wants an object. This is the two-line adapter between
+    them, and keeping it explicit — rather than leaning on a dataclass field
+    that happens to be callable — is what makes ``provider.fetch(request)`` mean
+    what it reads like.
+    """
+
+    _fetch: Callable[["HistoricalRequest"], "HistoricalEvidence"]
+
+    def fetch(self, request: HistoricalRequest) -> HistoricalEvidence:
+        return self._fetch(request)
 
 
 def _attributable(v: MetricVerdict) -> bool:
@@ -72,6 +104,7 @@ def build_blame_report(
     github: GitHubClient | None = None,
     ranker: Ranker | None = None,
     generated_at: str | None = None,
+    historical_diffs: bool = True,
 ) -> BlameReport:
     """Build the night's blame from *report* and injected provenance/GitHub access.
 
@@ -80,6 +113,15 @@ def build_blame_report(
     default, and every environment without ``K4BENCH_LLM_*`` configured), they
     are collected unranked. Ranking is fully isolated — a ranker that fails or
     raises leaves that window's candidates unranked, never aborting the report.
+
+    ``historical_diffs`` controls on-demand historical evidence
+    (:mod:`k4bench.blame.history`): each rank group is additionally offered a
+    lightweight index of the older release boundaries in its own metrics'
+    history, and the model may ask to read the code behind one of them before
+    judging. On by default, and inert without a GitHub client whatever it is set
+    to — an index that cannot be redeemed is an offer the application cannot
+    keep. Passing ``False`` restores exactly the previous behaviour: no index, no
+    extra model call, no extra GitHub read, and the prompts unchanged.
     """
     verdicts = [v for v in report.regressions if _attributable(v)]
     packages_for_release = _memoized(packages_for_release)
@@ -126,14 +168,16 @@ def build_blame_report(
     #: candidates, rather than each retry re-hitting the same wall.
     rate_limited = False
 
-    def changed_count(platform: str, base: str | None, onset: str) -> int | None:
-        """Tracked packages that moved across one release boundary, or ``None``
-        when that boundary's provenance could not be read.
+    def changed_packages(
+        platform: str, base: str | None, onset: str
+    ) -> list[PackageChange] | None:
+        """The tracked packages that moved across one release boundary, or
+        ``None`` when that boundary's provenance could not be read.
 
         Shares :data:`diff_cache` with the attribution windows above — the two
         ask exactly the same question of exactly the same data, and a boundary
         that is a history step for one metric is the change window of another.
-        ``0`` (the stack stood still) and ``None`` (nobody could look) are
+        ``[]`` (the stack stood still) and ``None`` (nobody could look) are
         different answers and stay different all the way to the prompt."""
         if not base or base >= onset:
             return None
@@ -142,8 +186,169 @@ def build_blame_report(
             diff_cache[key], unchanged_cache[key] = _diff_window(
                 packages_for_release, *key
             )
-        changes = diff_cache[key]
+        return diff_cache[key]
+
+    def changed_count(platform: str, base: str | None, onset: str) -> int | None:
+        """How many tracked packages moved across one boundary — the number the
+        history table states, and the one a metric's own noise is read against."""
+        changes = changed_packages(platform, base, onset)
         return None if changes is None else len(changes)
+
+    #: What the historical retrieval cost, for the operator: reads that reached
+    #: GitHub versus ones the night had already paid for. A shared history is the
+    #: common case (every metric of a platform walks the same release tail), so a
+    #: cache that stopped working would show up here long before it showed up in
+    #: a bill.
+    history_reads = {"api": 0, "cache": 0}
+
+    def fetch_historical(request: HistoricalRequest) -> HistoricalEvidence:
+        """Retrieve one validated historical selection, or refuse it.
+
+        Defined here rather than as a free function because it reuses the two
+        things this build already has and a standalone provider would have to
+        rebuild: the memoized release diffs (so a boundary already read costs
+        nothing) and :data:`resolution_cache` keyed on ``(slug, base, head)`` (so
+        a range some other window already resolved is not resolved again). The
+        rate-limit latch is shared for the same reason — a throttled token is a
+        fact about the night, not about one lookup.
+
+        Every incomplete path returns an incomplete result rather than raising:
+        the ranker turns that into an unranked window, which is the honest
+        answer, and a raised exception would have to be caught somewhere to say
+        the same thing less clearly.
+        """
+        nonlocal rate_limited
+        if github is None:
+            return HistoricalEvidence(
+                complete=False, reason="no GitHub client is configured"
+            )
+        prs: list[HistoricalPR] = []
+        for selection in request.selections:
+            boundary = selection.boundary
+            changes = changed_packages(
+                boundary.platform, boundary.base_release, boundary.onset_release
+            )
+            if changes is None:
+                return HistoricalEvidence(
+                    complete=False,
+                    reason=f"provenance for boundary {boundary.id} is unreadable",
+                )
+            by_name = {change.name: change for change in changes}
+            for package in selection.packages:
+                change = by_name.get(package.name)
+                repo = change.repo if change is not None else None
+                if (
+                    change is None
+                    or change.status != CHANGED
+                    or not change.base_commit or not change.head_commit
+                    or repo is None or repo.forge != "github"
+                ):
+                    # The index said this package was retrievable and the diff
+                    # now says otherwise, which means the two were read from
+                    # different provenance. Refusing is the only honest move.
+                    return HistoricalEvidence(
+                        complete=False,
+                        reason=(
+                            f"{package.name} has no readable commit range at "
+                            f"boundary {boundary.id}"
+                        ),
+                    )
+                if rate_limited:
+                    return HistoricalEvidence(
+                        complete=False,
+                        reason="GitHub is rate-limited for the rest of the night",
+                    )
+                key = (repo.slug, change.base_commit, change.head_commit)
+                if key in resolution_cache:
+                    history_reads["cache"] += 1
+                else:
+                    history_reads["api"] += 1
+                    try:
+                        resolution_cache[key] = resolve_repo_prs(
+                            github, repo.slug, change.base_commit, change.head_commit
+                        )
+                    except RateLimitError:
+                        rate_limited = True
+                        return HistoricalEvidence(
+                            complete=False, reason="GitHub rate limit"
+                        )
+                    except Exception as exc:  # noqa: BLE001 — refuse, never raise
+                        return HistoricalEvidence(
+                            complete=False,
+                            reason=f"resolving {repo.slug} failed: {exc}",
+                        )
+                resolution = resolution_cache[key]
+                if (
+                    resolution.commits_unavailable
+                    or resolution.truncated
+                    or resolution.truncation_reasons
+                ):
+                    return HistoricalEvidence(
+                        complete=False,
+                        reason=(
+                            f"{repo.slug} at boundary {boundary.id} came back "
+                            f"incomplete ("
+                            + (
+                                ", ".join(sorted(resolution.truncation_reasons))
+                                or "commits unavailable"
+                            )
+                            + ")"
+                        ),
+                    )
+                prs.extend(
+                    HistoricalPR(
+                        boundary_id=boundary.id,
+                        base_release=boundary.base_release,
+                        onset_release=boundary.onset_release,
+                        package=package.name,
+                        repo=pr.repo,
+                        number=pr.number,
+                        title=pr.title,
+                        files=pr.files,
+                        additions=pr.additions,
+                        deletions=pr.deletions,
+                        body=resolution.bodies.get(pr.number, ""),
+                        patch=resolution.patches.get(pr.number, ""),
+                    )
+                    for pr in resolution.candidates
+                )
+        evidence = cap_evidence(prs)
+        _log.info(
+            "blame: historical retrieval [%s] -> %d pull request(s), complete=%s "
+            "(%d GitHub read(s), %d served from cache)",
+            request.describe(), len(evidence.prs), evidence.complete,
+            history_reads["api"], history_reads["cache"],
+        )
+        return evidence
+
+    def historical_index(
+        rank_verdicts: list[MetricVerdict], window: tuple[str, str | None, str]
+    ) -> HistoricalIndex | None:
+        """The older boundaries this rank group may ask to read, or ``None``.
+
+        Built from the rank group's own metrics' history tails — the releases the
+        prompt already shows — so the offer never names a boundary the model has
+        no reason to care about. The current window is excluded: its packages are
+        already in the prompt as scored candidates, and offering them again as
+        "history" would invite the same pull requests to be reasoned about twice
+        under two different rules."""
+        if not historical_diffs or github is None:
+            return None
+        platform, base, onset = window
+        index = build_index(
+            [
+                (v.platform, [point.run_date for point in v.history])
+                for v in rank_verdicts
+            ],
+            changed_packages=changed_packages,
+            exclude={(platform, base or "", onset)},
+        )
+        # The index is the offer; the provider is how it is redeemed. Built
+        # apart so the offer stays a pure function of provenance the report
+        # already read, and testable without anything that can reach GitHub.
+        return dataclasses.replace(
+            index, provider=_CallableProvider(fetch_historical)
+        )
 
     entries: list[BlameEntry] = []
     for v in verdicts:
@@ -172,22 +377,30 @@ def build_blame_report(
                 )
 
         assessment: StepAssessment | None = None
+        historical: tuple[HistoricalRef, ...] = ()
         if ranker is not None:
             rank_group = (
                 v.detector, v.platform, v.sample,
                 v.last_accepted_run_date, v.onset_run_date,
             )
+            group_verdicts = verdicts_by_rank_group[rank_group]
             result = _rank_group(
-                ranker, verdicts_by_rank_group[rank_group], repos, texts,
+                ranker, group_verdicts, repos, texts,
                 rank_group, rank_cache,
                 outcomes=_outcomes(report, v, outcome_cache),
                 changed_count=changed_count,
                 n_unchanged=unchanged_cache[window],
                 geometry_path=_geometry_path(report, v),
+                history=historical_index(group_verdicts, window),
             )
             if result.rankings:
                 repos = [_apply_rankings(r, result.rankings) for r in repos]
             assessment = _assessment(result)
+            # The selection is the rank group's, not the metric's: one call
+            # produced it, and every entry sharing that call records the same
+            # references so the comment pass reads one evidence set whichever
+            # entry it holds.
+            historical = tuple(_historical_ref(pr) for pr in result.historical)
 
         entries.append(BlameEntry(
             detector=v.detector, platform=v.platform, sample=v.sample,
@@ -206,6 +419,7 @@ def build_blame_report(
                 for release, count in _packages_changed(v, changed_count).items()
                 if count is not None
             },
+            historical_evidence=historical,
         ))
 
     return BlameReport(
@@ -362,6 +576,28 @@ def _geometry_path(report: NightlyReport, verdict: MetricVerdict) -> str:
     )
 
 
+def _historical_ref(pr: HistoricalPR) -> HistoricalRef:
+    """One retrieved analogue as the sidecar stores it — a reference, never the
+    text.
+
+    The diff and the description that reached the model are dropped here on
+    purpose: they are re-fetchable from GitHub forever (the comment pass fetches
+    them again from exactly this reference), and a sidecar the dashboard parses
+    on every page load has no business carrying a copy of somebody's patch."""
+    return HistoricalRef(
+        boundary_id=pr.boundary_id,
+        base_release=pr.base_release,
+        onset_release=pr.onset_release,
+        package=pr.package,
+        repo=pr.repo,
+        pr=pr.number,
+        title=pr.title,
+        files=pr.files,
+        additions=pr.additions,
+        deletions=pr.deletions,
+    )
+
+
 def _assessment(result: RankResult) -> StepAssessment | None:
     """The sidecar's view of the ranker's step assessment.
 
@@ -388,6 +624,7 @@ def _rank_group(
     changed_count: Callable[[str, str | None, str], int | None],
     n_unchanged: int = 0,
     geometry_path: str = "",
+    history: HistoricalIndex | None = None,
 ) -> RankResult:
     """The ranker's judgement of one rank group: a score per candidate, and its
     read of the step itself.
@@ -437,6 +674,7 @@ def _rank_group(
             ranker, verdicts, repos, texts,
             outcomes=outcomes, changed_count=changed_count,
             n_unchanged=n_unchanged, geometry_path=geometry_path,
+            history=history,
         )
     return rank_cache[rank_group]
 
@@ -451,6 +689,7 @@ def _run_ranker(
     changed_count: Callable[[str, str | None, str], int | None],
     n_unchanged: int = 0,
     geometry_path: str = "",
+    history: HistoricalIndex | None = None,
 ) -> RankResult:
     """One guarded rank call. Any exception degrades to an empty result and is
     cached as such, so a broken ranker is asked at most once per detector/
@@ -461,6 +700,7 @@ def _run_ranker(
             verdicts, repos, texts,
             outcomes=outcomes, changed_count=changed_count,
             n_unchanged=n_unchanged, geometry_path=geometry_path,
+            history=history,
         )
         if not request.candidates:
             return RankResult()
@@ -505,6 +745,7 @@ def _rank_request(
     changed_count: Callable[[str, str | None, str], int | None],
     n_unchanged: int = 0,
     geometry_path: str = "",
+    history: HistoricalIndex | None = None,
 ) -> RankRequest:
     """Assemble the ranker's input: every metric that stepped across the shared
     window with its own recent history, the configurations that measured the
@@ -552,6 +793,7 @@ def _rank_request(
         outcomes=outcomes,
         n_unchanged=n_unchanged,
         geometry_tree=geometry_path,
+        history=history,
     )
 
 

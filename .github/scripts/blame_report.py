@@ -33,6 +33,16 @@ Candidate ranking is configured entirely by environment (``K4BENCH_LLM_URL`` /
 candidate PRs are scored 0–100 and described by a model reading the real diffs;
 unset, candidates are written unranked. The endpoint must be *off-box* — this
 runs on a benchmark machine, so ranking is a network call, never local compute.
+
+Each rank group is also offered a lightweight index of the older release
+boundaries in its own metrics' history (:mod:`k4bench.blame.history`). The model
+may answer with a request to read the code behind one of them instead of
+ranking, which costs one extra model call and a bounded GitHub read before the
+ranking it then produces. It is **on by default** wherever ranking and
+``GITHUB_TOKEN`` are configured, adds at most one model call per rank group, and
+any request that cannot be honoured in full — an unoffered id, an unreadable
+range, a rate limit — leaves that window unranked rather than ranked on a partial
+view. ``K4BENCH_LLM_HISTORICAL_DIFFS=0`` turns it off.
 """
 from __future__ import annotations
 
@@ -98,6 +108,41 @@ def _make_packages_for_release(
     return packages_for_release
 
 
+def _historical_diffs(
+    enabled: bool, env_name: str, *, ranking: bool, can_read: bool
+) -> bool:
+    """Whether to offer on-demand historical diff retrieval, and say why not.
+
+    Three ways it ends up off, and all three are worth a line: the kill switch
+    set, no ranking stage at all (nobody to offer it to), or no ``GITHUB_TOKEN``
+    (an offer nothing could redeem — every request would be refused and every
+    asking window left unranked)."""
+    if not enabled:
+        _log.info(
+            "blame_report: %s turns historical diff retrieval off for this run",
+            env_name,
+        )
+        return False
+    if not ranking:
+        _log.info(
+            "blame_report: %s is set but no model is configured — nothing to "
+            "offer historical evidence to", env_name,
+        )
+        return False
+    if not can_read:
+        _log.warning(
+            "blame_report: %s is set but there is no GITHUB_TOKEN — historical "
+            "evidence could not be retrieved, so none is offered", env_name,
+        )
+        return False
+    _log.info(
+        "blame_report: %s is set — each rank group is offered the recent release "
+        "boundaries of its own metrics, and may spend one extra model call plus a "
+        "bounded GitHub read to see the code behind one of them", env_name,
+    )
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -137,6 +182,10 @@ def main(argv: list[str] | None = None) -> int:
 
     from k4bench.blame.builder import build_blame_report
     from k4bench.blame.github import GitHubClient
+    from k4bench.blame.history import (
+        HISTORICAL_DIFFS_ENV,
+        historical_diffs_enabled,
+    )
     from k4bench.blame.models import ranking_coverage
     from k4bench.blame.rank import ranker_from_env
     from k4bench.regression.render import from_json
@@ -182,7 +231,12 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     blame = build_blame_report(
-        report, packages_for_release=packages_for_release, github=github, ranker=ranker
+        report, packages_for_release=packages_for_release, github=github,
+        ranker=ranker,
+        historical_diffs=_historical_diffs(
+            historical_diffs_enabled(), HISTORICAL_DIFFS_ENV,
+            ranking=ranker is not None, can_read=github is not None,
+        ),
     )
 
     if not blame.entries:

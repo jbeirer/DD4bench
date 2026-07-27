@@ -40,6 +40,15 @@ from dataclasses import field as dataclasses_field
 from typing import Protocol
 
 from k4bench.blame.evidence import MetricHistory, ScopeOutcome
+from k4bench.blame.history import (
+    REQUEST_KEY,
+    HistoricalBoundary,
+    HistoricalEvidence,
+    HistoricalIndex,
+    HistoricalPR,
+    HistoricalRequestError,
+    parse_request,
+)
 from k4bench.blame.llm import (
     MAX_OUTPUT_TOKENS,
     ChatClient,
@@ -52,6 +61,7 @@ from k4bench.blame.llm import (
 from k4bench.blame.prompt import (
     ASSESSMENT_RULE,
     ASSESSMENT_VALUES,
+    HISTORICAL_ANALOGUE_RULE,
     NOISE_RULE,
     SCORE_BAND_RULE,
     UNTRUSTED_EVIDENCE_RULE,
@@ -62,6 +72,8 @@ from k4bench.blame.prompt import (
     format_files,
     geometry_reach,
     geometry_tree,
+    historical_lines,
+    historical_offer_lines,
     history_block,
     history_clause,
     log_prompt_size,
@@ -170,6 +182,14 @@ class RankRequest:
     #: of it — every call saw one configuration and could only conclude *within*
     #: it.
     outcomes: tuple[ScopeOutcome, ...] = ()
+    #: What older release boundaries the model may ask to see the code behind,
+    #: and the seam it is retrieved through (:mod:`k4bench.blame.history`).
+    #: ``None`` — the default, and every environment without
+    #: ``K4BENCH_LLM_HISTORICAL_DIFFS`` set — offers nothing, makes no extra
+    #: model call and reads no extra GitHub page. The offer travels on the
+    #: request rather than through :class:`Ranker` so that a second adapter can
+    #: ignore it entirely without the builder knowing.
+    history: HistoricalIndex | None = None
 
 
 @dataclass(frozen=True)
@@ -228,6 +248,14 @@ class RankResult:
         default_factory=dict
     )
     assessment: StepAssessment | None = None
+    #: The historical analogues this judgement was actually made with, empty on
+    #: every ranking that used none. Carried out so the builder can persist a
+    #: reproducible *reference* to each (:class:`~k4bench.blame.models.HistoricalRef`)
+    #: and the outward-facing review can be shown the same material — a score
+    #: reached with evidence the second pass never sees is a score the second
+    #: pass cannot honestly revise. Patches and bodies ride here because this is
+    #: transient model input; only the reference is persisted.
+    historical: tuple[HistoricalPR, ...] = ()
 
     def __bool__(self) -> bool:
         """True when anything was actually judged — what the builder tests."""
@@ -336,24 +364,169 @@ class OpenAICompatRanker:
     client: ChatClient
 
     def rank(self, request: RankRequest) -> RankResult:
+        """Score every candidate, retrieving historical evidence at most once.
+
+        With no historical index on the request — the default, and the whole of
+        production until ``K4BENCH_LLM_HISTORICAL_DIFFS`` is set — this is
+        exactly what it always was: one prompt, one parse, one bounded retry for
+        the rows a reply ran out of room for.
+
+        With an index, the first call may come back asking for the code behind
+        an older boundary instead of answering. That is the *only* thing it can
+        ask for and the only extra round it gets: the follow-up prompt carries
+        the evidence and no index, so there is nothing valid left to request.
+        Every way that round can fail — an invented id, a package nobody offered,
+        a range GitHub would not give up completely — returns an empty result.
+        Falling back to the preliminary rankings in the asking reply is the one
+        thing that must not happen: the model told us it wanted to see this code
+        before judging, and publishing the judgement it made *without* it would
+        be publishing a score under an expectation the application refused.
+        """
         if not request.candidates:
             return RankResult()
+        index = request.history
+        if index is None or not index:
+            return self._rank_rounds(request)
+        outcome = self._retrieval_round(request, index)
+        if outcome is None:
+            return RankResult()
+        prior, evidence = outcome
+        return self._rank_rounds(request, prior=prior, evidence=evidence)
+
+    def _retrieval_round(
+        self, request: RankRequest, index: HistoricalIndex
+    ) -> tuple[tuple[str, str] | None, HistoricalEvidence | None] | None:
+        """The offer call: ``(reply to reuse, evidence)``, or ``None`` to decline.
+
+        Three outcomes, and they are genuinely three. A reply with no request is
+        the ordinary one, and it is *reused* rather than re-asked — a night where
+        nobody wants history costs exactly one model call, which is what makes
+        the feature affordable enough to leave on. A valid request is retrieved
+        and the reply discarded. Anything else — a failed call, a request that
+        cannot be honoured, evidence that could not be read in full — declines.
+        """
+        # Every boundary in the tail is *described*, including the ones whose
+        # release diff could not be read — a gap in a list of dates reads as a
+        # boundary where nothing moved, which is the opposite of what an unread
+        # diff means. Only :attr:`HistoricalIndex.offered` may be asked for, and
+        # :func:`parse_request` is what enforces that.
+        offer = index.boundaries
+        try:
+            content, finish_reason = self._complete(
+                request, offer=offer, offer_omitted=index.boundaries_omitted,
+            )
+        except Exception as exc:
+            _log.warning(
+                "rank: %s/%s %s — LLM call failed (%s); no ranking for this window",
+                request.detector, request.sample, request.onset_release, exc,
+            )
+            return None
+        try:
+            ask = parse_request(extract_json(content), offer)
+        except HistoricalRequestError as exc:
+            _log.warning(
+                "rank: %s/%s %s — the model asked for historical evidence it was "
+                "never offered (%s); declining rather than ranking on the "
+                "preliminary scores it wrote alongside the ask",
+                request.detector, request.sample, request.onset_release, exc,
+            )
+            return None
+        if ask is None:
+            return (content, finish_reason), None
+
+        _log.info(
+            "rank: %s/%s %s — model requested historical evidence [%s] of the %d "
+            "retrievable boundary(ies) among %d described; stated reason: %s",
+            request.detector, request.sample, request.onset_release,
+            ask.describe(), len(index.offered), len(offer), ask.reason,
+        )
+        try:
+            evidence = index.provider.fetch(ask)
+        except Exception as exc:  # noqa: BLE001 — a raising provider is a decline
+            _log.warning(
+                "rank: %s/%s %s — historical retrieval raised (%s); leaving this "
+                "window unranked",
+                request.detector, request.sample, request.onset_release, exc,
+            )
+            return None
+        if not evidence.complete:
+            _log.warning(
+                "rank: %s/%s %s — historical evidence for [%s] could not be read "
+                "completely (%s); leaving this window unranked rather than "
+                "judging it on a partial view of evidence the model asked for",
+                request.detector, request.sample, request.onset_release,
+                ask.describe(), evidence.reason or "no reason recorded",
+            )
+            return None
+        _log.info(
+            "rank: %s/%s %s — retrieved %d historical pull request(s): %s",
+            request.detector, request.sample, request.onset_release,
+            len(evidence.prs), ", ".join(pr.slug for pr in evidence.prs) or "none",
+        )
+        return None, evidence
+
+    def _rank_rounds(
+        self,
+        request: RankRequest,
+        *,
+        prior: tuple[str, str] | None = None,
+        evidence: HistoricalEvidence | None = None,
+    ) -> RankResult:
+        """The ranking call and its bounded completion retry.
+
+        *prior* is a reply already in hand from the offer call — reused rather
+        than re-asked, so a window where the model wanted no history costs one
+        call. *evidence* is the retrieved analogues; the completion retry carries
+        the same ones and, like this round, no index — so "one retrieval round"
+        holds structurally rather than by a counter nobody could forget to
+        increment.
+        """
         expected = {(c.repo, c.number) for c in request.candidates}
         combined: dict[tuple[str, int], Ranking] = {}
         assessment: StepAssessment | None = None
+        historical = evidence.prs if evidence is not None else ()
         for response_attempt in range(_MAX_RESPONSE_ATTEMPTS):
-            try:
-                content, finish_reason = self._complete(request)
-            except Exception as exc:
-                # Timeout, connection error, HTTP status, bad shape — all the
-                # same final outcome. Preserve any valid rows from a prior
-                # partial response; strict publishers will still reject it.
-                _log.warning(
-                    "rank: LLM call failed (%s) — %d/%d candidates ranked",
-                    exc, len(combined), len(expected),
-                )
-                return RankResult(rankings=combined, assessment=assessment)
+            if prior is not None:
+                content, finish_reason = prior
+                prior = None
+            else:
+                try:
+                    content, finish_reason = self._complete(
+                        request, evidence=evidence
+                    )
+                except Exception as exc:
+                    # Timeout, connection error, HTTP status, bad shape — all the
+                    # same final outcome. Preserve any valid rows from a prior
+                    # partial response; strict publishers will still reject it.
+                    _log.warning(
+                        "rank: LLM call failed (%s) — %d/%d candidates ranked",
+                        exc, len(combined), len(expected),
+                    )
+                    return RankResult(
+                        rankings=combined, assessment=assessment,
+                        historical=historical,
+                    )
 
+            if evidence is not None and _asks_again(content):
+                # The model has been given what it asked for and is asking
+                # again. There is no second round to give it, so this is an
+                # explicit statement that it is not ready to judge — exactly the
+                # signal the first round honours by discarding preliminary
+                # scores, and it does not change meaning because it arrived one
+                # round later. Publishing the rankings beside it would take a
+                # judgement the model itself called provisional.
+                #
+                # This is reachable by prompt injection: a historical body or
+                # patch can try to induce the member. That costs a ranking,
+                # never a wrong one — the failure stays on the side this
+                # pipeline fails to.
+                _log.warning(
+                    "rank: %s/%s %s — the follow-up asked for further historical "
+                    "evidence there is no round left to supply; declining rather "
+                    "than publishing the scores it wrote alongside the ask",
+                    request.detector, request.sample, request.onset_release,
+                )
+                return RankResult()
             combined.update(_parse_rankings(content, request))
             # First reading of the step wins. A retry exists to fill in rows the
             # reply ran out of room for, and the assessment is a judgement of the
@@ -363,7 +536,9 @@ class OpenAICompatRanker:
             assessment = assessment or _parse_assessment(content)
             missing = expected - set(combined)
             if not missing:
-                return RankResult(rankings=combined, assessment=assessment)
+                return RankResult(
+                    rankings=combined, assessment=assessment, historical=historical,
+                )
 
             retrying = response_attempt + 1 < _MAX_RESPONSE_ATTEMPTS
             _log.warning(
@@ -375,13 +550,31 @@ class OpenAICompatRanker:
                 content[:500],
                 "; retrying once" if retrying else "",
             )
-        return RankResult(rankings=combined, assessment=assessment)
+        return RankResult(
+            rankings=combined, assessment=assessment, historical=historical,
+        )
 
-    def _complete(self, request: RankRequest) -> tuple[str, str]:
-        """POST the prompt and return ``(assistant text, finish reason)``."""
+    def _complete(
+        self,
+        request: RankRequest,
+        *,
+        offer: tuple[HistoricalBoundary, ...] = (),
+        offer_omitted: int = 0,
+        evidence: HistoricalEvidence | None = None,
+    ) -> tuple[str, str]:
+        """POST the prompt and return ``(assistant text, finish reason)``.
+
+        *offer* and *evidence* are mutually exclusive by construction: the offer
+        belongs to the first call and the evidence to the one that answers it,
+        and a prompt carrying both would let a model that has already been given
+        what it asked for ask again."""
         return self.client.complete(
-            _SYSTEM_PROMPT,
-            _build_user_prompt(request),
+            _SYSTEM_PROMPT + (
+                HISTORICAL_ANALOGUE_RULE if evidence is not None else ""
+            ),
+            _build_user_prompt(
+                request, offer=offer, offer_omitted=offer_omitted, evidence=evidence,
+            ),
             max_output_tokens=min(
                 MAX_OUTPUT_TOKENS,
                 _OUTPUT_TOKENS_ASSESSMENT
@@ -536,10 +729,23 @@ def _render_candidate(
     return "\n".join(lines)
 
 
-def _build_user_prompt(request: RankRequest) -> str:
+def _build_user_prompt(
+    request: RankRequest,
+    *,
+    offer: tuple[HistoricalBoundary, ...] = (),
+    offer_omitted: int = 0,
+    evidence: HistoricalEvidence | None = None,
+) -> str:
     """The user message: the window's regressions and their history, the
     configurations that stayed flat, then every candidate grouped by package,
-    each with its fair share of the total diff budget."""
+    each with its fair share of the total diff budget.
+
+    *offer* appends the lightweight index of older boundaries the model may ask
+    for, *offer_omitted* how many of them the index cap cut; *evidence* appends
+    the analogues it did ask for. Never both an offer and evidence — an index in
+    the follow-up prompt would be a second retrieval round, which the protocol
+    does not have. With neither (the default, and the whole of a run with the
+    feature switched off) this returns byte-for-byte what it always did."""
     packages = sorted({c.repo for c in request.candidates})
     parts = [
         f"Run context — the {request.detector} run these metrics were "
@@ -571,6 +777,13 @@ def _build_user_prompt(request: RankRequest) -> str:
                 candidate, budget_for[candidate], geometry_tree(request.geometry_tree)
             ))
 
+    # After the candidates, so the current window is read first and the older
+    # boundaries are met as what they are — background to it, never a second set
+    # of candidates competing with it for the model's attention.
+    parts += historical_offer_lines(offer, omitted=offer_omitted)
+    if evidence is not None:
+        parts += historical_lines(evidence.prs, asked=True)
+
     parts.append("")
     parts.append(
         f"First decide whether these metrics really changed, using their "
@@ -582,12 +795,17 @@ def _build_user_prompt(request: RankRequest) -> str:
         f"against it."
     )
     parts.append(_RESPONSE_INSTRUCTION)
+    historical = "" if evidence is None else (
+        f", {len(evidence.prs)} historical analogue(s)"
+    )
     return log_prompt_size(
         "rank", "\n".join(parts),
         detail=(
             f"{request.detector}/{request.sample} {request.onset_release}, "
             f"{len(request.candidates)} candidate(s), "
             f"{len(request.metrics)} metric(s)"
+            + (f", {len(offer)} boundary(ies) offered" if offer else "")
+            + historical
         ),
     )
 
@@ -646,6 +864,18 @@ def _parse_rankings(
             against=one_line(row.get("against"), _MAX_AGAINST_CHARS),
         )
     return out
+
+
+def _asks_again(content: str) -> bool:
+    """Whether a reply carries a historical request the protocol cannot honour.
+
+    Only a *present, non-null* member counts. A model echoing the field back as
+    ``null`` — which JSON-mode models do with a schema they were shown once — is
+    saying it wants nothing, and reading that as a refusal to judge would throw
+    away a good ranking over a punctuation habit.
+    """
+    data = extract_json(content)
+    return isinstance(data, dict) and data.get(REQUEST_KEY) is not None
 
 
 def _parse_assessment(content: str) -> StepAssessment | None:

@@ -66,6 +66,7 @@ from collections.abc import Sequence
 from typing import Literal, Protocol
 
 from k4bench.blame.evidence import MetricHistory, ScopeOutcome
+from k4bench.blame.history import HistoricalPR
 from k4bench.blame.llm import (
     MAX_OUTPUT_TOKENS,
     ChatClient,
@@ -77,6 +78,7 @@ from k4bench.blame.llm import (
 from k4bench.blame.prompt import (
     ASSESSMENT_RULE,
     ASSESSMENT_VALUES,
+    HISTORICAL_ANALOGUE_RULE,
     NOISE_RULE,
     SCORE_BAND_RULE,
     UNTRUSTED_EVIDENCE_RULE,
@@ -85,6 +87,7 @@ from k4bench.blame.prompt import (
     diff_block,
     direction_phrase,
     format_files,
+    historical_lines,
     history_block,
     history_clause,
     log_prompt_size,
@@ -273,6 +276,19 @@ class AttributionRequest:
     #: exactly this window was not read. Stated in the prompt, because a silent
     #: omission would read as "nothing changed there".
     packages_unavailable_on: tuple[str, ...] = ()
+    #: The older-boundary pull requests the *first* pass asked to read before it
+    #: produced the score that selected this comment
+    #: (:mod:`k4bench.blame.history`), re-fetched from the sidecar's persisted
+    #: references. Empty on every review whose first pass used none.
+    #:
+    #: They are here so that both passes weigh the same material. This pass
+    #: exists to revise the first's judgement, and a revision made without the
+    #: evidence that judgement rested on is not a second opinion — it is a
+    #: different question, answered against a smaller world, whose disagreement
+    #: with the first would mean nothing. They remain **analogues**: they shipped
+    #: before the window opened, they are never scored, never accused, and never
+    #: rendered as candidates.
+    historical: tuple[HistoricalPR, ...] = ()
 
     @property
     def slug(self) -> str:
@@ -445,7 +461,7 @@ class OpenAICompatAttributor:
             return None
         try:
             content, finish_reason = self.client.complete(
-                _SYSTEM_PROMPT,
+                _system_prompt(request),
                 build_user_prompt(request),
                 max_output_tokens=min(
                     MAX_OUTPUT_TOKENS,
@@ -517,7 +533,7 @@ class OpenAICompatAttributor:
             )
             try:
                 content, _finish = self.client.complete(
-                    _SYSTEM_PROMPT,
+                    _system_prompt(request),
                     build_user_prompt(
                         request, only_ids=[f.id for f in missing]
                     ),
@@ -565,6 +581,19 @@ class OpenAICompatAttributor:
             likelihoods=likelihoods,
             assessment=attribution.assessment,
         )
+
+
+def _system_prompt(request: AttributionRequest) -> str:
+    """The system prompt for *request* — with the analogue rule only when there
+    are analogues.
+
+    Composed rather than constant so a review that carries no historical evidence
+    is asked in exactly the words it was asked in before this feature existed. A
+    standing rule about material the prompt does not contain is at best noise and
+    at worst an invitation to hunt for it."""
+    if not request.historical:
+        return _SYSTEM_PROMPT
+    return _SYSTEM_PROMPT + HISTORICAL_ANALOGUE_RULE
 
 
 def attributor_from_env() -> Attributor | None:
@@ -928,6 +957,10 @@ def build_user_prompt(
         *_package_lines(request),
         *_subject_lines(request, subject_budget),
         *_competitor_lines(competitors, competitor_budgets),
+        # Last, and on their own budget: the analogues are background to the
+        # window above, and the reviewed pull request and its competitors must
+        # never lose a character of diff to them.
+        *historical_lines(request.historical),
         "",
         f"Decide, for each regression id above, how likely it is that "
         f"{request.slug} caused it — judging what this diff can actually reach "
@@ -940,6 +973,10 @@ def build_user_prompt(
         detail=(
             f"{request.slug}, {len(request.regressions)} row(s), "
             f"{len(competitors)} competitor(s)"
+            + (
+                f", {len(request.historical)} historical analogue(s)"
+                if request.historical else ""
+            )
         ),
     )
 

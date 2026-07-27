@@ -26,6 +26,14 @@ import math
 import textwrap
 
 from k4bench.blame.evidence import MetricHistory, ScopeOutcome
+from k4bench.blame.history import (
+    MAX_BOUNDARIES,
+    MAX_DIFF_CHARS,
+    MAX_PACKAGES_PER_BOUNDARY,
+    REQUEST_KEY,
+    HistoricalBoundary,
+    HistoricalPR,
+)
 from k4bench.labels import describe_platform, pretty_sample
 from k4bench.regression.models import RegionDelta
 
@@ -631,3 +639,184 @@ def body_block(body: str, budget: int, *, indent: str = "    ") -> list[str]:
         body, budget, label="description",
         begin=_BEGIN_BODY, end=_END_BODY, indent=indent,
     )
+
+
+# ── Historical analogues ──────────────────────────────────────────────────────
+
+#: The rule under which older releases' code may be read, composed into a system
+#: prompt **only when historical evidence is actually attached**. Both passes
+#: compose the same sentence for the same reason the score bands are shared: the
+#: second pass revises the first's reading of the same analogue, and two wordings
+#: of "this is not a candidate" are two different rules.
+HISTORICAL_ANALOGUE_RULE = (
+    "Some pull requests in this message are labelled HISTORICAL ANALOGUES. They "
+    "come from release boundaries BEFORE the window under investigation and "
+    "cannot have caused it: they are shown only so you can compare mechanisms "
+    "and calibrate how large a change of this kind moves this benchmark. Never "
+    "score one, never name one as a cause, and never let one displace a "
+    "current-window candidate. Judge every current candidate and only the "
+    "current candidates. "
+)
+
+#: Paths listed per historical pull request. Tighter than a current candidate's:
+#: an analogue is read for its mechanism, and its exact file list is not what
+#: carries that.
+_MAX_HISTORICAL_FILES = 8
+
+#: Description kept per historical pull request. An author's account of a change
+#: is often the most transferable part of an analogue — "expect ~15% slower" —
+#: but this is background to the current window, not the subject of it.
+_MAX_HISTORICAL_BODY_CHARS = 600
+
+
+def historical_offer_lines(
+    boundaries: tuple[HistoricalBoundary, ...], *, omitted: int = 0
+) -> list[str]:
+    """The lightweight index of older boundaries, and how to ask for one.
+
+    Costs no GitHub call to produce and none to ignore: a model that has enough
+    evidence simply answers, and the ordinary night spends one model call exactly
+    as it did before this block existed.
+
+    Boundaries whose release diff could not be read are **listed, not hidden**.
+    A gap in a list of dates reads as a boundary where nothing moved, which is
+    the opposite of what an unread diff means, and this whole retrieval protocol
+    is built on keeping those two apart. Every cap that bit — *omitted*
+    boundaries, and packages beyond a boundary's listing bound — is stated for
+    the same reason: a shortened list that does not admit to being short is read
+    as a complete one.
+    """
+    if not boundaries:
+        return []
+    lines = [
+        "",
+        "Older release boundaries in these metrics' history, and what moved "
+        "across each. You are NOT being asked about these — they are offered in "
+        "case seeing the code behind an earlier step of a similar shape would "
+        "change your reading of this one:",
+    ]
+    for boundary in boundaries:
+        window = f"{boundary.base_release} → {boundary.onset_release}"
+        if not boundary.provenance_read:
+            lines.append(
+                f"  - [{boundary.id}] {window}: the release diff for this "
+                f"boundary could not be read, so nothing can be retrieved for "
+                f"it — that is not a statement that nothing changed."
+            )
+            continue
+        if not boundary.packages:
+            lines.append(
+                f"  - [{boundary.id}] {window}: no tracked package changed "
+                f"across this boundary."
+            )
+            continue
+        named = ", ".join(
+            f"{p.name}" + (f" ({p.repo}, {p.status})" if p.repo else f" ({p.status})")
+            for p in boundary.packages
+        )
+        # The listing cap is stated whenever it bites. Silently showing 25 of 37
+        # would let the model rule out the 26th on the strength of a display
+        # bound — an exculpation nobody measured.
+        if boundary.packages_omitted:
+            named += (
+                f" — showing {len(boundary.packages)} of "
+                f"{boundary.packages_total} changed package(s); the other "
+                f"{boundary.packages_omitted} are not listed and cannot be "
+                f"requested, which is not a statement that they are irrelevant"
+            )
+        lines.append(f"  - [{boundary.id}] {window}: {named}")
+    if omitted:
+        lines.append(
+            f"  ({omitted} older boundary(ies) of this history are not listed "
+            f"here and cannot be requested; each still appears with its own "
+            f"package count in the history table above.)"
+        )
+    lines += [
+        "",
+        "If — and only if — the code behind one of those boundaries would "
+        "materially change your judgement, you may ask for it instead of "
+        f'answering: {{"{REQUEST_KEY}": {{"boundary_ids": ["<id from the list '
+        'above>"], "packages": ["<package name from that boundary>"], "reason": '
+        '"<one sentence on what you expect to learn>"}}. '
+        f"At most {MAX_BOUNDARIES} boundary(ies) and "
+        f"{MAX_PACKAGES_PER_BOUNDARY} package(s) per boundary, named exactly as "
+        "listed above. Any other id, package, repository, commit or URL is "
+        "refused and costs you the whole ranking, so ask only for what is "
+        "listed. If you ask, ask alone: any rankings in the same reply are "
+        "discarded, and you will be asked again with the code attached. If you "
+        "do not need it, simply answer now — that is the expected case.",
+    ]
+    return lines
+
+
+def historical_lines(
+    prs: tuple[HistoricalPR, ...],
+    *,
+    budget: int = MAX_DIFF_CHARS,
+    asked: bool = False,
+) -> list[str]:
+    """The retrieved analogues as a clearly separated prompt section.
+
+    Rendered identically for both passes, from one function, because the second
+    pass is asked to review a judgement the first made partly from these diffs:
+    if the two rendered the same pull request differently, the review would be
+    revising a reading of evidence it was never actually shown.
+
+    The section carries its **own** diff budget (:data:`~k4bench.blame.history.MAX_DIFF_CHARS`),
+    waterfilled across the analogues, so no amount of historical code can shrink
+    what the prompt says about the current window's candidates. Bodies and
+    patches are fenced exactly as a current candidate's are — an analogue is a
+    pull request written by somebody, and being old makes it no more trustworthy.
+
+    *asked* renders the honest empty answer: a model that requested a boundary
+    whose ranges turned out to hold no pull request at all is told so, rather
+    than being handed a prompt indistinguishable from one where nothing was ever
+    requested and left inferring that its ask was ignored.
+    """
+    if not prs:
+        return [
+            "",
+            "You asked for the code behind an earlier boundary. It was read in "
+            "full and holds no pull request that can be shown — that is the "
+            "complete answer, not a failure to look. Judge the current window's "
+            "candidates on the evidence above.",
+        ] if asked else []
+    lines = [
+        "",
+        "── HISTORICAL ANALOGUES — pull requests from EARLIER release "
+        "boundaries ──",
+        "These are NOT candidates for the regression under investigation: they "
+        "shipped before the window under investigation opened, so they cannot "
+        "have caused it. You asked for them; use them only to compare mechanisms "
+        "and to calibrate how much a change of this kind moves this benchmark. "
+        "Do not score them, do not name them as a cause, and score every "
+        "current-window candidate exactly as you would have without them.",
+    ]
+    budgets = allocate_diff_budget([len(pr.patch) for pr in prs], budget)
+    by_boundary: dict[tuple[str, str, str], list[tuple[HistoricalPR, int]]] = {}
+    for pr, share in zip(prs, budgets):
+        key = (pr.boundary_id, pr.base_release, pr.onset_release)
+        by_boundary.setdefault(key, []).append((pr, share))
+
+    for (boundary_id, base, onset), entries in by_boundary.items():
+        lines.append("")
+        lines.append(
+            f"## [{boundary_id}] earlier boundary {base} → {onset} "
+            f"(historical — not a candidate)"
+        )
+        for pr, share in entries:
+            size = f"+{pr.additions}/-{pr.deletions}"
+            lines.append("")
+            lines.append(
+                f"- {pr.slug} in package {pr.package} — {pr.title} ({size}) "
+                f"[historical analogue]"
+            )
+            if pr.files:
+                lines.append(
+                    f"  files: {format_files(pr.files, _MAX_HISTORICAL_FILES)}"
+                )
+            lines += body_block(pr.body, _MAX_HISTORICAL_BODY_CHARS)
+            lines += diff_block(pr.patch, share)
+    lines.append("")
+    lines.append("── END HISTORICAL ANALOGUES ──")
+    return lines
