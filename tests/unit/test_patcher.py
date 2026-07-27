@@ -5,7 +5,6 @@ All tests use the minimal_geometry fixture — no ddsim, no DD4hep runtime.
 
 from __future__ import annotations
 
-import os
 import tempfile
 from pathlib import Path
 from xml.dom import minidom
