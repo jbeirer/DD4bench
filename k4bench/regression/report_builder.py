@@ -56,13 +56,18 @@ _log = logging.getLogger(__name__)
 #: stretch of nights was contaminated or failed.
 FETCH_WINDOW_RUNS = 2 * BASELINE_WINDOW_RUNS
 
-#: A triple whose newest run is this many days behind the report night is still
-#: part of the same nightly batch, not a missing run. One night's benchmark jobs
-#: are stamped with the date each one *starts*, and they start staggered on a
-#: runner they queue for, so a batch that begins near midnight lands partly on
-#: one date and partly on the next. Both halves are that night's measurements
-#: and are reported as such — a lag of a single day only ever means the batch
-#: crossed midnight or the triple has yet to run, and neither is a failure.
+#: Date-only fallback for :func:`_same_batch`: a triple whose newest run is this
+#: many days behind the report night is taken to belong to the same nightly
+#: batch. One night's benchmark jobs are stamped with the date each one *starts*,
+#: and they start staggered on a runner they queue for, so a batch that begins
+#: near midnight lands partly on one date and partly on the next.
+#:
+#: Only consulted when the CI run id cannot decide the question, because on its
+#: own it cannot: a triple whose job crashed and uploaded nothing looks exactly
+#: like one that started before midnight, and one night is the commonest outage
+#: there is. Runs recorded before ``github_run_url`` existed are the case that
+#: needs it; there, keeping the run is the lesser error, since the alternative
+#: is to cry *missing run* every time a batch crosses midnight.
 SAME_BATCH_LAG_DAYS = 1
 
 #: A triple whose newest run is older than the report night by more than this
@@ -584,23 +589,60 @@ def build_nightly_report_local(
     return _finalize_report(groups)
 
 
+def _batch_ids(groups: list[RunGroupReport], report_night: str) -> set[str]:
+    """The CI runs that produced the report night's own measurements.
+
+    Every triple of one nightly is benchmarked by the same workflow run —
+    ``nightly.yml`` fans out over detectors with ``uses:``, and a reusable
+    workflow runs inside its caller's run — so ``github_run_url`` identifies the
+    *batch*, not the job. Empty for a night whose runs predate the field, which
+    is what makes it a fallback rather than a requirement.
+    """
+    return {
+        g.github_run_url for g in groups
+        if g.run_date == report_night and g.github_run_url
+    }
+
+
+def _same_batch(
+    group: RunGroupReport, batch: set[str], age_days: int
+) -> bool:
+    """Whether *group*'s run belongs to the report night's batch despite being
+    dated earlier.
+
+    A batch that starts near midnight splits across two dates — each job is
+    stamped when it starts — so a lagging run is routinely one of tonight's own
+    measurements. It is equally routinely a triple whose job crashed and
+    uploaded nothing, and the two are indistinguishable by date. The CI run id
+    tells them apart exactly: same run, same batch.
+
+    Falls back to :data:`SAME_BATCH_LAG_DAYS` only when the ids cannot answer —
+    either side missing means the comparison would be between a known id and an
+    unknown one, which proves nothing.
+    """
+    if batch and group.github_run_url:
+        return group.github_run_url in batch
+    return age_days <= SAME_BATCH_LAG_DAYS
+
+
 def _finalize_report(groups: list[RunGroupReport]) -> NightlyReport:
     """Resolve the report night and turn stale triples into missing-run
     failures (or drop them as retired past the grace period).
 
-    Triples within :data:`SAME_BATCH_LAG_DAYS` of the report night are reported
-    as they are: they belong to the same batch, and their verdicts are this
-    night's news."""
+    Triples that ran in the report night's own batch are reported as they are
+    even when dated a night earlier (see :func:`_same_batch`): they belong to
+    this night, and their verdicts are this night's news."""
     if groups:
         report_night = max(g.run_date for g in groups)
         night = pd.Timestamp(report_night)
+        batch = _batch_ids(groups, report_night)
         kept: list[RunGroupReport] = []
         for g in groups:
             if g.run_date == report_night:
                 kept.append(g)
                 continue
             age_days = (night - pd.Timestamp(g.run_date)).days
-            if age_days <= SAME_BATCH_LAG_DAYS:
+            if _same_batch(g, batch, age_days):
                 g.notes.append(
                     f"run is dated {g.run_date}, this report {report_night} — "
                     "a job is dated when it starts, so a batch that crosses "

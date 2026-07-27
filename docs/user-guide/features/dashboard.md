@@ -175,6 +175,15 @@ instead **release-level**: it is fixed from the first report night that
 confirmed a change window for the release and reused on every rerun, because
 no upstream package changes between repeat measurements of the same binary.
 
+A benchmark job is dated when it *starts*, so a nightly batch beginning near
+midnight splits across two dates and some detectors are stamped a day behind
+the report night. Those are still tonight's measurements and are reported as
+such, with a note saying so — they are recognised by the CI run they came from,
+which every detector of one nightly shares, so a detector whose job crashed and
+uploaded nothing is still reported as a **missing run** rather than passing as
+a straddling batch. Runs recorded before that CI run id existed fall back to
+accepting a single night's lag.
+
 A `?report=YYYY-MM-DD` query parameter pins one report night directly and is
 authoritative when valid — this is the stable deep link the nightly email and
 the Overview roster generate, so a link to a confirmed regression keeps

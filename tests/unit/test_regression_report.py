@@ -248,7 +248,8 @@ def test_local_report_flags_missing_run_and_drops_retired(tmp_path):
 def test_local_report_keeps_a_triple_one_night_behind(tmp_path):
     # A batch started before midnight stamps its early jobs with the previous
     # date (each job is dated when it starts), so DET_B trails DET_A by a
-    # night. Both ran; neither is missing.
+    # night. Both ran; neither is missing. These runs carry no CI run id (the
+    # local case), so the date fallback is what keeps DET_B.
     _make_history(_local_tree(tmp_path, "DET_A", "single_e"), [100.0] * 13)
     walls = [100.0] * 10 + [120.0, 120.5]  # a step DET_B must still report
     _make_history(_local_tree(tmp_path, "DET_B", "single_e"), walls)
@@ -262,6 +263,40 @@ def test_local_report_keeps_a_triple_one_night_behind(tmp_path):
     # Its verdicts are this night's news, not suppressed as a stale group's.
     assert any(v.metric == "wall_time_s" for v in late.regressions)
     assert report.has_alertable  # …and they alert on their own merit
+
+
+_RUN = "https://github.com/key4hep/k4Bench/actions/runs"
+
+
+def test_ci_run_id_keeps_a_triple_that_ran_in_this_batch(tmp_path):
+    # Same shape as above, but the runs record which CI run produced them. Every
+    # detector of one nightly shares it, so DET_B's earlier date is the batch
+    # crossing midnight — a fact here, not an inference from the gap.
+    _make_history(_local_tree(tmp_path, "DET_A", "single_e"), [100.0] * 13,
+                  per_night={12: {"github_run_url": f"{_RUN}/900"}})
+    _make_history(_local_tree(tmp_path, "DET_B", "single_e"), [100.0] * 12,
+                  per_night={11: {"github_run_url": f"{_RUN}/900"}})
+    report = build_nightly_report_local(str(tmp_path))
+
+    late = next(g for g in report.groups if g.detector == "DET_B")
+    assert late.run_date == "2026-01-12"
+    assert late.job_failures == []
+
+
+def test_ci_run_id_still_flags_a_triple_that_never_ran_tonight(tmp_path):
+    # The case the date gap alone cannot see: DET_B's job crashed and uploaded
+    # nothing, so its newest run is last night's batch. One night is the
+    # commonest outage there is, and it must not pass as a midnight straddle.
+    _make_history(_local_tree(tmp_path, "DET_A", "single_e"), [100.0] * 13,
+                  per_night={12: {"github_run_url": f"{_RUN}/900"}})
+    _make_history(_local_tree(tmp_path, "DET_B", "single_e"), [100.0] * 12,
+                  per_night={11: {"github_run_url": f"{_RUN}/899"}})
+    report = build_nightly_report_local(str(tmp_path))
+
+    late = next(g for g in report.groups if g.detector == "DET_B")
+    assert late.verdicts == []
+    assert "no run uploaded for 2026-01-13" in late.job_failures[0]
+    assert report.has_alertable
 
 
 def test_local_report_quiet_night_not_alertable(tmp_path):
