@@ -352,23 +352,32 @@ Three views, dispatched by the same View radio as the other multi-view tabs
   rescales each line to its first night = 100 %, making drift comparable
   across detectors of very different absolute cost;
 - **Performance Landscape** — the selected time metric against the selected
-  memory metric on the latest night, one point per detector — closer to the
-  origin is faster *and* leaner. The metric selectors offer mean/median event
-  time, wall time or user CPU for time; mean event RSS or peak RSS for memory
-  (shown in GB), are shared with the trends view, and the selection is
-  shareable via `?tmetric=`/`?mmetric=`;
+  memory metric, one point per detector at its **most recent run** — closer to
+  the origin is faster *and* leaner. It follows the runs rather than the
+  reports, so it is unaffected by the Regression Status night on screen, and a
+  detector that missed the newest night keeps its last measured point (the
+  caption and the hover name its nightly tag) instead of dropping off the
+  chart; the same fallback applies to a run excluded by the reliability
+  toggle. Both coordinates always come from one run. The metric selectors
+  offer mean/median event time, wall time or user CPU for time; mean event RSS
+  or peak RSS for memory (shown in GB), are shared with the trends view, and
+  the selection is shareable via `?tmetric=`/`?mmetric=`;
 - **Regression Status** — since the Regressions tab is scoped to one
-  detector, the **cross-detector regression picture lives here**: a banner
-  with the latest night's verdict counts across all scoped detectors
+  detector, the **cross-detector regression picture lives here**: a **report
+  night picker** (every fetched night that covers the scope, newest first,
+  each badged with its worst cross-detector state; defaults to the newest,
+  pinnable via `?report=` — the same parameter the roster links and alert
+  emails carry, and the trend window sets how far back it reaches), a
+  banner with that night's verdict counts across all scoped detectors
   (checked / 🔴 regressed / ⚠️ watch / ❌ failures), a per-detector status
   roster (badge, flag counts, worst flagged metric, and a link that opens the
-  Regressions tab scoped to that detector), and a **flagged-metric trend**
-  that opens on the night's worst flag — the metric's history over the trend
-  window with the baseline band its verdict was judged against and, for a
-  confirmed step, the shaded blame window, all built from the cached reports
-  with no run downloads. The view renders even on a night whose configs all
-  hard-failed (when there are no values to plot), so a failure is never
-  hidden behind an empty chart.
+  Regressions tab scoped to that detector and pinned to the selected night),
+  and a **flagged-metric trend** that opens on the night's worst flag — the
+  metric's history over the trend window with the baseline band its verdict
+  was judged against and, for a confirmed step, the shaded blame window, all
+  built from the cached reports with no run downloads. The view renders even
+  on a night whose configs all hard-failed (when there are no values to plot),
+  so a failure is never hidden behind an empty chart.
 
 Colours follow the detector *family* (ALLEGRO, CLD, …), with versions of one
 family distinguished by dash pattern and marker symbol, so experiment-level
@@ -377,7 +386,9 @@ excluded by default with the same warning/toggle as every other historical
 view (the nightly report carries each night's per-detector verdict); their raw
 values are still recorded — as unjudged points, never flagged — so disabling
 the toggle plots them like Run Trends does. One toggle covers all three views,
-the Regression Status trend preview included. Exclusion drops the *run*,
+the Regression Status trend preview included, and the warning and toggle reach
+every report in view — including nights outside the trend window, which the
+landscape and the night picker both read. Exclusion drops the *run*,
 not the nightly tag: a tag benchmarked twice keeps the point measured by
 whichever rerun passed, and a 🔴/⚠️ marker leaves the chart with the run that
 earned it rather than ringing on a rerun that was never flagged.

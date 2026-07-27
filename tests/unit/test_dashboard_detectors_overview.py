@@ -359,27 +359,66 @@ def test_drop_unreliable_runs_is_a_no_op_without_pairs():
     assert ov.drop_unreliable_runs(empty, {("2026-07-01", "CLD")}).empty
     assert ov.collapse_history(empty).empty
 
-# ── scoped_snapshot ────────────────────────────────────────────────────────────
 
-def test_scoped_snapshot_wide_shape_and_excluded():
-    df = ov.report_metrics_frame(_report())
-    wide, excluded = ov.scoped_snapshot(df, "PLAT", "single_e", "baseline_all")
+# ── latest_snapshot ────────────────────────────────────────────────────────────
+
+def _two_night_hist() -> pd.DataFrame:
+    """CLD measured on both nights, IDEA only on the older one."""
+    n1 = ov.report_metrics_frame(_report())
+    night2 = NightlyReport(generated_at="", groups=[
+        _group("CLD", [
+            _verdict(value=130.0),
+            _verdict(metric="peak_rss_mb", metric_family="memory", value=2100.0),
+        ], run_date="2026-01-13"),
+    ])
+    n2 = ov.report_metrics_frame(night2)
+    return _collapsed_history(
+        [("2026-01-12", n1), ("2026-01-13", n2)], "PLAT", "single_e", "baseline_all"
+    )
+
+
+def test_latest_snapshot_takes_each_detectors_newest_night():
+    wide, as_of = ov.latest_snapshot(_two_night_hist())
     assert set(wide.index) == {"CLD", "IDEA"}
     assert set(wide.columns) <= set(ov._METRIC_ORDER)
-    assert wide.loc["CLD", "wall_time_s"] == 120.0
+    # CLD moves to its second night; IDEA keeps its last measured one rather
+    # than dropping off the snapshot.
+    assert wide.loc["CLD", "wall_time_s"] == 130.0
     assert wide.loc["IDEA", "peak_rss_mb"] == 1500.0
-    assert excluded == []
-    # IDEA has no single_mu benchmark → excluded from that scope.
-    wide_mu, excluded_mu = ov.scoped_snapshot(df, "PLAT", "single_mu", "baseline_all")
-    assert set(wide_mu.index) == {"CLD"}
-    assert excluded_mu == ["IDEA"]
+    assert as_of == {"CLD": "2026-01-13", "IDEA": "2026-01-12"}
 
 
-def test_scoped_snapshot_empty_scope():
-    df = ov.report_metrics_frame(_report())
-    wide, excluded = ov.scoped_snapshot(df, "PLAT", "nope", "baseline_all")
+def test_latest_snapshot_coordinates_come_from_one_run():
+    # CLD's newest night has no mean_time_s: the metric is absent rather than
+    # back-filled from the older night, so a point never mixes two runs.
+    wide, _ = ov.latest_snapshot(_two_night_hist())
+    assert pd.isna(wide.loc["CLD", "mean_time_s"])
+    assert wide.loc["IDEA", "mean_time_s"] == 0.8
+
+
+def test_latest_snapshot_empty_history():
+    wide, as_of = ov.latest_snapshot(
+        _collapsed_history([], "PLAT", "single_e", "baseline_all")
+    )
     assert wide.empty
-    assert excluded == ["CLD", "IDEA"]
+    assert as_of == {}
+
+
+# ── unreliable_pairs ───────────────────────────────────────────────────────────
+
+def test_unreliable_pairs_only_collects_explicit_failures():
+    # Keyed on the run night, not the tag: the 07-02 rerun of the 07-01 tag is
+    # addressable on its own, so excluding it cannot take its sibling with it.
+    rel = pd.DataFrame({
+        "night":     ["2026-01-12", "2026-01-12", "2026-01-13", "2026-01-13"],
+        "run_night": ["2026-01-12", "2026-01-12", "2026-01-13", "2026-01-14"],
+        "detector":  ["CLD", "IDEA", "CLD", "CLD"],
+        "reliable":  [False, None, True, False],
+    })
+    assert ov.unreliable_pairs(rel) == {
+        ("2026-01-12", "CLD"), ("2026-01-14", "CLD"),
+    }
+    assert ov.unreliable_pairs(rel.iloc[0:0]) == set()
 
 
 # ── scatter_points ─────────────────────────────────────────────────────────────
@@ -483,17 +522,22 @@ def test_detector_styles_family_colour_version_dash():
 def _fixture_frames():
     n1 = ov.report_metrics_frame(_report())
     # Second night: only IDEA has the scope combo, and its mean event time
-    # confirmed as a regression that night (a distinct nightly tag).
+    # confirmed as a regression that night (a distinct nightly tag). CLD's
+    # landscape point therefore comes from the first night, IDEA's from the
+    # second — the per-detector snapshot the landscape plots.
     night2 = NightlyReport(generated_at="", groups=[
-        _group("IDEA", [_verdict(detector="IDEA", metric="mean_time_s", value=0.9,
-                                 severity=Severity.CONFIRMED, direction=Direction.UP)],
-               run_date="2026-01-13"),
+        _group("IDEA", [
+            _verdict(detector="IDEA", metric="mean_time_s", value=0.9,
+                     severity=Severity.CONFIRMED, direction=Direction.UP),
+            _verdict(detector="IDEA", metric="peak_rss_mb", metric_family="memory",
+                     value=1400.0),
+        ], run_date="2026-01-13"),
     ])
     n2 = ov.report_metrics_frame(night2)
-    wide, _ = ov.scoped_snapshot(n1, "PLAT", "single_e", "baseline_all")
     hist = _collapsed_history(
         [("2026-01-12", n1), ("2026-01-13", n2)], "PLAT", "single_e", "baseline_all"
     )
+    wide, _ = ov.latest_snapshot(hist)
     detectors = sorted(set(wide.index) | set(hist["detector"]))
     styles = ov.detector_styles(detectors, ["#111111", "#222222"])
     return wide, hist, styles, detectors
@@ -571,9 +615,14 @@ def test_history_figure_handles_partial_data():
 
 def test_landscape_figure_points_units_and_axes():
     wide, hist, styles, detectors = _fixture_frames()
+    _, as_of = ov.latest_snapshot(hist)
     wide_disp, _ = ov._to_display_units(wide, hist)
-    fig = ov._landscape_figure(wide_disp, "mean_time_s", "peak_rss_mb", styles, detectors)
+    fig = ov._landscape_figure(wide_disp, "mean_time_s", "peak_rss_mb", styles,
+                               detectors, as_of=as_of)
     assert len(fig.data) == 2  # one point per detector (CLD, IDEA)
+    # Points can date from different nights, so each carries its own tag.
+    tags = {t.legendgroup: t.hovertemplate.split("Tag: ")[1][:10] for t in fig.data}
+    assert tags == {"CLD": "2026-01-12", "IDEA": "2026-01-13"}
     assert sum(bool(t.showlegend) for t in fig.data) == 2
     assert fig.layout.xaxis.title.text == "Mean event time (s)"
     assert fig.layout.yaxis.title.text == "Peak RSS (GB)"
