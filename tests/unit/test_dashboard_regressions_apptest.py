@@ -1190,3 +1190,45 @@ def test_an_ordinary_step_adds_no_caption_at_all(monkeypatch):
     flags.render_step_assessment(entry)
     flags.render_step_assessment(dataclasses.replace(entry, assessment=None))
     assert captions == []
+
+
+def test_metric_option_reads_the_same_in_every_picker():
+    # Three views label their flags with this one helper, so the wording — the
+    # badge, the size of the step, and what a metric with no relative change
+    # renders as — is pinned here rather than once per tab.
+    from dashboard.tabs._regression_flags import metric_option
+
+    confirmed = _verdict("wall_time_s", Severity.CONFIRMED, 0.2)
+    assert metric_option(confirmed) == (
+        "🔴 Regression · wall time · baseline — Δ +20.0%"
+    )
+    watch = _verdict("peak_rss_mb", Severity.WATCH, -0.075, metric_family="memory")
+    assert metric_option(watch) == "⚠️ Watch · peak RSS · baseline — Δ -7.5%"
+    # An absolute-floor metric has no percentage; it must not read as +0.0%.
+    floorless = _verdict("cpu_efficiency", Severity.WATCH, None)
+    assert metric_option(floorless).endswith(" — Δ —")
+    # Region rows carry their sub-detector, as in the ledger.
+    region = _verdict("wall_time_s", Severity.CONFIRMED, 0.2,
+                      sub_detector="VertexBarrel")
+    assert "wall time · VertexBarrel" in metric_option(region)
+
+
+def test_metric_option_suffixes_carry_each_view_its_missing_context():
+    # Every picker drops what its own scope already fixes: Regressions is one
+    # detector/night, the Overview spans detectors, Stack Changes spans both
+    # and can repeat one series across windows.
+    from dashboard.tabs._regression_flags import metric_option
+
+    v = _verdict("wall_time_s", Severity.CONFIRMED, 0.2, sample="p8_ee_Zbb_ecm91",
+                 onset_run_date="2026-07-10", last_accepted_run_date="2026-07-08")
+    assert metric_option(v, include_detector=True) == (
+        "🔴 Regression · CLD · wall time · baseline — Δ +20.0%"
+    )
+    assert metric_option(v, include_scope=True) == (
+        "🔴 Regression · wall time · baseline · "
+        "CLD, Pythia8: e⁺e⁻ → Z → bb (91 GeV) — Δ +20.0%"
+    )
+    assert "· 2026-07-08 → 2026-07-10 —" in metric_option(v, include_window=True)
+    # A change confirmed before its series ever settled has no lower bound.
+    open_ended = dataclasses.replace(v, last_accepted_run_date=None)
+    assert "· ? → 2026-07-10 —" in metric_option(open_ended, include_window=True)

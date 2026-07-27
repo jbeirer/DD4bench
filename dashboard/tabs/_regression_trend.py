@@ -49,7 +49,7 @@ _FUTURE_TAGS = 7
 
 
 def render_metric_picker(
-    verdicts: list[MetricVerdict], *, key: str,
+    verdicts: list[MetricVerdict], *, key: str, include_detector: bool = False,
     include_scope: bool = False, include_window: bool = False,
     label: str = "Trend preview", help: str | None = None,
     default: MetricVerdict | None = None,
@@ -57,8 +57,8 @@ def render_metric_picker(
     """Render the shared worst-first metric picker and return its selection."""
     labels = [
         metric_option(
-            verdict, include_scope=include_scope,
-            include_window=include_window,
+            verdict, include_detector=include_detector,
+            include_scope=include_scope, include_window=include_window,
         )
         for verdict in verdicts
     ]

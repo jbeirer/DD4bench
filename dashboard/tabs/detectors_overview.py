@@ -36,11 +36,11 @@ from tabs._regression_flags import (
     SEVERITY_RANK,
     add_severity_markers,
     attention_key,
-    metric_option,
     pretty_metric,
     render_flag_pills,
 )
-from ui_chrome import _drop_stale_selection, seed_query_param
+from tabs._regression_trend import render_metric_picker
+from ui_chrome import seed_query_param
 from ui_utils import (
     _DASHES,
     _METRIC_LABELS,
@@ -822,30 +822,27 @@ def _render_flag_trend(
     platform: str,
     sample: str,
 ) -> None:
-    """The Regression Status view's trend preview — opens on the worst flag,
-    like the Regressions tab's, but costs no run downloads: the series is the
-    verdicts' raw nightly values across the already-fetched reports."""
+    """The Regression Status view's trend preview — the shared worst-first
+    picker, leading with the detector because this view spans them, above a
+    chart that costs no run downloads: the series is the verdicts' raw nightly
+    values across the already-fetched reports."""
     choices = _flag_choices(latest_groups)
     if not choices:
         return
     st.markdown("###### Flagged-metric trend")
-    options = ["—"] + [
-        metric_option(v, include_detector=True) for v in choices
-    ]
-    _reset_widget_on_scope(
-        "det_ov_flag_trend", (platform, sample, tuple(options)),
-    )
-    _drop_stale_selection("det_ov_flag_trend", options)
-    choice = st.selectbox(
-        "Trend preview", options, index=1, key="det_ov_flag_trend",
+    # The picker re-defaults by itself whenever the stored verdict leaves the
+    # option model, but “—” survives every model: without this, a hidden chart
+    # would stay hidden through a scope change that surfaced a worse flag.
+    _reset_widget_on_scope("det_ov_flag_trend", (platform, sample, tuple(choices)))
+    v = render_metric_picker(
+        choices, key="det_ov_flag_trend", include_detector=True,
         help="The flagged metric's history over the trend window, with the "
              "baseline band its verdict was judged against — opens on the "
              "worst flag; pick another or “—” to hide it. Built from the "
              "nightly reports, no run downloads.",
     )
-    if choice == "—":
+    if v is None:
         return
-    v = choices[options.index(choice) - 1]
     hist = history_frame(status_frames, platform, sample, v.label)
     series = hist[(hist["detector"] == v.detector) & (hist["metric"] == v.metric)]
     if series.empty:
