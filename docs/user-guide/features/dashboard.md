@@ -376,7 +376,11 @@ comparisons read at a glance. Runs that failed the host-reliability check are
 excluded by default with the same warning/toggle as every other historical
 view (the nightly report carries each night's per-detector verdict); their raw
 values are still recorded — as unjudged points, never flagged — so disabling
-the toggle plots them like Run Trends does. Value
+the toggle plots them like Run Trends does. Exclusion drops the *run*, not the
+nightly tag: a tag benchmarked twice keeps the point measured by whichever
+rerun passed, and — here and in Run Trends — a 🔴/⚠️ marker leaves the chart
+with the run that earned it rather than moving onto a sibling run that was
+never flagged. Value
 axes are logarithmic by default (a toggle switches to linear) — the detectors
 span more than a decade in both time and memory, so a linear scale squashes
 the small ones into an unreadable cluster.

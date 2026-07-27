@@ -67,14 +67,15 @@ def render_sidebar_run_quality(
     )
 
 
-def render_reliability_filter(
+def resolve_reliability_filter(
     df: pd.DataFrame,
     reliability: dict[str, bool | None] | None,
     *,
     key: str,
     date_col: str = "x_date",
-) -> pd.DataFrame:
-    """Render the unreliable-run warning + "Exclude unreliable runs" toggle.
+) -> tuple[pd.DataFrame, set[str]]:
+    """Render the unreliable-run warning + "Exclude unreliable runs" toggle, and
+    return ``(frame, excluded_run_ids)``.
 
     Shared by every tab that plots historical (multi-run) data so the warning text
     and the toggle behave identically everywhere. *df* must carry a ``run_id``
@@ -91,16 +92,24 @@ def render_reliability_filter(
     *date_col* is the column whose dates are listed in the warning text; it defaults
     to ``x_date`` (the nightly tag) so the dates match the plot x-axis and the
     Machine Info tab, rather than the CI run date.
+
+    The returned set is empty whenever nothing was dropped — no unreliable run, or
+    the toggle switched off — so a caller can treat it as "the runs that are no
+    longer on the chart" without also reading the widget's state. Callers that plot
+    a *reduction* over several runs need it: a flag earned by one run must not
+    survive on a sibling run of the same nightly tag once its own run is excluded,
+    and the reduction can only honour that if it knows which runs are still
+    standing. Callers that just plot the frame want :func:`render_reliability_filter`.
     """
     # No run_id to join verdicts on, or no verdict map at all (local mode / no
     # machine info) — nothing to flag or filter.
     if "run_id" not in df.columns or not reliability:
-        return df
+        return df, set()
     unreliable_ids = {
         rid for rid in df["run_id"].unique() if reliability.get(rid) is False
     }
     if not unreliable_ids:
-        return df
+        return df, set()
 
     n = len(unreliable_ids)
     # List the affected dates when the column is present; degrade to a count-only
@@ -129,11 +138,26 @@ def render_reliability_filter(
             help="Drop runs that failed the conservative reliability check "
                  "from the plots below. On by default; disable to include them.",
         )
-    if exclude:
-        df = df[~df["run_id"].isin(unreliable_ids)]
-        if df.empty:
-            st.warning(
-                "Every run for the selected configurations was excluded as "
-                "unreliable — nothing left to plot."
-            )
-    return df
+    if not exclude:
+        return df, set()
+    df = df[~df["run_id"].isin(unreliable_ids)]
+    if df.empty:
+        st.warning(
+            "Every run for the selected configurations was excluded as "
+            "unreliable — nothing left to plot."
+        )
+    return df, unreliable_ids
+
+
+def render_reliability_filter(
+    df: pd.DataFrame,
+    reliability: dict[str, bool | None] | None,
+    *,
+    key: str,
+    date_col: str = "x_date",
+) -> pd.DataFrame:
+    """:func:`resolve_reliability_filter` for the callers that only plot the
+    frame — same warning, same toggle, without the excluded-run set."""
+    return resolve_reliability_filter(
+        df, reliability, key=key, date_col=date_col,
+    )[0]
