@@ -83,11 +83,13 @@ from k4bench.blame.evidence import (
     outcomes_for_window,
     steps_in_window,
 )
+from k4bench.blame.history import HistoricalPR
 from k4bench.blame.models import (
     RANKING_DISCLOSURE,
     BlameEntry,
     BlameReport,
     CandidatePR,
+    HistoricalRef,
 )
 from k4bench.labels import pretty_platform, pretty_sample
 from k4bench.regression.models import MetricVerdict, NightlyReport
@@ -437,11 +439,39 @@ class CommentPlan:
     #: :attr:`packages_unavailable_on` can name them rather than let the prompt
     #: read as though those platforms had nothing to report.
     platforms_seen: set[str] = field(default_factory=set)
+    #: ``(repo, number) -> reference`` for the older-boundary pull requests the
+    #: first pass read before scoring this window
+    #: (:class:`~k4bench.blame.models.HistoricalRef`). De-duplicated across
+    #: entries because one rank group's whole selection is recorded on each of
+    #: its entries, and a comment can draw on several of them.
+    #:
+    #: These are **analogues, never targets**. They are collected from a field of
+    #: their own, never from ``entry.candidates``, so neither :func:`_targets`
+    #: nor :func:`_record_others` can ever see one — a pull request from before
+    #: the window cannot be selected, accused, listed as an alternative, or shown
+    #: in the dashboard's candidate ledger. The only thing they do is travel to
+    #: the cross-configuration review, so that both passes weigh the same
+    #: material.
+    historical: dict[tuple[str, int], HistoricalRef] = field(default_factory=dict)
     selected: bool = False
 
     @property
     def target(self) -> str:
         return f"{self.repo}#{self.number}"
+
+    @property
+    def historical_refs(self) -> tuple[HistoricalRef, ...]:
+        """The historical references in a stable identity order.
+
+        Ordered by identity rather than by the order the sidecar happened to list
+        them: the digest hashes this, and a night that reordered an unchanged
+        evidence set would edit a comment whose body did not move."""
+        return tuple(
+            sorted(
+                self.historical.values(),
+                key=lambda h: (h.repo.lower(), h.pr, h.boundary_id),
+            )
+        )
 
     @property
     def packages_by_platform(self) -> dict[str, tuple[PackageChangeFact, ...]]:
@@ -681,6 +711,12 @@ def _collect_window(confirmed: list[_Confirmed], plan: CommentPlan) -> None:
             # read ever produced.
             if (entry.base_release, entry.onset_release) == window:
                 _record_packages(plan, entry, verdict.platform)
+                # Same window rule as the packages, and for the same reason: only
+                # an entry that examined *this* window read the historical
+                # evidence this comment's first-pass score rests on. An entry
+                # covering a narrower range asked its own question and may have
+                # asked for different analogues.
+                _record_historical(plan, entry)
             _record_others(plan, entry, ident)
         plan.rows.append(RegressionRow(
             verdict=verdict, stack=stack, scope_state=state,
@@ -755,6 +791,19 @@ def _record_others(plan: CommentPlan, entry: BlameEntry, ident: tuple[str, int])
         previous = plan.others.get(other_ident)
         if previous is None or _candidate_rank(other) > _candidate_rank(previous[0]):
             plan.others[other_ident] = sighting
+
+
+def _record_historical(plan: CommentPlan, entry: BlameEntry) -> None:
+    """Fold one entry's historical references into *plan*, de-duplicated.
+
+    Every entry of a rank group carries the same selection (one call produced
+    it), and a comment window can span several rank groups on several platforms,
+    so the same analogue arrives repeatedly and two genuinely different ones can
+    arrive together. Keyed on ``(repo, number)``: the same pull request retrieved
+    for two boundaries is one piece of evidence to re-fetch and to render, and
+    the first sighting's boundary is as good as the second's for naming it."""
+    for ref in entry.historical_evidence:
+        plan.historical.setdefault(ref.key, ref)
 
 
 def _scope_label(entry: BlameEntry) -> str:
@@ -979,6 +1028,63 @@ def _review(
         return None, request
 
 
+class HistoricalEvidenceUnavailable(RuntimeError):
+    """A historical analogue the first pass read could not be read again.
+
+    Raised out of :func:`_attribution_request` so it lands in the existing
+    fail-closed path (:func:`_review`): with a reviewer configured, no comment is
+    posted that night. That is the same rule an unusable review already follows,
+    and for the same reason — the first pass's score was reached *with* this
+    code in front of it, so a review conducted without it is not the second
+    opinion the comment claims to rest on, and a comment posted on the weaker
+    review would freeze itself in place by its own digest.
+    """
+
+
+def _historical(
+    plan: CommentPlan, fetch: PatchFor, body_fetch: BodyFor
+) -> tuple[HistoricalPR, ...]:
+    """The plan's historical references, re-fetched into full analogues.
+
+    The sidecar deliberately stores no patch and no body (see
+    :class:`~k4bench.blame.models.HistoricalRef`), so the text is fetched again
+    through the same authenticated boundary a competitor's diff comes through —
+    one call per pull request, memoized for the whole run by the caller.
+
+    A reference whose diff comes back empty raises. That is stricter than the
+    best-effort rule the competitors follow, and deliberately so: a competitor
+    with no diff still appears with its paths and the first pass's reason, and
+    losing it costs the review one alternative it can weigh. A missing analogue
+    costs the review the evidence the first pass's own score was built on, and
+    there is no honest way to render that as a weaker version of the same
+    review. The cost of the strictness is a comment silenced on a night GitHub
+    would not answer — recoverable tomorrow, unlike a comment posted on a
+    materially different evidence set."""
+    analogues = []
+    for ref in plan.historical_refs:
+        patch = fetch(ref.repo, ref.pr)
+        if not patch:
+            raise HistoricalEvidenceUnavailable(
+                f"no diff for the historical analogue {ref.repo}#{ref.pr}, which "
+                f"the first pass read before scoring this window"
+            )
+        analogues.append(HistoricalPR(
+            boundary_id=ref.boundary_id,
+            base_release=ref.base_release,
+            onset_release=ref.onset_release,
+            package=ref.package,
+            repo=ref.repo,
+            number=ref.pr,
+            title=ref.title,
+            files=ref.files,
+            additions=ref.additions,
+            deletions=ref.deletions,
+            body=body_fetch(ref.repo, ref.pr),
+            patch=patch,
+        ))
+    return tuple(analogues)
+
+
 def _attribution_request(
     plan: CommentPlan, fetch: PatchFor, body_fetch: BodyFor
 ) -> AttributionRequest:
@@ -1008,6 +1114,9 @@ def _attribution_request(
         packages_by_platform=plan.packages_by_platform,
         unchanged_by_platform=dict(plan.unchanged),
         packages_unavailable_on=plan.packages_unavailable_on,
+        # Fetched last, and allowed to raise: the review must see the same
+        # historical evidence the first pass did, or it must not happen at all.
+        historical=_historical(plan, fetch, body_fetch),
     )
 
 
@@ -1807,8 +1916,9 @@ def _facts_digest(
     each of those scopes; the clean and watch outcomes with their watched
     metrics and unjudged counts; the per-platform package diff and unchanged
     counts; which pull requests were in the field and whether each was judged;
-    and whether the review's evidence — the subject's and competitors' diffs —
-    could actually be fetched.
+    which older-boundary pull requests the first pass read before scoring
+    (:attr:`CommentPlan.historical_refs`); and whether the review's evidence —
+    the subject's and competitors' diffs — could actually be fetched.
 
     The outcomes especially. A comment posted while IDEA had no reliable result
     reads differently once IDEA delivers a clean measurement of the same window
@@ -1885,6 +1995,20 @@ def _facts_digest(
                 (candidate for candidate, _scope in plan.others.values()),
                 key=lambda c: (c.repo.lower(), c.number),
             )
+        ],
+        # Which older-boundary pull requests the first pass read before it
+        # scored this window, and which the review is therefore shown too. A
+        # different set is a materially different basis for both passes — the
+        # review is calibrated against different code — so a standing comment
+        # must be able to be replaced when it changes. Identities only: no
+        # score, no patch, nothing that drifts on its own.
+        "historical": [
+            {
+                "pr": f"{ref.repo}#{ref.pr}",
+                "package": ref.package,
+                "boundary": [ref.base_release, ref.onset_release],
+            }
+            for ref in plan.historical_refs
         ],
         "evidence": _evidence_facts(request),
     }

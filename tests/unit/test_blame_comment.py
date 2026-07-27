@@ -33,6 +33,7 @@ from k4bench.blame.models import (
     BlameEntry,
     BlameReport,
     CandidatePR,
+    HistoricalRef,
     RepoBlame,
     StepAssessment,
 )
@@ -2267,3 +2268,192 @@ def test_an_assessed_real_change_adds_no_caveat_to_the_comment():
     )
     body = _comments(_report(v), blame, attributor=attributor)[0].body
     assert "too short for the review to judge" not in body
+
+
+# ── Historical evidence reaching the outward-facing review ────────────────────
+
+def _ref(pr=1234, repo="key4hep/k4geo", **over):
+    base = dict(
+        boundary_id="h2", base_release="2026-06-10", onset_release="2026-06-14",
+        package="k4geo", repo=repo, pr=pr, title="Adjust HCAL material",
+        files=("FCCee/ALLEGRO/compact/hcal.xml",), additions=12, deletions=4,
+    )
+    base.update(over)
+    return HistoricalRef(**base)
+
+
+def _blame_with_history(verdicts, candidates, refs):
+    """The sidecar of :func:`_blame`, with historical references on every entry —
+    which is how the builder writes them: one rank group, one selection."""
+    blame = _blame(verdicts, candidates)
+    return dataclasses.replace(blame, entries=tuple(
+        dataclasses.replace(e, historical_evidence=tuple(refs))
+        for e in blame.entries
+    ))
+
+
+def _texts(patches=None, bodies=None):
+    """``(patch_for, body_for)`` over explicit maps; anything unnamed is ""."""
+    patches = patches or {}
+    bodies = bodies or {}
+    return (
+        lambda repo, number: patches.get((repo, number), "diff"),
+        lambda repo, number: bodies.get((repo, number), ""),
+    )
+
+
+def test_the_review_receives_the_exact_references_freshly_fetched():
+    verdict = _verdict()
+    plans = select(
+        _report(verdict),
+        _blame_with_history([verdict], [_candidate()], [_ref(), _ref(1235)]),
+        _policy(),
+    )
+    assert plans[0].historical_refs == (_ref(1234), _ref(1235))
+
+    fetched = []
+
+    def patch_for(repo, number):
+        fetched.append((repo, number))
+        return f"@@ patch for {number}"
+
+    attributor = _FakeAttributor({"r1": 95.0}, assessment=AttrStepAssessment("real_change"))
+    build_comments(
+        plans, attributor=attributor, patch_for=patch_for,
+        body_for=lambda repo, number: f"body {number}",
+    )
+    request = attributor.requests[0]
+    # Exactly the persisted references, with the text re-fetched rather than
+    # carried in the sidecar.
+    assert [(h.repo, h.number) for h in request.historical] == [
+        ("key4hep/k4geo", 1234), ("key4hep/k4geo", 1235),
+    ]
+    assert request.historical[0].patch == "@@ patch for 1234"
+    assert request.historical[0].body == "body 1234"
+    assert request.historical[0].boundary_id == "h2"
+    assert ("key4hep/k4geo", 1234) in fetched
+    # And the second pass is shown them under the same label as the first.
+    prompt = build_user_prompt(request)
+    assert "HISTORICAL ANALOGUES" in prompt
+    assert "key4hep/k4geo#1234" in prompt
+    assert "@@ patch for 1234" in prompt
+    assert "NOT candidates" in prompt
+
+
+def test_an_unreadable_analogue_suppresses_the_comment(caplog):
+    # The first pass reached its score with this code in front of it. A review
+    # without it is not the second opinion the comment rests on.
+    verdict = _verdict()
+    plans = select(
+        _report(verdict),
+        _blame_with_history([verdict], [_candidate()], [_ref()]),
+        _policy(),
+    )
+    attributor = _FakeAttributor({"r1": 95.0}, assessment=AttrStepAssessment("real_change"))
+    with caplog.at_level("WARNING"):
+        comments = build_comments(
+            plans, attributor=attributor,
+            patch_for=lambda repo, number: "" if number == 1234 else "diff",
+            body_for=lambda repo, number: "",
+        )
+    assert comments == []
+    assert attributor.requests == []       # the review never even ran
+    assert "historical analogue" in caplog.text
+
+
+def test_no_historical_evidence_leaves_the_review_exactly_as_it_was():
+    verdict = _verdict()
+    plans = select(_report(verdict), _blame([verdict], [_candidate()]), _policy())
+    attributor = _FakeAttributor({"r1": 95.0}, assessment=AttrStepAssessment("real_change"))
+    patch_for, body_for = _texts()
+    comments = build_comments(
+        plans, attributor=attributor, patch_for=patch_for, body_for=body_for,
+    )
+    assert len(comments) == 1
+    request = attributor.requests[0]
+    assert request.historical == ()
+    assert "HISTORICAL ANALOGUES" not in build_user_prompt(request)
+
+
+def test_analogues_are_never_comment_targets_or_competitors():
+    # A pull request from before the window cannot be accused. It lives on its
+    # own field, so neither selection nor the competitor field can see it.
+    verdict = _verdict()
+    blame = _blame_with_history(
+        [verdict], [_candidate()], [_ref(pr=1234), _ref(pr=4321, repo="key4hep/k4geo")],
+    )
+    plans = select(_report(verdict), blame, _policy())
+    assert [p.number for p in plans] == [1234]     # the *candidate*, not the ref
+    assert plans[0].number == 1234 and plans[0].subject.score == 91.0
+    assert 4321 not in {number for _repo, number in plans[0].others}
+
+    attributor = _FakeAttributor({"r1": 95.0}, assessment=AttrStepAssessment("real_change"))
+    patch_for, body_for = _texts()
+    comments = build_comments(
+        plans, attributor=attributor, patch_for=patch_for, body_for=body_for,
+    )
+    # Nothing in the public body accuses the analogue.
+    assert "#4321" not in comments[0].body
+    assert [c.number for c in attributor.requests[0].competitors] == []
+
+
+def test_the_facts_digest_changes_with_the_historical_evidence():
+    verdict = _verdict()
+    patch_for, body_for = _texts()
+
+    def digest(refs):
+        plans = select(
+            _report(verdict),
+            _blame_with_history([verdict], [_candidate()], refs),
+            _policy(),
+        )
+        comments = build_comments(
+            plans,
+            attributor=_FakeAttributor(
+                {"r1": 95.0}, assessment=AttrStepAssessment("real_change"),
+            ),
+            patch_for=patch_for, body_for=body_for,
+        )
+        return facts_digest_of(comments[0].body)
+
+    none_at_all = digest([])
+    one = digest([_ref(1234)])
+    other = digest([_ref(9999)])
+    two = digest([_ref(1234), _ref(9999)])
+    assert len({none_at_all, one, other, two}) == 4
+    # And an unchanged evidence set does not move it, whatever order it arrives
+    # in — a re-notification for nothing is the harm the digest exists to avoid.
+    assert digest([_ref(9999), _ref(1234)]) == two
+
+
+def test_references_are_deduplicated_across_the_entries_that_share_them():
+    # Every entry of a rank group records the whole selection, so a window with
+    # several metrics offers the same analogue several times.
+    verdicts = [_verdict(metric="wall_time_s"), _verdict(metric="user_cpu_s")]
+    plans = select(
+        _report(*verdicts),
+        _blame_with_history(verdicts, [_candidate()], [_ref(), _ref()]),
+        _policy(),
+    )
+    assert plans[0].historical_refs == (_ref(),)
+
+
+def test_an_entry_measuring_a_narrower_window_contributes_no_references():
+    # Only an entry that examined *this* comment's window read the evidence this
+    # comment's first-pass score rests on.
+    wide = _verdict(metric="wall_time_s", base="2026-07-03")
+    narrow = _verdict(metric="user_cpu_s", base="2026-07-03T-later")
+    blame = BlameReport(
+        generated_at="x", report_night="2026-07-05",
+        entries=(
+            _blame([wide], [_candidate()]).entries[0],
+            dataclasses.replace(
+                _blame([narrow], [_candidate()]).entries[0],
+                base_release="2026-07-03T-later",
+                historical_evidence=(_ref(pr=777),),
+            ),
+        ),
+    )
+    plans = select(_report(wide, narrow), blame, _policy())
+    assert plans[0].base_release == "2026-07-03"
+    assert plans[0].historical_refs == ()

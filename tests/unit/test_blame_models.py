@@ -12,6 +12,7 @@ from k4bench.blame.models import (
     BlameReport,
     BlameSchemaError,
     CandidatePR,
+    HistoricalRef,
     RepoBlame,
     StepAssessment,
     ranking_coverage,
@@ -386,3 +387,78 @@ def test_the_boundary_counts_round_trip_and_keep_unread_unread():
     raw = _entry(boundary_changes={"2026-07-04": 1}).to_dict()
     raw["boundary_changes"]["2026-07-05"] = "a few"
     assert BlameEntry.from_dict(raw).boundary_changes == {"2026-07-04": 1}
+
+
+# ── Historical evidence references ────────────────────────────────────────────
+
+def _ref(pr: int = 1234, **over) -> HistoricalRef:
+    base = dict(
+        boundary_id="h2", base_release="2026-06-10", onset_release="2026-06-14",
+        package="k4geo", repo="key4hep/k4geo", pr=pr, title="Adjust HCAL material",
+        files=("FCCee/ALLEGRO/compact/hcal.xml",), additions=12, deletions=4,
+    )
+    base.update(over)
+    return HistoricalRef(**base)
+
+
+def test_historical_references_round_trip_without_patch_or_body():
+    entry = _entry(historical_evidence=(_ref(), _ref(1235)))
+    report = BlameReport(generated_at="g", report_night="2026-07-05", entries=(entry,))
+    payload = report.to_json()
+    # The reference is reproducible: everything needed to ask GitHub again.
+    assert payload["entries"][0]["historical_evidence"][0] == {
+        "boundary_id": "h2", "base_release": "2026-06-10",
+        "onset_release": "2026-06-14", "package": "k4geo",
+        "repo": "key4hep/k4geo", "pr": 1234, "title": "Adjust HCAL material",
+        "files": ["FCCee/ALLEGRO/compact/hcal.xml"],
+        "additions": 12, "deletions": 4,
+    }
+    # And no patch or description is anywhere in it — those are re-fetched.
+    assert "patch" not in payload["entries"][0]["historical_evidence"][0]
+    assert "body" not in payload["entries"][0]["historical_evidence"][0]
+    assert BlameReport.from_json(payload) == report
+
+
+def test_a_sidecar_without_the_field_reads_as_no_historical_evidence():
+    # Every blame.json already on EOS. Absent is empty, and empty is honest:
+    # those rankings were made without historical evidence.
+    payload = BlameReport(
+        generated_at="g", report_night="2026-07-05", entries=(_entry(),),
+    ).to_json()
+    del payload["entries"][0]["historical_evidence"]
+    assert BlameReport.from_json(payload).entries[0].historical_evidence == ()
+
+
+def test_unknown_keys_inside_a_reference_are_dropped():
+    payload = BlameReport(
+        generated_at="g", report_night="2026-07-05",
+        entries=(_entry(historical_evidence=(_ref(),)),),
+    ).to_json()
+    payload["entries"][0]["historical_evidence"][0]["invented_by_a_newer_writer"] = 1
+    restored = BlameReport.from_json(payload)
+    assert restored.entries[0].historical_evidence == (_ref(),)
+
+
+@pytest.mark.parametrize("broken", [
+    {"historical_evidence": "not-a-list"},
+    {"historical_evidence": [{"repo": "key4hep/k4geo"}]},          # missing keys
+    {"historical_evidence": [{**_ref().to_dict(), "pr": "not a number"}]},
+])
+def test_a_malformed_reference_is_rejected_at_the_schema_boundary(broken):
+    payload = BlameReport(
+        generated_at="g", report_night="2026-07-05", entries=(_entry(),),
+    ).to_json()
+    payload["entries"][0].update(broken)
+    with pytest.raises(BlameSchemaError):
+        BlameReport.from_json(payload)
+
+
+def test_historical_references_never_enter_the_candidate_ledger():
+    # An analogue shipped before the window opened. It must never appear as a
+    # candidate, be counted by the coverage gate, or reach a comment target.
+    entry = _entry(historical_evidence=(_ref(),))
+    assert all(c.number != 1234 for c in entry.candidates)
+    ranked, expected, missing = ranking_coverage(
+        BlameReport(generated_at="g", report_night="n", entries=(entry,))
+    )
+    assert expected == 2 and ranked == 2 and missing == []

@@ -9,6 +9,7 @@ the written ``report.json``/``report.md`` and ``blame.json``.
 from __future__ import annotations
 
 import json
+import json as _json
 import os
 import subprocess
 import sys
@@ -553,3 +554,230 @@ def test_the_whole_evidence_chain_reaches_the_cross_configuration_review(
     assert any(p.packages_changed is not None for p in fact.history.points)
     assert any(d.region == "HCAL" for d in fact.regions)
     assert reviewed[0].body.startswith("Raises the step limit")
+
+
+class _ScriptedLLM:
+    """A chat-completions endpoint whose replies are computed from the prompt.
+
+    Scripted rather than fixed because the first reply has to *name* a boundary
+    id the application generated: hard-coding one would test a number this test
+    itself invented, and the whole protocol is that the model may only echo what
+    it was actually offered."""
+
+    def __init__(self, want: str):
+        self.want = want          # the boundary window to ask about
+        self.prompts: list[str] = []
+
+    def post(self, url, json=None, headers=None, timeout=None):
+        import re
+
+        prompt = json["messages"][1]["content"]
+        self.prompts.append(prompt)
+        if len(self.prompts) == 1:
+            match = re.search(rf"\[(h\d+)\] {re.escape(self.want)}", prompt)
+            assert match, f"no requestable boundary for {self.want} in the offer"
+            reply = _json.dumps({"historical_evidence_request": {
+                "boundary_ids": [match.group(1)], "packages": ["k4geo"],
+                "reason": "an earlier step of the same shape entered here",
+            }})
+        else:
+            reply = _json.dumps({
+                "step_assessment": {"verdict": "real_change", "reason": "held"},
+                "rankings": [{
+                    "repo": "key4hep/k4geo", "pr": 1234, "likelihood": 88,
+                    "reason": "raises the step count, exactly as the analogue did",
+                }],
+            })
+        return _FakeLLMResponse({
+            "choices": [{"message": {"content": reply}, "finish_reason": "stop"}]
+        })
+
+
+class _FakeLLMResponse:
+    def __init__(self, body):
+        self._body = body
+        self.status_code = 200
+        self.headers: dict = {}
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._body
+
+
+def test_historical_evidence_travels_from_provenance_to_the_public_review(
+    tmp_path, monkeypatch
+):
+    """report.json → boundary index → retrieval request → bounded GitHub
+    evidence → ranking → blame.json references → the reviewer's request.
+
+    The one chain no component test can see. Each hop drops something the next
+    needs — an index built from a tail the report wrote, a reference persisted
+    without the patch it was read from, a re-fetch that has to find the same
+    pull request again — and a break anywhere in it degrades silently into "the
+    model simply never asked".
+    """
+    data_dir = tmp_path / "data"
+    d0 = date.fromisoformat("2026-01-01")
+    # Ten steady nights, each on its own release. k4geo advances once in the
+    # middle of the tail — that older boundary is the only one with code to
+    # retrieve — and again into the release the step appears on.
+    for i in range(10):
+        night = (d0 + timedelta(days=i)).isoformat()
+        stack = f"key4hep-{night}"
+        _write_run_with_provenance(
+            data_dir / "DET" / _PLAT / stack / "single_e" / night,
+            night, stack, 100.0 + (0.4 if i % 2 else -0.4),
+            ("a" if i < 5 else "b") * 40,
+        )
+    for i, night in enumerate(("2026-01-11", "2026-01-12")):
+        _write_run_with_provenance(
+            data_dir / "DET" / _PLAT / "key4hep-2026-01-11" / "single_e" / night,
+            night, "key4hep-2026-01-11", 120.0 + i * 0.5, "c" * 40,
+        )
+
+    out_dir = tmp_path / "out"
+    assert subprocess.run(
+        [sys.executable, str(_SCRIPT), "--data-dir", str(data_dir),
+         "--output-dir", str(out_dir)],
+        capture_output=True, text=True,
+    ).returncode == 0
+
+    from k4bench.blame import builder as builder_mod
+    from k4bench.blame.attribute import Attribution, StepAssessment as ReviewAssessment
+    from k4bench.blame.builder import build_blame_report
+    from k4bench.blame.comment import CommentPolicy, build_comments, select
+    from k4bench.blame.attribute import build_user_prompt
+    from k4bench.blame.github import GitHubClient, RepoResolution
+    from k4bench.blame.llm import ChatClient
+    from k4bench.blame.models import BlameReport, CandidatePR
+    from k4bench.blame.rank import OpenAICompatRanker
+    from k4bench.regression.render import from_json as report_from_json
+
+    report = report_from_json(json.loads((out_dir / "report.json").read_text()))
+
+    _CURRENT = "@@ -1 +1 @@\n+ more steps in the current window"
+    _ANALOGUE = "@@ -9 +9 @@\n+ the earlier HCAL material change"
+
+    def resolve(client, slug, base, head):
+        """The current window's range and the older boundary's, kept apart."""
+        if (base, head) == ("b" * 40, "c" * 40):
+            return RepoResolution(
+                candidates=[CandidatePR(
+                    repo=slug, number=1234, title="Lower the step limit",
+                    author="alice", url="https://github.com/key4hep/k4geo/pull/1234",
+                    merged_at="2026-01-11T00:00:00Z", files=("src/stepping.cpp",),
+                    additions=8, deletions=2,
+                )],
+                patches={1234: _CURRENT},
+                bodies={1234: "Raises the step limit."},
+            )
+        assert (base, head) == ("a" * 40, "b" * 40), f"unexpected range {base}..{head}"
+        return RepoResolution(
+            candidates=[CandidatePR(
+                repo=slug, number=777, title="Adjust HCAL material",
+                author="bob", url="https://github.com/key4hep/k4geo/pull/777",
+                merged_at="2026-01-06T00:00:00Z",
+                files=("FCCee/ALLEGRO/compact/hcal.xml",),
+                additions=12, deletions=4,
+            )],
+            patches={777: _ANALOGUE},
+            bodies={777: "Denser HCAL absorber; expect a little more time."},
+        )
+    monkeypatch.setattr(builder_mod, "resolve_repo_prs", resolve)
+
+    blame_cli = _load_script(_BLAME_SCRIPT)
+    packages_for_release = blame_cli._make_packages_for_release(
+        [str(data_dir)], None, {_PLAT: ["DET"]}
+    )
+    llm = _ScriptedLLM(want="2026-01-05 → 2026-01-06")
+    blame = build_blame_report(
+        report, packages_for_release=packages_for_release, github=GitHubClient(),
+        ranker=OpenAICompatRanker(client=ChatClient(
+            url="https://llm.example/api/v1", model="m", session=llm,
+            sleep_fn=lambda _s: None,
+        )),
+    )
+
+    # ── The index the first prompt offered, built from the report's own tail ──
+    import re
+
+    offer = llm.prompts[0]
+    live = re.search(r"\[h\d+\] 2026-01-05 → 2026-01-06: (.+)", offer)
+    assert live and live.group(1) == "k4geo (key4hep/k4geo, changed)"
+    # The quiet boundaries are stated too — "nothing moved here" is evidence,
+    # and a gap in the list would read as it without being it.
+    assert re.search(
+        r"\[h\d+\] 2026-01-0\d → 2026-01-0\d: no tracked package changed", offer
+    )
+    # Never the current window: its packages are already in the prompt as
+    # scored candidates.
+    assert not re.search(r"\[h\d+\] 2026-01-10 → 2026-01-11", offer)
+    assert "b" * 40 not in offer                         # no commit SHA is offered
+
+    # ── One retrieval round, and the evidence it bought ──────────────────────
+    assert len(llm.prompts) == 2
+    follow_up = llm.prompts[1]
+    assert "HISTORICAL ANALOGUES" in follow_up
+    assert "key4hep/k4geo#777 in package k4geo" in follow_up
+    assert _ANALOGUE.splitlines()[-1] in follow_up       # the real historical diff
+    assert _CURRENT.splitlines()[-1] in follow_up        # beside the real candidate
+    assert "historical_evidence_request" not in follow_up  # no second round
+
+    # ── The ranking that follow-up produced is the one that was published ────
+    entry = next(e for e in blame.entries if e.metric == "wall_time_s")
+    scored = next(c for c in entry.candidates if c.number == 1234)
+    assert scored.ranked and scored.score == 88.0
+    # And the analogue is not a candidate anywhere in the ledger.
+    assert all(c.number != 777 for c in entry.candidates)
+
+    # ── blame.json carries references, never patches ─────────────────────────
+    serialized = json.dumps(blame.to_json())
+    assert _ANALOGUE not in serialized and "Denser HCAL absorber" not in serialized
+    round_tripped = BlameReport.from_json(json.loads(serialized))
+    ref = next(
+        e for e in round_tripped.entries if e.metric == "wall_time_s"
+    ).historical_evidence[0]
+    assert (ref.repo, ref.pr, ref.package) == ("key4hep/k4geo", 777, "k4geo")
+    assert (ref.base_release, ref.onset_release) == ("2026-01-05", "2026-01-06")
+    assert ref.files == ("FCCee/ALLEGRO/compact/hcal.xml",)
+
+    # ── And the outward-facing review is handed the same evidence ────────────
+    plans = select(
+        report, round_tripped,
+        CommentPolicy.from_config({"repos": ["key4hep/k4geo"], "min_score": 80}),
+    )
+    assert plans, "the window should warrant a comment"
+    assert plans[0].historical_refs == (ref,)
+
+    reviewed: list = []
+
+    class _Reviewer:
+        def attribute(self, request):
+            reviewed.append(request)
+            return Attribution(
+                summary="The HCAL carries the step.",
+                likelihoods={f.id: 90.0 for f in request.regressions},
+                assessment=ReviewAssessment("real_change", "held"),
+            )
+
+    patches = {("key4hep/k4geo", 777): _ANALOGUE, ("key4hep/k4geo", 1234): _CURRENT}
+    comments = build_comments(
+        plans, attributor=_Reviewer(),
+        patch_for=lambda repo, number: patches.get((repo, number), ""),
+        body_for=lambda _r, number: f"body for {number}",
+        dashboard_url="https://dash.example", min_score=80,
+    )
+    request = reviewed[0]
+    assert [(h.repo, h.number) for h in request.historical] == [("key4hep/k4geo", 777)]
+    assert request.historical[0].patch == _ANALOGUE      # re-fetched, not stored
+    assert request.historical[0].body == "body for 777"
+    review_prompt = build_user_prompt(request)
+    assert "HISTORICAL ANALOGUES" in review_prompt
+    assert "cannot have caused it" in review_prompt
+    # The public comment lands on the candidate and never mentions the analogue
+    # as an accused change.
+    assert [(c.repo, c.number) for c in comments] == [("key4hep/k4geo", 1234)]
+    assert "777" not in comments[0].body
+    assert "Adjust HCAL material" not in comments[0].body

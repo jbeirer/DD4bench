@@ -690,3 +690,264 @@ def test_region_deltas_reach_the_ranker(monkeypatch):
         github=GitHubClient(), ranker=ranker,
     )
     assert ranker.requests[0].metrics[0].regions[0].region == "HCAL_barrel"
+
+
+# ── On-demand historical evidence ─────────────────────────────────────────────
+
+_HISTORY_PROVENANCE = _provenance({
+    (_PLAT, "2026-07-01"): {"k4geo": _pkgs("1" * 40)},
+    (_PLAT, "2026-07-02"): {"k4geo": _pkgs("2" * 40)},
+    (_PLAT, "2026-07-03"): {"k4geo": _pkgs("a" * 40)},
+    (_PLAT, "2026-07-04"): {"k4geo": _pkgs("c" * 40)},
+})
+
+
+def _tailed(verdict: MetricVerdict = None) -> MetricVerdict:
+    """A verdict carrying the release tail the index is built from."""
+    return _with_history(verdict or _verdict(), [
+        _release("2026-07-01", 100.0),
+        _release("2026-07-02", 100.0),
+        _release("2026-07-03", 100.0),
+        _release("2026-07-04", 120.0, Severity.CONFIRMED, Direction.UP),
+    ])
+
+
+def _ask(index, boundary_id="h1", package="k4geo"):
+    """The validated request a model would produce for *index*."""
+    from k4bench.blame.history import parse_request
+    return parse_request(
+        {"historical_evidence_request": {
+            "boundary_ids": [boundary_id], "packages": [package],
+            "reason": "an earlier step of the same shape",
+        }},
+        index.boundaries,
+    )
+
+
+def test_the_index_offers_older_boundaries_and_never_the_current_window(monkeypatch):
+    _two_candidates(monkeypatch)
+    ranker = _FakeRanker({("key4hep/k4geo", 10): Ranking(60.0, "x")})
+    build_blame_report(
+        _report([_tailed()]), packages_for_release=_HISTORY_PROVENANCE,
+        github=GitHubClient(), ranker=ranker,
+    )
+    index = ranker.requests[0].history
+    assert index is not None
+    windows = [(b.base_release, b.onset_release) for b in index.boundaries]
+    # The tail's older boundaries, and not the window being attributed.
+    assert windows == [("2026-07-01", "2026-07-02"), ("2026-07-02", "2026-07-03")]
+    assert all(b.requestable for b in index.boundaries)
+
+
+def test_historical_diffs_off_offers_nothing(monkeypatch):
+    _two_candidates(monkeypatch)
+    ranker = _FakeRanker({("key4hep/k4geo", 10): Ranking(60.0, "x")})
+    build_blame_report(
+        _report([_tailed()]), packages_for_release=_HISTORY_PROVENANCE,
+        github=GitHubClient(), ranker=ranker, historical_diffs=False,
+    )
+    assert ranker.requests[0].history is None
+
+
+def test_no_github_client_offers_nothing():
+    # An index nothing can redeem is an offer the application cannot keep. With
+    # no client there are no candidates either, so the ranker is never reached
+    # at all — and nothing historical is recorded.
+    ranker = _FakeRanker({("key4hep/k4geo", 10): Ranking(60.0, "x")})
+    blame = build_blame_report(
+        _report([_tailed()]), packages_for_release=_HISTORY_PROVENANCE,
+        github=None, ranker=ranker,
+    )
+    assert ranker.requests == []
+    assert all(e.historical_evidence == () for e in blame.entries)
+
+
+def test_a_boundary_whose_provenance_is_missing_is_offered_as_unreadable(monkeypatch):
+    _two_candidates(monkeypatch)
+    ranker = _FakeRanker({("key4hep/k4geo", 10): Ranking(60.0, "x")})
+    partial = _provenance({
+        (_PLAT, "2026-07-02"): {"k4geo": _pkgs("2" * 40)},
+        (_PLAT, "2026-07-03"): {"k4geo": _pkgs("a" * 40)},
+        (_PLAT, "2026-07-04"): {"k4geo": _pkgs("c" * 40)},
+    })
+    build_blame_report(
+        _report([_tailed()]), packages_for_release=partial,
+        github=GitHubClient(), ranker=ranker,
+    )
+    by_window = {
+        (b.base_release, b.onset_release): b
+        for b in ranker.requests[0].history.boundaries
+    }
+    unread = by_window[("2026-07-01", "2026-07-02")]
+    assert unread.provenance_read is False and unread.requestable is False
+    assert by_window[("2026-07-02", "2026-07-03")].requestable is True
+
+
+def test_the_provider_retrieves_bounded_evidence_and_reuses_the_cache(monkeypatch):
+    resolved = []
+
+    def fake_resolve(client, slug, base, head):
+        resolved.append((slug, base, head))
+        return RepoResolution(
+            candidates=[CandidatePR(repo=slug, number=99, title="Adjust HCAL",
+                                    author="a", url="u", files=("hcal.xml",),
+                                    additions=12, deletions=4)],
+            patches={99: "@@ -1 +1 @@"},
+            bodies={99: "expect ~15% slower"},
+        )
+    _stub_resolve(monkeypatch, fake_resolve)
+
+    ranker = _FakeRanker({("key4hep/k4geo", 99): Ranking(60.0, "x")})
+    build_blame_report(
+        _report([_tailed()]), packages_for_release=_HISTORY_PROVENANCE,
+        github=GitHubClient(), ranker=ranker,
+    )
+    index = ranker.requests[0].history
+    evidence = index.provider.fetch(_ask(index))
+    assert evidence.complete
+    pr = evidence.prs[0]
+    assert (pr.repo, pr.number, pr.package) == ("key4hep/k4geo", 99, "k4geo")
+    assert pr.patch == "@@ -1 +1 @@" and pr.body == "expect ~15% slower"
+    assert (pr.base_release, pr.onset_release) == ("2026-07-01", "2026-07-02")
+
+    # A second request for the same range is served from the night's own
+    # resolution cache — the same one the current window's candidates used.
+    before = len(resolved)
+    assert index.provider.fetch(_ask(index)).complete
+    assert len(resolved) == before
+
+
+#: The current window's commit range. Only the *historical* boundary's range is
+#: made to misbehave below, so the current window still ranks and the request
+#: (with its index) still reaches the fake ranker — which is exactly the state a
+#: real refusal happens in.
+_CURRENT_RANGE = ("a" * 40, "c" * 40)
+
+
+def _resolve_history_as(monkeypatch, historical):
+    """Resolve the current window cleanly and the older boundary via
+    *historical* — a callable or an exception to raise."""
+    def resolve(client, slug, base, head):
+        if (base, head) == _CURRENT_RANGE:
+            return RepoResolution(
+                candidates=[CandidatePR(repo=slug, number=10, title="t",
+                                        author="a", url="u")],
+            )
+        if isinstance(historical, Exception):
+            raise historical
+        return historical(slug)
+    _stub_resolve(monkeypatch, resolve)
+
+
+def _historical_evidence(ranker, monkeypatch, historical):
+    """Run one build and redeem the index it offered."""
+    _resolve_history_as(monkeypatch, historical)
+    build_blame_report(
+        _report([_tailed()]), packages_for_release=_HISTORY_PROVENANCE,
+        github=GitHubClient(), ranker=ranker,
+    )
+    index = ranker.requests[0].history
+    return index.provider.fetch(_ask(index))
+
+
+def test_an_incomplete_range_refuses_rather_than_sampling(monkeypatch):
+    def truncated(slug):
+        resolution = RepoResolution(
+            candidates=[CandidatePR(repo=slug, number=99, title="t", author="a",
+                                    url="u")],
+        )
+        resolution.mark_truncated("pull_request_cap")
+        return resolution
+
+    evidence = _historical_evidence(
+        _FakeRanker({("key4hep/k4geo", 10): Ranking(60.0, "x")}),
+        monkeypatch, truncated,
+    )
+    assert evidence.complete is False and evidence.prs == ()
+    assert "pull_request_cap" in evidence.reason
+
+
+def test_an_unreadable_range_refuses(monkeypatch):
+    evidence = _historical_evidence(
+        _FakeRanker({("key4hep/k4geo", 10): Ranking(60.0, "x")}),
+        monkeypatch, lambda slug: RepoResolution(commits_unavailable=True),
+    )
+    assert evidence.complete is False
+    assert "commits unavailable" in evidence.reason
+
+
+def test_a_rate_limited_retrieval_refuses(monkeypatch):
+    evidence = _historical_evidence(
+        _FakeRanker({("key4hep/k4geo", 10): Ranking(60.0, "x")}),
+        monkeypatch, RateLimitError("throttled"),
+    )
+    assert evidence.complete is False and "rate limit" in evidence.reason
+
+
+def test_the_pr_cap_makes_a_wide_selection_incomplete(monkeypatch):
+    from k4bench.blame.history import MAX_PRS
+
+    evidence = _historical_evidence(
+        _FakeRanker({("key4hep/k4geo", 10): Ranking(60.0, "x")}),
+        monkeypatch,
+        lambda slug: RepoResolution(candidates=[
+            CandidatePR(repo=slug, number=n, title="t", author="a", url="u")
+            for n in range(MAX_PRS + 1)
+        ]),
+    )
+    assert evidence.complete is False
+
+
+def test_used_analogues_are_persisted_as_references_on_every_entry(monkeypatch):
+    import json
+
+    from k4bench.blame.history import HistoricalPR
+
+    _two_candidates(monkeypatch)
+    analogue = HistoricalPR(
+        boundary_id="h1", base_release="2026-07-01", onset_release="2026-07-02",
+        package="k4geo", repo="key4hep/k4geo", number=99, title="Adjust HCAL",
+        files=("hcal.xml",), additions=12, deletions=4,
+        body="secret prose", patch="@@ secret diff",
+    )
+
+    class _HistoricalRanker(_FakeRanker):
+        def rank(self, request):
+            self.requests.append(request)
+            return RankResult(rankings=self.mapping, historical=(analogue,))
+
+    ranker = _HistoricalRanker({("key4hep/k4geo", 10): Ranking(60.0, "x"),
+                                ("key4hep/k4geo", 11): Ranking(10.0, "y")})
+    # Two metrics of one rank group: one call, one selection, and the same
+    # references recorded on both entries.
+    blame = build_blame_report(
+        _report([_tailed(), _tailed(_verdict(metric="user_cpu_s"))]),
+        packages_for_release=_HISTORY_PROVENANCE,
+        github=GitHubClient(), ranker=ranker,
+    )
+    assert len(ranker.requests) == 1
+    assert len(blame.entries) == 2
+    for entry in blame.entries:
+        assert len(entry.historical_evidence) == 1
+        ref = entry.historical_evidence[0]
+        assert (ref.repo, ref.pr, ref.package) == ("key4hep/k4geo", 99, "k4geo")
+        assert (ref.boundary_id, ref.base_release) == ("h1", "2026-07-01")
+        assert ref.files == ("hcal.xml",)
+
+    # Neither the patch nor the description reaches the artifact, and both
+    # survive a round trip out of it.
+    serialized = json.dumps(blame.to_json())
+    assert "secret diff" not in serialized and "secret prose" not in serialized
+    restored = type(blame).from_json(json.loads(serialized))
+    assert restored.entries[0].historical_evidence == blame.entries[0].historical_evidence
+
+
+def test_a_ranking_without_analogues_records_none(monkeypatch):
+    _two_candidates(monkeypatch)
+    ranker = _FakeRanker({("key4hep/k4geo", 10): Ranking(60.0, "x")})
+    blame = build_blame_report(
+        _report([_tailed()]), packages_for_release=_HISTORY_PROVENANCE,
+        github=GitHubClient(), ranker=ranker,
+    )
+    assert blame.entries[0].historical_evidence == ()
+    assert "historical_evidence" in blame.to_json()["entries"][0]
