@@ -62,12 +62,12 @@ FETCH_WINDOW_RUNS = 2 * BASELINE_WINDOW_RUNS
 #: and they start staggered on a runner they queue for, so a batch that begins
 #: near midnight lands partly on one date and partly on the next.
 #:
-#: Only consulted when the CI run id cannot decide the question, because on its
-#: own it cannot: a triple whose job crashed and uploaded nothing looks exactly
-#: like one that started before midnight, and one night is the commonest outage
-#: there is. Runs recorded before ``github_run_url`` existed are the case that
-#: needs it; there, keeping the run is the lesser error, since the alternative
-#: is to cry *missing run* every time a batch crosses midnight.
+#: Only consulted for a report night that recorded no CI run at all, because on
+#: its own the date cannot decide the question: a triple whose job crashed and
+#: uploaded nothing looks exactly like one that started before midnight, and one
+#: night is the commonest outage there is. Nights predating ``github_run_url``
+#: are the case that needs it; there, keeping the run is the lesser error, since
+#: the alternative is to cry *missing run* every time a batch crosses midnight.
 SAME_BATCH_LAG_DAYS = 1
 
 #: A triple whose newest run is older than the report night by more than this
@@ -520,11 +520,14 @@ def build_nightly_report(
     """Build the cross-detector report for the most recent nightly.
 
     The report night is the newest run date seen across all triples. A triple
-    within :data:`SAME_BATCH_LAG_DAYS` of it ran in the same batch (see there)
-    and is reported normally; one that is older gets a *missing run* job
-    failure (a hard crash uploads nothing, so absence is itself the failure
-    signal) — unless it is stale by more than :data:`MISSING_RUN_GRACE_DAYS`,
-    in which case it is treated as retired and dropped.
+    dated earlier is still reported normally when its CI run says it came from
+    the report night's own batch, whatever the gap between the two dates (see
+    :func:`_same_batch`); for a night whose runs carry no CI run at all, a lag
+    of up to :data:`SAME_BATCH_LAG_DAYS` stands in for that. Anything else gets
+    a *missing run* job failure (a hard crash uploads nothing, so absence is
+    itself the failure signal) — unless it is stale by more than
+    :data:`MISSING_RUN_GRACE_DAYS`, in which case it is treated as retired and
+    dropped.
 
     *as_of* truncates every triple's history to runs on or before that night
     (see :func:`build_group_report`), making the report night the newest run
@@ -589,7 +592,22 @@ def build_nightly_report_local(
     return _finalize_report(groups)
 
 
-def _batch_ids(groups: list[RunGroupReport], report_night: str) -> set[str]:
+def _batch_key(run_url: str) -> str:
+    """The workflow run a CI run URL names, as a comparable key.
+
+    ``nightly_benchmark.sh`` builds the URL from ``GITHUB_RUN_ID``, so the run
+    id is what actually names the batch and the rest of the URL is presentation
+    — which drifts: a trailing slash, an ``/attempts/2`` suffix on a re-run.
+    Keeping the repository prefix keeps two repositories' run 900 apart; an
+    unrecognised shape is compared whole, since guessing would be worse.
+    """
+    prefix, marker, rest = run_url.partition("/actions/runs/")
+    if not marker:
+        return run_url.rstrip("/")
+    return f"{prefix.rstrip('/')}{marker}{rest.strip('/').split('/')[0]}"
+
+
+def _batch_keys(groups: list[RunGroupReport], report_night: str) -> set[str]:
     """The CI runs that produced the report night's own measurements.
 
     Every triple of one nightly is benchmarked by the same workflow run —
@@ -599,29 +617,31 @@ def _batch_ids(groups: list[RunGroupReport], report_night: str) -> set[str]:
     is what makes it a fallback rather than a requirement.
     """
     return {
-        g.github_run_url for g in groups
+        _batch_key(g.github_run_url) for g in groups
         if g.run_date == report_night and g.github_run_url
     }
 
 
-def _same_batch(
-    group: RunGroupReport, batch: set[str], age_days: int
-) -> bool:
+def _same_batch(group: RunGroupReport, batch: set[str], age_days: int) -> bool:
     """Whether *group*'s run belongs to the report night's batch despite being
     dated earlier.
 
     A batch that starts near midnight splits across two dates — each job is
     stamped when it starts — so a lagging run is routinely one of tonight's own
     measurements. It is equally routinely a triple whose job crashed and
-    uploaded nothing, and the two are indistinguishable by date. The CI run id
-    tells them apart exactly: same run, same batch.
+    uploaded nothing, and the two are indistinguishable by date. The CI run
+    tells them apart exactly: same run, same batch — however far apart the two
+    dates are, since a job that queues long enough starts whenever it starts.
 
-    Falls back to :data:`SAME_BATCH_LAG_DAYS` only when the ids cannot answer —
-    either side missing means the comparison would be between a known id and an
-    unknown one, which proves nothing.
+    Once the report night names a CI run, a lagging run that names none cannot
+    be from it: the jobs of one batch all run the same workflow, so they all
+    record it or none do. Such a run is older data, and saying *missing* about
+    it is the answer that can be checked. Only a report night with no CI run at
+    all falls back to :data:`SAME_BATCH_LAG_DAYS`.
     """
-    if batch and group.github_run_url:
-        return group.github_run_url in batch
+    if batch:
+        url = group.github_run_url
+        return bool(url and _batch_key(url) in batch)
     return age_days <= SAME_BATCH_LAG_DAYS
 
 
@@ -630,12 +650,12 @@ def _finalize_report(groups: list[RunGroupReport]) -> NightlyReport:
     failures (or drop them as retired past the grace period).
 
     Triples that ran in the report night's own batch are reported as they are
-    even when dated a night earlier (see :func:`_same_batch`): they belong to
-    this night, and their verdicts are this night's news."""
+    even when dated earlier (see :func:`_same_batch`): they belong to this
+    night, and their verdicts are this night's news."""
     if groups:
         report_night = max(g.run_date for g in groups)
         night = pd.Timestamp(report_night)
-        batch = _batch_ids(groups, report_night)
+        batch = _batch_keys(groups, report_night)
         kept: list[RunGroupReport] = []
         for g in groups:
             if g.run_date == report_night:
@@ -643,10 +663,20 @@ def _finalize_report(groups: list[RunGroupReport]) -> NightlyReport:
                 continue
             age_days = (night - pd.Timestamp(g.run_date)).days
             if _same_batch(g, batch, age_days):
+                # Say which of the two answers this is. A CI run match is a
+                # fact about where the measurement came from; the date fallback
+                # is an assumption, and a report that blurs them is claiming
+                # more than it knows.
                 g.notes.append(
                     f"run is dated {g.run_date}, this report {report_night} — "
-                    "a job is dated when it starts, so a batch that crosses "
-                    "midnight splits across two dates"
+                    + (
+                        "same CI run as tonight's other jobs, and a job is "
+                        "dated when it starts, so this batch crossed midnight"
+                        if batch else
+                        "this run records no CI run, and is taken as part of "
+                        "tonight's batch because a batch that starts near "
+                        "midnight splits across two dates"
+                    )
                 )
                 kept.append(g)
                 continue

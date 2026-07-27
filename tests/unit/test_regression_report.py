@@ -299,6 +299,75 @@ def test_ci_run_id_still_flags_a_triple_that_never_ran_tonight(tmp_path):
     assert report.has_alertable
 
 
+def test_known_ci_batch_does_not_fall_back_for_a_run_without_one(tmp_path):
+    # The jobs of one batch all run the same workflow, so they all record its
+    # CI run or none do. Once tonight's batch is known, a lagging run naming no
+    # CI run is older data — the date must not talk it back into the batch.
+    _make_history(_local_tree(tmp_path, "DET_A", "single_e"), [100.0] * 13,
+                  per_night={12: {"github_run_url": f"{_RUN}/900"}})
+    _make_history(_local_tree(tmp_path, "DET_B", "single_e"), [100.0] * 12)
+    report = build_nightly_report_local(str(tmp_path))
+
+    late = next(g for g in report.groups if g.detector == "DET_B")
+    assert "no run uploaded for 2026-01-13" in late.job_failures[0]
+
+
+def test_date_fallback_applies_when_the_report_night_has_no_ci_run(tmp_path):
+    # The mirror image: it is the *report night* having no CI run that makes
+    # the comparison impossible and the date the only evidence left. That the
+    # older run happens to carry one decides nothing on its own.
+    _make_history(_local_tree(tmp_path, "DET_A", "single_e"), [100.0] * 13)
+    _make_history(_local_tree(tmp_path, "DET_B", "single_e"), [100.0] * 12,
+                  per_night={11: {"github_run_url": f"{_RUN}/900"}})
+    report = build_nightly_report_local(str(tmp_path))
+
+    late = next(g for g in report.groups if g.detector == "DET_B")
+    assert late.job_failures == []
+    assert any("no CI run" in note for note in late.notes)
+
+
+def test_ci_run_id_outranks_the_date_lag(tmp_path):
+    # A job that queues long enough starts whenever it starts, so a batch can
+    # span more than SAME_BATCH_LAG_DAYS. The CI run says these measurements
+    # came from tonight's batch; the gap does not get a vote.
+    _make_history(_local_tree(tmp_path, "DET_A", "single_e"), [100.0] * 13,
+                  per_night={12: {"github_run_url": f"{_RUN}/900"}})
+    _make_history(_local_tree(tmp_path, "DET_B", "single_e"), [100.0] * 11,
+                  per_night={10: {"github_run_url": f"{_RUN}/900"}})
+    report = build_nightly_report_local(str(tmp_path))
+
+    late = next(g for g in report.groups if g.detector == "DET_B")
+    assert late.run_date == "2026-01-11"  # two nights behind 2026-01-13
+    assert late.job_failures == []
+    assert any("same CI run" in note for note in late.notes)
+
+
+def test_ci_run_url_matches_across_presentation_differences(tmp_path):
+    # The run id names the batch; the URL around it is presentation, and a
+    # re-run link or a stray slash must not read as a different batch.
+    _make_history(_local_tree(tmp_path, "DET_A", "single_e"), [100.0] * 13,
+                  per_night={12: {"github_run_url": f"{_RUN}/900/attempts/2"}})
+    _make_history(_local_tree(tmp_path, "DET_B", "single_e"), [100.0] * 12,
+                  per_night={11: {"github_run_url": f"{_RUN}/900/"}})
+    report = build_nightly_report_local(str(tmp_path))
+
+    late = next(g for g in report.groups if g.detector == "DET_B")
+    assert late.job_failures == []
+
+
+def test_a_different_ci_batch_past_the_grace_period_is_retired(tmp_path):
+    # A run from another batch is judged on its age like any other stale run:
+    # past MISSING_RUN_GRACE_DAYS it is a retired triple, not a nightly alert.
+    _make_history(_local_tree(tmp_path, "DET_A", "single_e"), [100.0] * 13,
+                  per_night={12: {"github_run_url": f"{_RUN}/900"}})
+    for night in _nights(2, start="2025-12-01"):
+        _write_run(_local_tree(tmp_path, "DET_B", "single_e") / night,
+                   night=night, github_run_url=f"{_RUN}/700")
+    report = build_nightly_report_local(str(tmp_path))
+
+    assert set(report.by_detector()) == {"DET_A"}
+
+
 def test_local_report_quiet_night_not_alertable(tmp_path):
     _make_history(_local_tree(tmp_path, "DET_A", "single_e"), [100.0] * 12)
     report = build_nightly_report_local(str(tmp_path))
