@@ -53,7 +53,7 @@ run for that selection; the trend window controls the multi-run views.
 | **Trends** | metrics over time across releases | many runs, windowed |
 | **Regressions** | the nightly regression report for the selected detector/platform/sample | `_reports/{date}/report.json` |
 | **Stack Changes** | which Key4hep packages moved between two nightly releases | `run_info.json` (`k4h_packages`) |
-| **Overview** | cross-detector comparison: performance trends, landscape & regression status | `_reports/{date}/report.json` |
+| **Overview** | cross-detector comparison: performance trends, landscape, regression status & the nightly mail | `_reports/{date}/report.json` |
 | **Machine info** | the host the benchmark ran on (CPU, RAM, governor, throttling) | `machine_info.json` |
 | **Logs** | the raw `ddsim` log for the selected run | `*.log` |
 
@@ -341,7 +341,7 @@ tab — whose verdicts carry the raw nightly value of every run and per-event
 metric for all detectors — so the whole comparison loads from one small JSON
 per night, with no per-detector run downloads.
 
-Three views, dispatched by the same View radio as the other multi-view tabs
+Four views, dispatched by the same View radio as the other multi-view tabs
 (one colour per detector, consistent across the figures):
 
 - **Performance Trends** — the two selected metrics side by side (CPU,
@@ -386,7 +386,18 @@ Three views, dispatched by the same View radio as the other multi-view tabs
   for a confirmed step, the shaded blame window, all built from the cached
   reports with no run downloads. The view renders even
   on a night whose configs all hard-failed (when there are no values to plot),
-  so a failure is never hidden behind an empty chart.
+  so a failure is never hidden behind an empty chart;
+- **Nightly Report** — one night's regression report exactly as the Key4hep
+  e-group received it, rendered from the already-fetched report (plus that
+  night's blame sidecar) by the same renderer the mail uses, so the embed can
+  never drift from what was sent. Its night picker reaches as far back as the
+  trend window and is deep-linkable via `?report=`, the same parameter the
+  Regressions tab and the alert emails already speak.
+  Unlike every other view it is **not** scoped to the sidebar's
+  platform/sample — the mail covers every detector, platform and sample the
+  night benchmarked — which is why it stays reachable even when the selected
+  scope has no data. Links open in a new tab; the mail's *CI run* button is
+  omitted, since that workflow-run URL is not stored in the report.
 
 Colours follow the detector *family* (ALLEGRO, CLD, …), with versions of one
 family distinguished by dash pattern and marker symbol, so experiment-level
@@ -436,6 +447,7 @@ endpoint, via environment variables read by
 | `K4BENCH_DATA_DIR` | `logs` | local directory to read runs from |
 | `K4BENCH_DATA_URL` | *(unset)* | WebEOS base URL; when set, overrides local reads |
 | `K4BENCH_CACHE_DIR` | `$TMPDIR/k4bench_cache` | on-disk cache for downloaded runs |
+| `K4BENCH_DASHBOARD_URL` | `https://k4bench-dashboard.app.cern.ch` | this deployment's own public URL; the Overview tab's **Nightly Report** view needs it because the embedded mail's deep links must be absolute |
 
 === "Against your own runs"
 
