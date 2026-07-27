@@ -669,7 +669,9 @@ _MAX_HISTORICAL_FILES = 8
 _MAX_HISTORICAL_BODY_CHARS = 600
 
 
-def historical_offer_lines(boundaries: tuple[HistoricalBoundary, ...]) -> list[str]:
+def historical_offer_lines(
+    boundaries: tuple[HistoricalBoundary, ...], *, omitted: int = 0
+) -> list[str]:
     """The lightweight index of older boundaries, and how to ask for one.
 
     Costs no GitHub call to produce and none to ignore: a model that has enough
@@ -679,7 +681,10 @@ def historical_offer_lines(boundaries: tuple[HistoricalBoundary, ...]) -> list[s
     Boundaries whose release diff could not be read are **listed, not hidden**.
     A gap in a list of dates reads as a boundary where nothing moved, which is
     the opposite of what an unread diff means, and this whole retrieval protocol
-    is built on keeping those two apart.
+    is built on keeping those two apart. Every cap that bit — *omitted*
+    boundaries, and packages beyond a boundary's listing bound — is stated for
+    the same reason: a shortened list that does not admit to being short is read
+    as a complete one.
     """
     if not boundaries:
         return []
@@ -709,7 +714,23 @@ def historical_offer_lines(boundaries: tuple[HistoricalBoundary, ...]) -> list[s
             f"{p.name}" + (f" ({p.repo}, {p.status})" if p.repo else f" ({p.status})")
             for p in boundary.packages
         )
+        # The listing cap is stated whenever it bites. Silently showing 25 of 37
+        # would let the model rule out the 26th on the strength of a display
+        # bound — an exculpation nobody measured.
+        if boundary.packages_omitted:
+            named += (
+                f" — showing {len(boundary.packages)} of "
+                f"{boundary.packages_total} changed package(s); the other "
+                f"{boundary.packages_omitted} are not listed and cannot be "
+                f"requested, which is not a statement that they are irrelevant"
+            )
         lines.append(f"  - [{boundary.id}] {window}: {named}")
+    if omitted:
+        lines.append(
+            f"  ({omitted} older boundary(ies) of this history are not listed "
+            f"here and cannot be requested; each still appears with its own "
+            f"package count in the history table above.)"
+        )
     lines += [
         "",
         "If — and only if — the code behind one of those boundaries would "

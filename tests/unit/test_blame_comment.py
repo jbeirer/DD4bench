@@ -29,6 +29,7 @@ from k4bench.blame.comment import (
     marker_for,
     select,
 )
+from k4bench.blame.history import MAX_COMMENT_ANALOGUES
 from k4bench.blame.models import (
     BlameEntry,
     BlameReport,
@@ -2457,3 +2458,105 @@ def test_an_entry_measuring_a_narrower_window_contributes_no_references():
     plans = select(_report(wide, narrow), blame, _policy())
     assert plans[0].base_release == "2026-07-03"
     assert plans[0].historical_refs == ()
+
+
+def test_an_analogue_with_no_hunks_but_a_description_is_still_readable():
+    # A binary-only or pure-rename pull request genuinely has no textual diff,
+    # and the *first* pass accepted it on its paths and prose. Failing the
+    # re-fetch on the empty patch alone would suppress this window's comment
+    # every night, forever, over a change GitHub answers about perfectly well.
+    verdict = _verdict()
+    plans = select(
+        _report(verdict),
+        _blame_with_history([verdict], [_candidate()], [_ref()]),
+        _policy(),
+    )
+    attributor = _FakeAttributor({"r1": 95.0}, assessment=AttrStepAssessment("real_change"))
+    comments = build_comments(
+        plans, attributor=attributor,
+        patch_for=lambda _r, number: "" if number == 1234 else "diff",
+        body_for=lambda _r, number: "Swaps the HCAL absorber table (binary).",
+    )
+    assert len(comments) == 1
+    analogue = attributor.requests[0].historical[0]
+    assert analogue.patch == "" and analogue.body.startswith("Swaps the HCAL")
+
+
+def test_an_analogue_that_yields_nothing_at_all_still_suppresses(caplog):
+    verdict = _verdict()
+    plans = select(
+        _report(verdict),
+        _blame_with_history([verdict], [_candidate()], [_ref()]),
+        _policy(),
+    )
+    attributor = _FakeAttributor({"r1": 95.0}, assessment=AttrStepAssessment("real_change"))
+    with caplog.at_level("WARNING"):
+        comments = build_comments(
+            plans, attributor=attributor,
+            patch_for=lambda _r, _n: "", body_for=lambda _r, _n: "",
+        )
+    assert comments == [] and attributor.requests == []
+    assert "nothing readable for the historical analogue" in caplog.text
+
+
+def test_too_many_analogues_across_rank_groups_suppresses_before_fetching(caplog):
+    # MAX_PRS bounds one rank group; a comment window unions the selections of
+    # every rank group inside it. Dropping the excess would leave the two passes
+    # weighing different evidence, so the comment is withheld instead — and it
+    # must cost nothing to withhold.
+    verdicts = [
+        _verdict(metric=f"metric_{n}", detector=f"DET_{n}")
+        for n in range(MAX_COMMENT_ANALOGUES + 1)
+    ]
+    blame = BlameReport(
+        generated_at="x", report_night="2026-07-05",
+        entries=tuple(
+            dataclasses.replace(
+                _blame([v], [_candidate()]).entries[0],
+                historical_evidence=(_ref(pr=1000 + n),),
+            )
+            for n, v in enumerate(verdicts)
+        ),
+    )
+    plans = select(_report(*verdicts), blame, _policy())
+    assert len(plans[0].historical_refs) == MAX_COMMENT_ANALOGUES + 1
+
+    fetched = []
+    attributor = _FakeAttributor({"r1": 95.0}, assessment=AttrStepAssessment("real_change"))
+    with caplog.at_level("WARNING"):
+        comments = build_comments(
+            plans, attributor=attributor,
+            patch_for=lambda repo, number: fetched.append((repo, number)) or "diff",
+            body_for=lambda _r, _n: "",
+        )
+    assert comments == [] and attributor.requests == []
+    # Not one GitHub round trip was spent before refusing.
+    assert fetched == []
+    assert f"past the {MAX_COMMENT_ANALOGUES} one review can carry" in caplog.text
+
+
+def test_exactly_the_cap_is_still_reviewed():
+    verdicts = [
+        _verdict(metric=f"metric_{n}", detector=f"DET_{n}")
+        for n in range(MAX_COMMENT_ANALOGUES)
+    ]
+    blame = BlameReport(
+        generated_at="x", report_night="2026-07-05",
+        entries=tuple(
+            dataclasses.replace(
+                _blame([v], [_candidate()]).entries[0],
+                historical_evidence=(_ref(pr=1000 + n),),
+            )
+            for n, v in enumerate(verdicts)
+        ),
+    )
+    plans = select(_report(*verdicts), blame, _policy())
+    attributor = _FakeAttributor(
+        {row.fact_id: 95.0 for row in plans[0].rows},
+        assessment=AttrStepAssessment("real_change"),
+    )
+    patch_for, body_for = _texts()
+    assert build_comments(
+        plans, attributor=attributor, patch_for=patch_for, body_for=body_for,
+    )
+    assert len(attributor.requests[0].historical) == MAX_COMMENT_ANALOGUES

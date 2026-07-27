@@ -98,7 +98,12 @@ jobs:
           K4BENCH_LLM_SUMMARY_MODEL: ${{ vars.K4BENCH_LLM_SUMMARY_MODEL }}
           # Bounds the entire optional GitHub+LLM attribution stage. A timeout
           # skips blame.json but cannot affect report.json or notification.
-          K4BENCH_BLAME_TIMEOUT:     ${{ vars.K4BENCH_BLAME_TIMEOUT || '15m' }}
+          # Generous, because the stage is one model call per rank group and a
+          # wide night has many — plus, where the ranker asks to read an earlier
+          # boundary, one more. The limit is there to bound a provider that
+          # accepts connections and never progresses, not to pace a healthy run:
+          # cutting a working night short costs the whole sidecar.
+          K4BENCH_BLAME_TIMEOUT:     ${{ vars.K4BENCH_BLAME_TIMEOUT || '1h' }}
           # Comments on the pull requests the blame ranker holds responsible.
           # The built-in GITHUB_TOKEN above cannot do this: it is read-only and
           # scoped to k4Bench, while these comments land in the Key4hep package

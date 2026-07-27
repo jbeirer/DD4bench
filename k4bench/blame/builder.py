@@ -343,8 +343,11 @@ def build_blame_report(
             changed_packages=changed_packages,
             exclude={(platform, base or "", onset)},
         )
-        return HistoricalIndex(
-            boundaries=index, provider=_CallableProvider(fetch_historical)
+        # The index is the offer; the provider is how it is redeemed. Built
+        # apart so the offer stays a pure function of provenance the report
+        # already read, and testable without anything that can reach GitHub.
+        return dataclasses.replace(
+            index, provider=_CallableProvider(fetch_historical)
         )
 
     entries: list[BlameEntry] = []

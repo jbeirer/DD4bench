@@ -69,9 +69,12 @@ _log = logging.getLogger(__name__)
 #: for no gain. The most recent ones are the ones a step is compared against.
 MAX_INDEX_BOUNDARIES = 8
 
-#: Packages named per boundary in the index. A Key4hep release boundary moves a
-#: handful of packages on an ordinary night and dozens after a quiet week; the
-#: overflow is counted rather than listed, exactly as file lists are.
+#: Packages *named* per boundary in the index. A Key4hep release boundary moves
+#: a handful on an ordinary night and dozens after a quiet week. The overflow is
+#: counted and stated (:attr:`HistoricalBoundary.packages_omitted`), never
+#: silently dropped: a list that shows 25 of 37 and says nothing invites the
+#: model to conclude that package 26 did not change, which is a false
+#: exculpation built out of a display cap.
 MAX_INDEX_PACKAGES = 25
 
 #: Boundaries one request may name. Two is enough for "this happened before, and
@@ -97,6 +100,22 @@ MAX_PRS = 4
 #: the current window's diffs out of the prompt. Clipping here is marked in the
 #: text, the way every other clipped diff in these prompts is.
 MAX_DIFF_CHARS = 10000
+
+#: Analogues one *comment* may carry into the cross-configuration review.
+#:
+#: :data:`MAX_PRS` bounds one rank group, but a comment window unions the
+#: selections of every rank group inside it — several detectors, samples and
+#: platforms, each of which asked its own question — so the per-group bound says
+#: nothing about the total. Without this, a wide night could hand one review
+#: dozens of analogues: dozens of GitHub round trips inside one shared timeout,
+#: and a prompt whose historical half dwarfs the window it is background to.
+#:
+#: Three rank groups' worth. Exceeding it **suppresses the comment** rather than
+#: dropping analogues, because dropping some would break the one property this
+#: whole path exists for — that both passes weigh the same evidence — and would
+#: break it silently. A night that wide is a bug to look at, in the same spirit
+#: as the comment-storm cap.
+MAX_COMMENT_ANALOGUES = 3 * MAX_PRS
 
 #: Longest reason kept from the model's request. It is a sentence justifying the
 #: retrieval, logged for the operator; it never reaches a prompt.
@@ -162,11 +181,23 @@ class HistoricalBoundary:
     onset_release: str
     packages: tuple[HistoricalPackage, ...] = ()
     provenance_read: bool = True
+    #: How many packages moved across this boundary in total, before
+    #: :data:`MAX_INDEX_PACKAGES` cut the listing. Carried so the prompt can say
+    #: how much of the diff it is showing — the difference between "these are
+    #: the packages that moved" and "these are 25 of the 37 that moved" is the
+    #: difference between a fact and a false one.
+    packages_total: int = 0
 
     @property
     def requestable(self) -> bool:
         """Whether this boundary holds anything that can actually be fetched."""
         return self.provenance_read and any(p.retrievable for p in self.packages)
+
+    @property
+    def packages_omitted(self) -> int:
+        """Packages that moved here but are not listed, and so cannot be asked
+        for. Stated in the prompt whenever it is non-zero."""
+        return max(0, self.packages_total - len(self.packages))
 
     def package(self, name: str) -> HistoricalPackage | None:
         return next((p for p in self.packages if p.name == name), None)
@@ -295,6 +326,11 @@ class HistoricalIndex:
 
     boundaries: tuple[HistoricalBoundary, ...] = ()
     provider: HistoricalProvider | None = None
+    #: Older boundaries in the tail that :data:`MAX_INDEX_BOUNDARIES` cut. Stated
+    #: rather than silently absent, for the same reason an unread boundary is
+    #: listed: the model must never be able to read "not in the list" as "did not
+    #: happen".
+    boundaries_omitted: int = 0
 
     @property
     def offered(self) -> tuple[HistoricalBoundary, ...]:
@@ -312,7 +348,7 @@ def build_index(
     *,
     changed_packages,
     exclude: set[tuple[str, str, str]] = frozenset(),
-) -> tuple[HistoricalBoundary, ...]:
+) -> HistoricalIndex:
     """Describe the older release boundaries in *tails*, newest last.
 
     *tails* is ``[(platform, [release, …]), …]`` — one metric's history tail per
@@ -328,6 +364,12 @@ def build_index(
     be read) produces a described but not requestable boundary rather than an
     empty package list: "we could not look" and "nothing moved" are opposite
     evidence, and this whole module is downstream of that distinction.
+
+    Both caps here — :data:`MAX_INDEX_BOUNDARIES` and :data:`MAX_INDEX_PACKAGES`
+    — are *counted*, never silently applied. A model shown 25 packages of 37 and
+    told nothing is a model entitled to conclude that the 26th did not change,
+    and a false exculpation manufactured by a display cap is worse than a longer
+    list.
 
     No GitHub call is made here, and none can be: every fact comes from the
     provenance the report build already read.
@@ -348,28 +390,34 @@ def build_index(
                 onset_release=onset,
                 packages=() if changes is None else _packages(changes),
                 provenance_read=changes is not None,
+                packages_total=0 if changes is None else len(changes),
             )
     # Newest last, so the ids read forward in time and the cap keeps the recent
     # history — the part a step is actually compared against.
     ordered = sorted(seen.values(), key=lambda b: (b.onset_release, b.base_release, b.platform))
-    ordered = ordered[-MAX_INDEX_BOUNDARIES:]
-    return tuple(
-        HistoricalBoundary(
-            id=f"h{index}",
-            platform=b.platform,
-            base_release=b.base_release,
-            onset_release=b.onset_release,
-            packages=b.packages,
-            provenance_read=b.provenance_read,
-        )
-        for index, b in enumerate(ordered, start=1)
+    kept = ordered[-MAX_INDEX_BOUNDARIES:]
+    return HistoricalIndex(
+        boundaries=tuple(
+            HistoricalBoundary(
+                id=f"h{index}",
+                platform=b.platform,
+                base_release=b.base_release,
+                onset_release=b.onset_release,
+                packages=b.packages,
+                provenance_read=b.provenance_read,
+                packages_total=b.packages_total,
+            )
+            for index, b in enumerate(kept, start=1)
+        ),
+        boundaries_omitted=len(ordered) - len(kept),
     )
 
 
 def _packages(changes: list[PackageChange]) -> tuple[HistoricalPackage, ...]:
     """One boundary's package diff as the index states it — retrievable packages
     first, so a cap on the listing never spends itself on the ones that could not
-    be fetched anyway."""
+    be fetched anyway. The count that was cut rides on the boundary itself (see
+    :attr:`HistoricalBoundary.packages_omitted`)."""
     packages = [
         HistoricalPackage(
             name=change.name,
@@ -512,16 +560,27 @@ def cap_evidence(prs: list[HistoricalPR]) -> HistoricalEvidence:
     be read completely, and a partial read of a range is exactly the situation
     the rest of :mod:`k4bench.blame` refuses: it would let the model conclude
     "nothing at that boundary resembles this" from a list that was cut short.
+
+    De-duplicated on ``(repo, number)`` first. Two package *names* in one stack
+    can resolve to one repository, and asking for both then resolves one commit
+    range twice and yields every pull request in it twice — which would render
+    the same change under two headings, and spend the cap twice on one piece of
+    evidence. The first association wins, which is also the one the comment
+    pass keeps when it de-duplicates the persisted references, so both passes
+    name the analogue the same way.
     """
-    if len(prs) > MAX_PRS:
+    unique: dict[tuple[str, int], HistoricalPR] = {}
+    for pr in prs:
+        unique.setdefault((pr.repo, pr.number), pr)
+    if len(unique) > MAX_PRS:
         return HistoricalEvidence(
             complete=False,
             reason=(
-                f"the selection holds {len(prs)} pull request(s), past the "
-                f"{MAX_PRS} that can be read completely"
+                f"the selection holds {len(unique)} distinct pull request(s), "
+                f"past the {MAX_PRS} that can be read completely"
             ),
         )
-    return HistoricalEvidence(prs=tuple(prs), complete=True)
+    return HistoricalEvidence(prs=tuple(unique.values()), complete=True)
 
 
 # ── Configuration ─────────────────────────────────────────────────────────────

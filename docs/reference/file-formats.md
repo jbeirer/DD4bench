@@ -331,7 +331,12 @@ The retrieval is a two-stage protocol, not a browsing tool:
    add/change/remove status — under application-generated opaque ids (`h1`,
    `h2`, …). Building it costs no GitHub call. Boundaries whose release diff
    could not be read are listed as unreadable rather than omitted, because a gap
-   in a list of dates would read as a boundary where nothing changed.
+   in a list of dates would read as a boundary where nothing changed. Both
+   listing caps — 8 boundaries, 25 packages per boundary — are **stated when
+   they bite** ("showing 25 of 37 changed packages; the other 12 are not listed
+   and cannot be requested"), for the same reason: a shortened list that does not
+   admit to being short is read as a complete one, and would let a display bound
+   exculpate a package nobody measured.
 2. The model may answer with a `historical_evidence_request` naming ids and
    package names **from that index only**. An invented id, a package nobody
    offered, a boundary the index called unreadable, a request with no stated
@@ -342,7 +347,11 @@ The retrieval is a two-stage protocol, not a browsing tool:
 3. The application retrieves the validated selection through the same
    authenticated GitHub client and the same `(repo, base, head)` resolution
    cache the current window's candidates used, then asks once more with the code
-   attached. That answer is the authoritative ranking.
+   attached. That answer is the authoritative ranking — unless it asks *again*,
+   which is a decline: there is no round left to honour it with, so a reply that
+   says it is still not ready to judge does not get its scores published beside
+   the statement. (A historical PR body is attacker-reachable prose and can try
+   to induce that member; all it buys is a refusal.)
 
 Bounds: at most 2 boundaries and 2 packages per boundary per request, 4 pull
 requests in total, one retrieval round, and one extra model call per rank group.
@@ -369,8 +378,15 @@ When a comment is written about such a window, the cross-configuration review is
 handed the *same* analogues, re-fetched from these references and rendered under
 the same "historical, not a candidate" label — a review that revised the first
 pass without the evidence the first pass rested on would not be a second opinion.
-If any reference cannot be re-fetched, **no comment is posted that night**, the
-same fail-closed rule an unusable review already follows. The references are part
+If a reference yields neither a diff nor a description it is unreadable and
+**no comment is posted that night**, the same fail-closed rule an unusable review
+already follows. (An empty *patch* alone is not a failure: a binary-only or
+pure-rename pull request has no textual hunk, and the first pass accepted it on
+its paths and prose.) One comment carries at most 12 analogues in total —
+`MAX_PRS` bounds one rank group, but a comment window unions every rank group
+inside it — and exceeding that suppresses the comment *before any fetch* rather
+than dropping analogues, since dropping some would silently leave the two passes
+weighing different evidence. The references are part
 of the comment's facts digest, so a materially different evidence set produces a
 replaceable comment rather than a frozen one; the analogues themselves are never
 rendered as accused pull requests in the public body.

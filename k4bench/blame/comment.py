@@ -83,7 +83,7 @@ from k4bench.blame.evidence import (
     outcomes_for_window,
     steps_in_window,
 )
-from k4bench.blame.history import HistoricalPR
+from k4bench.blame.history import MAX_COMMENT_ANALOGUES, HistoricalPR
 from k4bench.blame.models import (
     RANKING_DISCLOSURE,
     BlameEntry,
@@ -1051,22 +1051,43 @@ def _historical(
     through the same authenticated boundary a competitor's diff comes through —
     one call per pull request, memoized for the whole run by the caller.
 
-    A reference whose diff comes back empty raises. That is stricter than the
-    best-effort rule the competitors follow, and deliberately so: a competitor
-    with no diff still appears with its paths and the first pass's reason, and
-    losing it costs the review one alternative it can weigh. A missing analogue
-    costs the review the evidence the first pass's own score was built on, and
-    there is no honest way to render that as a weaker version of the same
-    review. The cost of the strictness is a comment silenced on a night GitHub
-    would not answer — recoverable tomorrow, unlike a comment posted on a
-    materially different evidence set."""
+    A reference that comes back with **neither** a diff nor a description
+    raises. That is stricter than the best-effort rule the competitors follow,
+    and deliberately so: a competitor with no diff still appears with its paths
+    and the first pass's reason, and losing it costs the review one alternative
+    it can weigh. A missing analogue costs the review the evidence the first
+    pass's own score was built on, and there is no honest way to render that as
+    a weaker version of the same review. The cost of the strictness is a comment
+    silenced on a night GitHub would not answer — recoverable tomorrow, unlike a
+    comment posted on a materially different evidence set.
+
+    Both halves are tested because the fetch seam reports failure as ``""`` and
+    cannot say which kind it was. A binary-only or pure-rename pull request
+    genuinely has no textual hunk, and the *first* pass accepted it on its paths
+    and prose; failing the re-fetch on the empty patch alone would suppress that
+    window's comment every night, forever, over a change GitHub is answering
+    about perfectly well. A reference that yields nothing at all is the
+    unreadable one. (A binary pull request with an empty description is still
+    indistinguishable from a failure, and still fails closed — the rarer of two
+    rare cases, and the safe side of it.)"""
+    if len(plan.historical_refs) > MAX_COMMENT_ANALOGUES:
+        # Checked before a single fetch: a night this wide must cost nothing,
+        # not a hundred round trips inside one shared timeout before refusing.
+        raise HistoricalEvidenceUnavailable(
+            f"{len(plan.historical_refs)} historical analogues across this "
+            f"window's rank groups, past the {MAX_COMMENT_ANALOGUES} one review "
+            f"can carry; dropping some would leave the two passes weighing "
+            f"different evidence"
+        )
     analogues = []
     for ref in plan.historical_refs:
         patch = fetch(ref.repo, ref.pr)
-        if not patch:
+        body = body_fetch(ref.repo, ref.pr)
+        if not patch and not body:
             raise HistoricalEvidenceUnavailable(
-                f"no diff for the historical analogue {ref.repo}#{ref.pr}, which "
-                f"the first pass read before scoring this window"
+                f"nothing readable for the historical analogue "
+                f"{ref.repo}#{ref.pr}, which the first pass read before scoring "
+                f"this window"
             )
         analogues.append(HistoricalPR(
             boundary_id=ref.boundary_id,
@@ -1079,7 +1100,7 @@ def _historical(
             files=ref.files,
             additions=ref.additions,
             deletions=ref.deletions,
-            body=body_fetch(ref.repo, ref.pr),
+            body=body,
             patch=patch,
         ))
     return tuple(analogues)
@@ -1088,7 +1109,13 @@ def _historical(
 def _attribution_request(
     plan: CommentPlan, fetch: PatchFor, body_fetch: BodyFor
 ) -> AttributionRequest:
-    """The whole window, as the reviewing model is shown it."""
+    """The whole window, as the reviewing model is shown it.
+
+    The analogues are resolved *first*, before a single other fetch. They carry
+    the only requirement here that can refuse the whole review, so a window that
+    is going to be withheld should be withheld before it spends a round trip on
+    a diff nobody will read."""
+    historical = _historical(plan, fetch, body_fetch)
     return AttributionRequest(
         repo=plan.repo,
         number=plan.number,
@@ -1114,9 +1141,9 @@ def _attribution_request(
         packages_by_platform=plan.packages_by_platform,
         unchanged_by_platform=dict(plan.unchanged),
         packages_unavailable_on=plan.packages_unavailable_on,
-        # Fetched last, and allowed to raise: the review must see the same
+        # Resolved above, and allowed to raise: the review must see the same
         # historical evidence the first pass did, or it must not happen at all.
-        historical=_historical(plan, fetch, body_fetch),
+        historical=historical,
     )
 
 

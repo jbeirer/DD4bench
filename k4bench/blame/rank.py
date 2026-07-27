@@ -41,6 +41,7 @@ from typing import Protocol
 
 from k4bench.blame.evidence import MetricHistory, ScopeOutcome
 from k4bench.blame.history import (
+    REQUEST_KEY,
     HistoricalBoundary,
     HistoricalEvidence,
     HistoricalIndex,
@@ -411,7 +412,9 @@ class OpenAICompatRanker:
         # :func:`parse_request` is what enforces that.
         offer = index.boundaries
         try:
-            content, finish_reason = self._complete(request, offer=offer)
+            content, finish_reason = self._complete(
+                request, offer=offer, offer_omitted=index.boundaries_omitted,
+            )
         except Exception as exc:
             _log.warning(
                 "rank: %s/%s %s — LLM call failed (%s); no ranking for this window",
@@ -504,6 +507,26 @@ class OpenAICompatRanker:
                         historical=historical,
                     )
 
+            if evidence is not None and _asks_again(content):
+                # The model has been given what it asked for and is asking
+                # again. There is no second round to give it, so this is an
+                # explicit statement that it is not ready to judge — exactly the
+                # signal the first round honours by discarding preliminary
+                # scores, and it does not change meaning because it arrived one
+                # round later. Publishing the rankings beside it would take a
+                # judgement the model itself called provisional.
+                #
+                # This is reachable by prompt injection: a historical body or
+                # patch can try to induce the member. That costs a ranking,
+                # never a wrong one — the failure stays on the side this
+                # pipeline fails to.
+                _log.warning(
+                    "rank: %s/%s %s — the follow-up asked for further historical "
+                    "evidence there is no round left to supply; declining rather "
+                    "than publishing the scores it wrote alongside the ask",
+                    request.detector, request.sample, request.onset_release,
+                )
+                return RankResult()
             combined.update(_parse_rankings(content, request))
             # First reading of the step wins. A retry exists to fill in rows the
             # reply ran out of room for, and the assessment is a judgement of the
@@ -536,6 +559,7 @@ class OpenAICompatRanker:
         request: RankRequest,
         *,
         offer: tuple[HistoricalBoundary, ...] = (),
+        offer_omitted: int = 0,
         evidence: HistoricalEvidence | None = None,
     ) -> tuple[str, str]:
         """POST the prompt and return ``(assistant text, finish reason)``.
@@ -548,7 +572,9 @@ class OpenAICompatRanker:
             _SYSTEM_PROMPT + (
                 HISTORICAL_ANALOGUE_RULE if evidence is not None else ""
             ),
-            _build_user_prompt(request, offer=offer, evidence=evidence),
+            _build_user_prompt(
+                request, offer=offer, offer_omitted=offer_omitted, evidence=evidence,
+            ),
             max_output_tokens=min(
                 MAX_OUTPUT_TOKENS,
                 _OUTPUT_TOKENS_ASSESSMENT
@@ -707,6 +733,7 @@ def _build_user_prompt(
     request: RankRequest,
     *,
     offer: tuple[HistoricalBoundary, ...] = (),
+    offer_omitted: int = 0,
     evidence: HistoricalEvidence | None = None,
 ) -> str:
     """The user message: the window's regressions and their history, the
@@ -714,10 +741,11 @@ def _build_user_prompt(
     each with its fair share of the total diff budget.
 
     *offer* appends the lightweight index of older boundaries the model may ask
-    for; *evidence* appends the analogues it did ask for. Never both — an index
-    in the follow-up prompt would be a second retrieval round, which the protocol
-    does not have. With neither (the default, and the whole of production until
-    the feature is switched on) this returns byte-for-byte what it always did."""
+    for, *offer_omitted* how many of them the index cap cut; *evidence* appends
+    the analogues it did ask for. Never both an offer and evidence — an index in
+    the follow-up prompt would be a second retrieval round, which the protocol
+    does not have. With neither (the default, and the whole of a run with the
+    feature switched off) this returns byte-for-byte what it always did."""
     packages = sorted({c.repo for c in request.candidates})
     parts = [
         f"Run context — the {request.detector} run these metrics were "
@@ -752,7 +780,7 @@ def _build_user_prompt(
     # After the candidates, so the current window is read first and the older
     # boundaries are met as what they are — background to it, never a second set
     # of candidates competing with it for the model's attention.
-    parts += historical_offer_lines(offer)
+    parts += historical_offer_lines(offer, omitted=offer_omitted)
     if evidence is not None:
         parts += historical_lines(evidence.prs, asked=True)
 
@@ -836,6 +864,18 @@ def _parse_rankings(
             against=one_line(row.get("against"), _MAX_AGAINST_CHARS),
         )
     return out
+
+
+def _asks_again(content: str) -> bool:
+    """Whether a reply carries a historical request the protocol cannot honour.
+
+    Only a *present, non-null* member counts. A model echoing the field back as
+    ``null`` — which JSON-mode models do with a schema they were shown once — is
+    saying it wants nothing, and reading that as a refusal to judge would throw
+    away a good ranking over a punctuation habit.
+    """
+    data = extract_json(content)
+    return isinstance(data, dict) and data.get(REQUEST_KEY) is not None
 
 
 def _parse_assessment(content: str) -> StepAssessment | None:
