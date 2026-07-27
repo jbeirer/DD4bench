@@ -107,34 +107,58 @@ def changes_summary(changes: list) -> str:
     return " · ".join(parts)
 
 
+def run_point(df: pd.DataFrame, run_id: str | None, metric: str) -> tuple | None:
+    """The plotted ``(x_date, value)`` of one *run*, or ``None`` when it has none.
+
+    The marker anchor for a **run-level** chart — one where every run of a
+    release gets its own point, as the regression drill-down does. There a
+    verdict is evidence about one measurement and its marker belongs on that
+    run's own point and nowhere else: several runs can share a release, and a
+    sibling run is a different measurement that must not be dressed up as this
+    one. ``None`` when the run is absent from *df* (excluded by the reliability
+    filter, outside the fetched window) or measured nothing for *metric*, so the
+    caller draws no marker rather than a misplaced or free-floating one.
+
+    **Not** the rule for the release-level charts (Run Trends, the Overview's
+    trends), which plot one point per Key4hep nightly tag and so have no
+    per-run point to anchor to. Those reduce a release's runs the way the engine
+    reduces them itself — see ``_tag_severity`` in ``tabs.trends``.
+    """
+    if not run_id or metric not in df.columns or "run_id" not in df.columns:
+        return None
+    hits = df[df["run_id"].astype(str) == str(run_id)]
+    if hits.empty:
+        return None
+    # A run id names one measurement, so this is normally a single row; sort
+    # anyway so the result never depends on the caller's row order.
+    row = hits.sort_values("x_date").iloc[-1]
+    val = row[metric]
+    return None if pd.isna(val) else (row["x_date"], val)
+
+
 def onset_point(df: pd.DataFrame, verdict: MetricVerdict) -> tuple | None:
     """The plotted ``(x_date, value)`` of the recorded onset run, or ``None``.
 
     When the onset *run id* is recorded (always, for reports the current engine
-    writes) it must match that exact run: several runs can share a release, and
-    a sibling run is a different measurement that must not be dressed up as the
-    onset. If that run is not in the fetched window, return ``None`` so the
-    caller draws no marker rather than a misplaced one. The release-date match
-    is only a fallback for a legacy report that carries a date but no run id.
+    writes) it must match that exact run — see :func:`run_point`. The
+    release-date match below is only a fallback for a legacy report that carries
+    a date but no run id.
 
-    The pick is made by an explicit sort, not the frame's incoming order, so a
-    caller that sorts differently cannot move the marker.
+    The legacy pick is made by an explicit sort, not the frame's incoming order,
+    so a caller that sorts differently cannot move the marker.
     """
     if verdict.metric not in df.columns:
         return None
     if verdict.onset_run_id is not None:
-        if "run_id" not in df.columns:
-            return None
-        hits = df[df["run_id"].astype(str) == str(verdict.onset_run_id)]
-    elif verdict.onset_run_date:
-        hits = df[pd.to_datetime(df["x_date"]) == pd.to_datetime(verdict.onset_run_date)]
-    else:
+        return run_point(df, verdict.onset_run_id, verdict.metric)
+    if not verdict.onset_run_date:
         return None
+    hits = df[pd.to_datetime(df["x_date"]) == pd.to_datetime(verdict.onset_run_date)]
     if hits.empty:
         return None
-    # A run-id match is unique; the legacy release match can hit several runs
-    # sharing a release — order deterministically and take the newest so the
-    # result never depends on the caller's row order.
+    # The legacy release match can hit several runs sharing a release — order
+    # deterministically and take the newest so the result never depends on the
+    # caller's row order.
     order = ["x_date"] + (["run_id"] if "run_id" in hits.columns else [])
     row = hits.sort_values(order).iloc[-1]
     val = row[verdict.metric]

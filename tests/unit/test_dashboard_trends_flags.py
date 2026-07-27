@@ -9,10 +9,13 @@ stubbed, so nothing touches the network.
 
 from __future__ import annotations
 
+import base64
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -87,34 +90,58 @@ def test_severity_lookup_scopes_and_keys(monkeypatch):
     lookup = tr._severity_lookup(
         "https://x.invalid", "CLD", "PLAT", "single_e", ("2026-05-21",)
     )
-    # Keyed on the nightly tag (k4h_release), not the run id.
+    # Keyed on the run that earned the verdict — the unit the reliability
+    # filter drops — not on the nightly tag it shares with its reruns.
     assert lookup == {
-        ("baseline", "key4hep-2026-05-21", "wall_time_s"): "CONFIRMED",
-        ("baseline", "key4hep-2026-05-21", "peak_rss_mb"): "WATCH",
+        ("baseline", "2026-05-21", "wall_time_s"): "CONFIRMED",
+        ("baseline", "2026-05-21", "peak_rss_mb"): "WATCH",
     }
-
-
-def test_severity_lookup_keeps_worst_across_same_tag_reruns(monkeypatch):
-    # Same nightly tag benchmarked twice: CONFIRMED on the first run, OK on the
-    # rerun (a marginal night, or a report predating the release-grouped
-    # engine). The lookup must surface CONFIRMED for the tag — the exact case
-    # Run Trends' dedup was dropping.
-    first = _group("2026-06-27", [_verdict("wall_time_s", Severity.CONFIRMED)])
-    rerun = _group("2026-06-28", [_verdict("wall_time_s", Severity.OK)],
-                   k4h_release="key4hep-2026-06-27")
-    monkeypatch.setattr(tr, "_cached_fetch_reports", lambda url, ids: {
-        "2026-06-27": to_json(NightlyReport(generated_at="", groups=[first])),
-        "2026-06-28": to_json(NightlyReport(generated_at="", groups=[rerun])),
-    })
-    lookup = tr._severity_lookup(
-        "u", "CLD", "PLAT", "single_e", ("2026-06-27", "2026-06-28")
-    )
-    assert lookup == {("baseline", "key4hep-2026-06-27", "wall_time_s"): "CONFIRMED"}
 
 
 def test_severity_lookup_empty_without_remote_context():
     # No data_url / detector / run_ids → no fetch, empty map (local mode).
     assert tr._severity_lookup(None, None, None, None, ()) == {}
+
+
+# ── _tag_severity ─────────────────────────────────────────────────────────────
+
+def _rerun_runs() -> pd.DataFrame:
+    """Two runs of one nightly tag, as the window's frame carries them."""
+    return pd.DataFrame({
+        "label": ["baseline", "baseline"],
+        "run_id": ["2026-06-27", "2026-06-28"],
+        "k4h_release": ["key4hep-2026-06-27", "key4hep-2026-06-27"],
+    })
+
+
+_RERUN_VERDICTS = {
+    ("baseline", "2026-06-27", "wall_time_s"): "CONFIRMED",
+    ("baseline", "2026-06-28", "wall_time_s"): "OK",
+}
+
+
+def test_tag_severity_keeps_worst_across_same_tag_reruns():
+    # Same nightly tag benchmarked twice: CONFIRMED on the first run, OK on the
+    # rerun (a marginal night, or a report predating the release-grouped
+    # engine). The plotted tag must show CONFIRMED — Run Trends plots only the
+    # newest run, so the dedup would otherwise drop the flag.
+    assert tr._tag_severity(_RERUN_VERDICTS, _rerun_runs()) == {
+        ("baseline", "key4hep-2026-06-27", "wall_time_s"): "CONFIRMED",
+    }
+
+
+def test_tag_severity_drops_a_flag_whose_run_was_excluded():
+    # The reliability filter removed the run that earned the CONFIRMED. Its
+    # verdict must not ring on the sibling run that survived it: the flag is
+    # evidence about one measurement, and that measurement is off the chart.
+    # Only the survivor's unranked OK is left, so the tag carries no marker.
+    survivors = _rerun_runs().iloc[1:]
+    assert tr._tag_severity(_RERUN_VERDICTS, survivors) == {}
+
+
+def test_tag_severity_without_run_ids():
+    # A frame with no run_id (local mode) can anchor nothing, so nothing flags.
+    assert tr._tag_severity(_RERUN_VERDICTS, pd.DataFrame({"label": []})) == {}
 
 
 # ── marker overlay ────────────────────────────────────────────────────────────
@@ -177,6 +204,37 @@ def test_flag_markers_share_legendgroup_with_their_curve():
     assert "baseline" in line_groups
 
 
+def test_flag_marker_sits_on_the_plotted_point():
+    # Coordinates, not trace counts: a marker drawn anywhere but on the point it
+    # describes accuses whichever release the eye lands on instead. user_cpu_s
+    # rings only its own panel, so every marker in the figure belongs to the
+    # 2026-05-21 point at y=4.2.
+    severity = {("baseline", "key4hep-2026-05-21", "user_cpu_s"): "CONFIRMED"}
+    markers = [
+        t for fig in _capture_figs(_trend_df(), ["baseline"], severity)
+        for t in fig.data if t.mode == "markers"
+    ]
+    assert markers, "expected a halo and a badge"
+    for t in markers:
+        assert list(t.x) == [pd.Timestamp("2026-05-21")]
+        assert list(t.y) == [4.2]
+
+
+def _capture_figs(df, labels, severity):
+    """Every figure ``_render_timeseries`` draws, in order — one per metric panel."""
+    figs = []
+    orig = tr.st.plotly_chart
+    tr.st.plotly_chart = lambda fig, **kw: figs.append(fig)
+    try:
+        tr._render_timeseries(
+            df, labels, ["#123456", "#654321"], "linear", 0.75, False, False,
+            severity, True, True,
+        )
+    finally:
+        tr.st.plotly_chart = orig
+    return figs
+
+
 def _capture_fig(df, labels, severity):
     captured = {}
     orig = tr.st.plotly_chart
@@ -218,7 +276,7 @@ def _reports_stub(confirmed: bool):
     return {"2026-05-21": to_json(report)}
 
 
-def _app(dashboard_dir, reports):
+def _app(dashboard_dir, reports, reliability=None, same_tag=False):
     import sys as _sys
     if dashboard_dir not in _sys.path:
         _sys.path.insert(0, dashboard_dir)
@@ -228,12 +286,16 @@ def _app(dashboard_dir, reports):
 
     _trends._cached_fetch_reports = lambda url, ids: reports
 
+    # *same_tag* makes the two runs reruns of one nightly tag: same x_date and
+    # release, different run dates — what the dedup below collapses to a point.
+    tags = (["2026-05-21", "2026-05-21"] if same_tag
+            else ["2026-05-20", "2026-05-21"])
     df = _pd.DataFrame({
         "label": ["baseline", "baseline"],
         "run_id": ["2026-05-20", "2026-05-21"],
         "run_date": _pd.to_datetime(["2026-05-20", "2026-05-21"]),
-        "x_date": _pd.to_datetime(["2026-05-20", "2026-05-21"]),
-        "k4h_release": ["key4hep-2026-05-20", "key4hep-2026-05-21"],
+        "x_date": _pd.to_datetime(tags),
+        "k4h_release": [f"key4hep-{t}" for t in tags],
         "wall_time_s": [5.0, 6.0],
         "user_cpu_s": [4.0, 4.2],
         "peak_rss_mb": [1000.0, 1100.0],
@@ -241,22 +303,104 @@ def _app(dashboard_dir, reports):
         "involuntary_ctx_switches": [10, 12],
     })
     _trends.render(
-        df, ["baseline"], reliability={},
+        df, ["baseline"], reliability=reliability or {},
         data_url="https://x.invalid", detector="CLD",
         platform="PLAT", sample="single_e",
     )
 
 
-def _run(reports) -> AppTest:
+def _run(reports, reliability=None, same_tag=False) -> AppTest:
     at = AppTest.from_function(
-        _app, args=(str(_DASHBOARD_DIR), reports), default_timeout=30
+        _app, args=(str(_DASHBOARD_DIR), reports, reliability, same_tag),
+        default_timeout=30,
     )
     at.run()
     assert not at.exception, at.exception
     return at
 
 
+def _axis(trace: dict, key: str) -> list:
+    """A trace's ``x``/``y`` as a plain list.
+
+    Plotly ships numeric arrays base64-packed rather than as JSON numbers, so
+    reading coordinates off a serialized figure has to unpack them.
+    """
+    v = trace.get(key)
+    if isinstance(v, dict) and "bdata" in v:
+        return np.frombuffer(
+            base64.b64decode(v["bdata"]), dtype=v.get("dtype", "f8")
+        ).tolist()
+    return list(v or [])
+
+
+def _marker_modes(at: AppTest) -> list[str]:
+    """The plotted traces' modes. Flag halos and badges are the ``markers``-only
+    traces; the metric curves are ``lines+markers``."""
+    spec = json.loads(at.get("plotly_chart")[0].proto.spec)
+    return [t.get("mode") for t in spec["data"]]
+
+
 def test_render_shows_flag_pills_and_chart():
     at = _run(_reports_stub(confirmed=True))
     assert {p.label for p in at.pills} == {"Regressions"}
     assert len(at.get("plotly_chart")) == 1
+
+
+def test_flags_reach_the_chart_end_to_end():
+    # Guards the whole join: the report's verdicts are keyed on ``run_id``, and
+    # the trend frame's ``run_id`` is the same run-directory name, so a mismatch
+    # would silently drop every marker rather than fail anything.
+    confirmed = _marker_modes(_run(_reports_stub(confirmed=True)))
+    # wall_time_s rings its own panel and the throughput panel it derives from,
+    # each with a halo and a badge.
+    assert confirmed.count("markers") == 4
+    assert "markers" not in _marker_modes(_run(_reports_stub(confirmed=False)))
+
+
+def test_same_tag_rerun_flags_the_release_on_its_plotted_point():
+    # One nightly tag benchmarked twice: the 05-20 run confirmed a step, the
+    # 05-21 rerun came out OK. The x-axis is the *release*, which is the unit the
+    # engine judges on, so the point carries the release's worst verdict — the
+    # same value/severity pairing ReleasePoint makes. What must not happen is a
+    # marker floating off the point: it belongs at the plotted coordinates.
+    reports = {
+        "2026-05-20": to_json(NightlyReport(generated_at="", groups=[
+            _group("2026-05-20", [_verdict("peak_rss_mb", Severity.CONFIRMED)],
+                   k4h_release="key4hep-2026-05-21"),
+        ])),
+        "2026-05-21": to_json(NightlyReport(generated_at="", groups=[
+            _group("2026-05-21", [_verdict("peak_rss_mb", Severity.OK)],
+                   k4h_release="key4hep-2026-05-21"),
+        ])),
+    }
+    at = _run(reports, same_tag=True)
+    specs = [json.loads(c.proto.spec) for c in at.get("plotly_chart")]
+    markers = [
+        t for spec in specs for t in spec["data"] if t.get("mode") == "markers"
+    ]
+    # peak_rss_mb rings only its own panel: one halo + one badge, both on the
+    # single collapsed point — the newest run's value, at the tag's date.
+    assert len(markers) == 2
+    for t in markers:
+        assert [pd.Timestamp(v) for v in _axis(t, "x")] == [pd.Timestamp("2026-05-21")]
+        assert _axis(t, "y") == [1100.0]
+    # And the curve really does have exactly that one point there, so the
+    # markers are not sitting on a release the chart never drew.
+    curves = [
+        t for spec in specs for t in spec["data"]
+        if t.get("mode") == "lines+markers" and 1100.0 in _axis(t, "y")
+    ]
+    assert curves and all(len(_axis(t, "y")) == 1 for t in curves)
+
+
+def test_excluding_the_flagged_run_takes_its_markers_off_the_chart():
+    # The run that earned the CONFIRMED failed the host check and is dropped by
+    # the on-by-default filter — so its markers go with it. The flag is evidence
+    # about that measurement, and the measurement is no longer plotted.
+    at = _run(_reports_stub(confirmed=True), {"2026-05-21": False})
+    assert at.toggle(key="trends_exclude_unreliable").value is True
+    assert "markers" not in _marker_modes(at)
+    # Keeping the run puts them back, rather than the flag being lost for good.
+    at.toggle(key="trends_exclude_unreliable").set_value(False).run()
+    assert not at.exception, at.exception
+    assert _marker_modes(at).count("markers") == 4

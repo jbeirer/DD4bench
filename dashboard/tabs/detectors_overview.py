@@ -132,13 +132,13 @@ def _tag_date(k4h_release: str | None, fallback: str) -> str:
 
 def _collapse_same_tag(frame: pd.DataFrame, subset: list[str]) -> pd.DataFrame:
     """Collapse same-nightly-tag reruns: within each *subset* group keep the
-    newest CI run (largest ``_report_night``), so a nightly benchmarked twice
+    newest CI run (largest ``run_night``), so a nightly benchmarked twice
     shows once — the same per-tag dedup Run Trends does. Requires a
-    ``_report_night`` column; it is dropped from the result."""
+    ``run_night`` column; it is dropped from the result."""
     return (
-        frame.sort_values("_report_night")
+        frame.sort_values("run_night")
         .drop_duplicates(subset=subset, keep="last")
-        .drop(columns="_report_night")
+        .drop(columns="run_night")
     )
 
 
@@ -247,27 +247,31 @@ def nights_in_window(dates: list[str], window: tuple[date, date] | None) -> list
     return sorted(kept, reverse=True)
 
 
-def history_frame(
+#: Columns every history frame carries, in order, after ``night``.
+_HIST_COLS = ["detector", "metric", "value", "k4h_release", "severity", "reliable"]
+
+
+def history_rows(
     night_frames: list[tuple[str, pd.DataFrame]],
     platform: str,
     sample: str,
     label: str,
 ) -> pd.DataFrame:
-    """Concatenate the scope's rows across nights into a tidy history:
-    columns ``night, detector, metric, value, k4h_release, severity,
-    reliable``. A detector missing the combo on some night simply contributes
-    no row — a gap in its line.
+    """The scope's rows across nights, one row per **run**: columns
+    ``night, run_night, detector, metric, value, k4h_release, severity,
+    reliable``.
 
     ``night`` is the **Key4hep nightly tag** date (from ``k4h_release``), not
-    the report/run date — the same x-axis as Run Trends. Two CI runs that
-    benchmarked the *same* nightly (a rerun) therefore collapse to one point:
-    the newest run wins for the plotted value, but ``severity`` keeps the
-    *worst* verdict across the tag's runs — nights of one tag share a
-    baseline yet can still differ (WATCH before the confirmation, a marginal
-    OK night, or a report predating the release-grouped engine), and the flag
-    must not be masked by the quieter night.
+    the report/run date — the same x-axis as Run Trends. ``run_night`` is the
+    report night the row was measured on; the two differ whenever a nightly is
+    benchmarked more than once, and keeping both is what lets a caller drop one
+    rerun of a tag without dropping the tag.
+
+    Not plottable on its own — pass it through :func:`collapse_history` to get
+    one point per tag, dropping unwanted runs in between. There is deliberately
+    no helper that composes the two directly: every historical view here filters,
+    so a one-call shortcut would only ever be the wrong one to reach for.
     """
-    cols = ["detector", "metric", "value", "k4h_release", "severity", "reliable"]
     parts = []
     for report_night, frame in night_frames:
         sub = frame[
@@ -277,30 +281,51 @@ def history_frame(
         ]
         if sub.empty:
             continue
-        part = sub[cols].copy()
-        part["_report_night"] = report_night
+        part = sub[_HIST_COLS].copy()
+        part["run_night"] = report_night
         parts.append(part)
     if not parts:
-        return pd.DataFrame(columns=["night", *cols])
-    hist = pd.concat(parts, ignore_index=True)
-    hist["night"] = [
-        _tag_date(rel, rn) for rel, rn in zip(hist["k4h_release"], hist["_report_night"])
+        return pd.DataFrame(columns=["night", "run_night", *_HIST_COLS])
+    rows = pd.concat(parts, ignore_index=True)
+    rows["night"] = [
+        _tag_date(rel, rn) for rel, rn in zip(rows["k4h_release"], rows["run_night"])
     ]
-    # Worst verdict per (detector, metric, tag) across same-tag reruns, applied
-    # after the newest-run collapse below so the flag survives a quieter night
-    # of the same tag winning the collapse.
+    return rows[["night", "run_night", *_HIST_COLS]].reset_index(drop=True)
+
+
+def collapse_history(rows: pd.DataFrame) -> pd.DataFrame:
+    """Reduce :func:`history_rows` to one point per (detector, metric, tag).
+
+    A point here is a nightly **tag** — a release — so two CI runs that
+    benchmarked the same nightly (a rerun) collapse to one: the newest run wins
+    for the plotted value, but ``severity`` keeps the *worst* verdict across the
+    tag's runs. Nights of one tag share a baseline yet can still differ (WATCH
+    before the confirmation, a marginal OK night, or a report predating the
+    release-grouped engine), and the flag must not be masked by the quieter
+    night. Pairing a value from one reduction with a severity from another is
+    the same thing the engine does when it summarises a release
+    (:class:`k4bench.regression.models.ReleasePoint`); ``tabs.trends``'
+    ``_tag_severity`` is this rule for Run Trends.
+
+    The reduction only ever sees the runs it is handed, which is what keeps the
+    reliability filter honest: filter *rows* first and an excluded run's verdict
+    cannot reach the tag, so a release whose only flagged run was dropped stops
+    flagging.
+    """
+    if rows.empty:
+        return pd.DataFrame(columns=["night", *_HIST_COLS])
     worst = (
-        hist.assign(_rank=hist["severity"].map(lambda s: SEVERITY_RANK.get(s, 0)))
+        rows.assign(_rank=rows["severity"].map(lambda s: SEVERITY_RANK.get(s, 0)))
         .sort_values("_rank")
         .drop_duplicates(["detector", "metric", "night"], keep="last")
         .set_index(["detector", "metric", "night"])["severity"]
     )
-    hist = _collapse_same_tag(hist, ["detector", "metric", "night"])
+    hist = _collapse_same_tag(rows, ["detector", "metric", "night"])
     hist["severity"] = [
         worst.get((d, m, n), s)
         for d, m, n, s in zip(hist["detector"], hist["metric"], hist["night"], hist["severity"])
     ]
-    return hist[["night", *cols]].reset_index(drop=True)
+    return hist[["night", *_HIST_COLS]].reset_index(drop=True)
 
 
 def reliability_history(
@@ -308,15 +333,20 @@ def reliability_history(
     platform: str,
     sample: str,
 ) -> pd.DataFrame:
-    """Per-(nightly-tag, detector) host-reliability for the scope across nights.
+    """Per-**run** host-reliability for the scope across nights: columns
+    ``night, run_night, detector, reliable``.
 
     Takes :func:`report_reliability_frame` outputs (one per report night) and
     keeps only groups whose run actually happened that night
     (``run_date == report_night``), dropping stale carried-forward groups so the
-    warning counts real runs. Like :func:`history_frame`, ``night`` is the
-    **Key4hep nightly tag** date and same-tag reruns collapse to the newest run
-    — so this counts unreliable runs the same way Run Trends does. Columns:
-    ``night, detector, reliable``.
+    warning counts real runs. ``night`` is the **Key4hep nightly tag** date, as
+    in :func:`history_rows`, and ``run_night`` the report night — one row per
+    run, *not* collapsed to the tag.
+
+    Reliability is a property of the run, so same-tag reruns must stay apart
+    here: collapsing them would make one contended rerun condemn its tag's
+    reliable sibling, and would leave the exclusion unable to say *which*
+    measurement it is dropping.
     """
     parts = []
     for report_night, frame in night_frames:
@@ -328,16 +358,32 @@ def reliability_history(
         if sub.empty:
             continue
         part = sub[["detector", "k4h_release", "reliable"]].copy()
-        part["_report_night"] = report_night
+        part["run_night"] = report_night
         parts.append(part)
     if not parts:
-        return pd.DataFrame(columns=["night", "detector", "reliable"])
+        return pd.DataFrame(columns=["night", "run_night", "detector", "reliable"])
     rel = pd.concat(parts, ignore_index=True)
     rel["night"] = [
-        _tag_date(k, rn) for k, rn in zip(rel["k4h_release"], rel["_report_night"])
+        _tag_date(k, rn) for k, rn in zip(rel["k4h_release"], rel["run_night"])
     ]
-    rel = _collapse_same_tag(rel, ["detector", "night"])
-    return rel[["night", "detector", "reliable"]].reset_index(drop=True)
+    return rel[["night", "run_night", "detector", "reliable"]].reset_index(drop=True)
+
+
+def drop_unreliable_runs(
+    rows: pd.DataFrame, pairs: set[tuple[str, str]]
+) -> pd.DataFrame:
+    """*rows* (from :func:`history_rows`) without the ``(run_night, detector)``
+    runs in *pairs*.
+
+    Addresses runs rather than tags so a rerun of a tag survives its contended
+    sibling: the point stays on the chart, measured by the run that passed.
+    """
+    if not pairs or rows.empty:
+        return rows
+    return rows[[
+        (rn, d) not in pairs
+        for rn, d in zip(rows["run_night"], rows["detector"])
+    ]]
 
 
 def relative_history(hist: pd.DataFrame) -> pd.DataFrame:
@@ -821,11 +867,17 @@ def _render_flag_trend(
     status_frames: list[tuple[str, pd.DataFrame]],
     platform: str,
     sample: str,
+    status_rel_hist: pd.DataFrame,
 ) -> None:
     """The Regression Status view's trend preview — the shared worst-first
     picker, leading with the detector because this view spans them, above a
     chart that costs no run downloads: the series is the verdicts' raw nightly
-    values across the already-fetched reports."""
+    values across the already-fetched reports.
+
+    Runs the same filter-before-collapse pipeline as the other historical views,
+    on the same widget key: a chart of raw nightly measurements has to honour the
+    unreliable-run exclusion, and honouring it in one Overview sub-view but not
+    another would make the tab's answer depend on which radio button is held."""
     choices = _flag_choices(latest_groups)
     if not choices:
         return
@@ -843,7 +895,13 @@ def _render_flag_trend(
     )
     if v is None:
         return
-    hist = history_frame(status_frames, platform, sample, v.label)
+    unreliable_pairs, exclude_unreliable = _render_reliability_filter(
+        status_rel_hist, key="det_ov_exclude_unreliable"
+    )
+    rows = history_rows(status_frames, platform, sample, v.label)
+    if exclude_unreliable:
+        rows = drop_unreliable_runs(rows, unreliable_pairs)
+    hist = collapse_history(rows)
     series = hist[(hist["detector"] == v.detector) & (hist["metric"] == v.metric)]
     if series.empty:
         st.info("No history for this metric in the current trend window.")
@@ -860,10 +918,15 @@ def _render_status_view(
     status_frames: list[tuple[str, pd.DataFrame]],
     platform: str,
     sample: str,
+    status_rel_hist: pd.DataFrame,
 ) -> None:
     """The Regression Status view: verdict banner, per-detector roster, and
     the worst flag's trend — the cross-detector regression picture the
-    (detector-scoped) Regressions tab no longer carries."""
+    (detector-scoped) Regressions tab no longer carries.
+
+    Only the trend is filtered by *status_rel_hist*: the banner and roster report
+    what tonight's report *says*, including that a detector was too contended to
+    judge, and a filter that hid those rows would hide the very runs it excluded."""
     if not latest_groups:
         st.info(
             f"No detector has a run group for **{sample}** on **{platform}** "
@@ -872,34 +935,40 @@ def _render_status_view(
         return
     _render_regression_banner(latest_groups, night)
     _render_detector_status(latest_groups, night, platform, sample)
-    _render_flag_trend(latest_groups, status_frames, platform, sample)
+    _render_flag_trend(
+        latest_groups, status_frames, platform, sample, status_rel_hist,
+    )
 
 
 def _render_reliability_filter(
     rel_hist: pd.DataFrame, *, key: str
 ) -> tuple[set[tuple[str, str]], bool]:
     """The standard unreliable-run warning + "Exclude unreliable runs" toggle,
-    over the per-(night, detector) ``reliable`` flag from the report *groups*.
+    over the per-run ``reliable`` flag from the report *groups*.
 
-    *rel_hist* has columns ``night, detector, reliable`` (see
+    *rel_hist* has columns ``night, run_night, detector, reliable`` (see
     :func:`report_reliability_frame` — built per-group precisely because an
     unreliable night carries no metric verdict rows). Mirrors
     ``tabs._reliability.render_reliability_filter`` (same wording, same
     on-by-default toggle); the shared helper keys on a global
     ``{run_id: verdict}`` map, which cannot express this tab's cross-detector
     frame where the same night is reliable for one detector and not another.
-    ``None`` (no evidence) never excludes. Returns the set of unreliable
-    ``(night, detector)`` pairs and whether exclusion is active, so the caller
-    can drop the same runs from the history and the latest-night snapshot.
+    ``None`` (no evidence) never excludes.
+
+    Returns the unreliable ``(run_night, detector)`` pairs and whether exclusion
+    is active, so the caller can drop those *runs* from :func:`history_rows`
+    before it collapses them. The count is of runs — the thing that actually gets
+    dropped, and what the sentence says — while the dates listed are the nightly
+    **tags** those runs carry, which is what the reader sees on the x-axis.
     """
     flagged = rel_hist[rel_hist["reliable"].eq(False)] if not rel_hist.empty else rel_hist
     if flagged.empty:
         return set(), False
 
-    unique = flagged[["night", "detector"]].drop_duplicates()
+    unique = flagged[["run_night", "detector"]].drop_duplicates()
     pairs = set(map(tuple, unique.itertuples(index=False, name=None)))
     n = len(pairs)
-    dates = ", ".join(sorted(unique["night"].unique()))
+    dates = ", ".join(sorted(flagged["night"].unique()))
     warn_col, toggle_col = st.columns([3, 1], vertical_alignment="center")
     with warn_col:
         st.warning(
@@ -955,7 +1024,11 @@ def render(
     df = frames[night]
     wide, excluded = scoped_snapshot(df, platform, sample, _BASELINE_LABEL)
     night_frames = [(n, frames[n]) for n in hist_nights if n in frames]
-    hist = history_frame(night_frames, platform, sample, _BASELINE_LABEL)
+    # Kept uncollapsed so the reliability filter inside the fragment can drop
+    # *runs* before the tag reduction runs (see collapse_history); ``hist`` is
+    # the unfiltered view the pre-filter decisions below are made on.
+    hist_rows = history_rows(night_frames, platform, sample, _BASELINE_LABEL)
+    hist = collapse_history(hist_rows)
 
     # The latest night's run groups for the scope — the Regression Status
     # view's input. Kept even when there are no plottable values: a night
@@ -967,10 +1040,8 @@ def render(
     ]
     # The flag trend plots across the window *and* the latest night (the flags
     # shown come from the latest report, which can sit outside the window).
-    status_frames = (
-        night_frames if any(n == night for n, _ in night_frames)
-        else [*night_frames, (night, frames[night])]
-    )
+    status_nights = list(dict.fromkeys([*hist_nights, night]))
+    status_frames = [(n, frames[n]) for n in status_nights if n in frames]
 
     if wide.empty and hist.empty and not latest_groups:
         st.info(
@@ -992,6 +1063,15 @@ def render(
     # from the pre-filter ``wide``/``hist`` so they don't shift with the toggle.
     rel_hist = reliability_history(
         [(n, rel_frames[n]) for n in hist_nights if n in rel_frames],
+        platform, sample,
+    )
+    # The Regression Status view's own filter input. Built over ``status_nights``
+    # rather than reused from ``rel_hist``, because that view plots one night
+    # ``rel_hist`` does not cover — the latest report, which sits outside the
+    # window whenever the window ends before it. Reusing ``rel_hist`` there would
+    # leave exactly that night's runs unfilterable.
+    status_rel_hist = reliability_history(
+        [(n, rel_frames[n]) for n in status_nights if n in rel_frames],
         platform, sample,
     )
     latest_rel = rel_frames[night]
@@ -1021,15 +1101,19 @@ def render(
     # starve the /_stcore/health probe and bounce the pod (surfacing as a 503).
     @st.fragment
     def _views(
-        wide, hist, rel_hist, unreliable_latest, detectors_all, styles,
+        wide, hist_rows, rel_hist, unreliable_latest, detectors_all, styles,
         night, night_frames, excluded, latest_groups, status_frames,
+        status_rel_hist,
     ):
         view = st.radio(
             "View", _VIEWS, horizontal=True, key="det_ov_view_mode",
             label_visibility="collapsed",
         )
         if view == "Regression Status":
-            _render_status_view(latest_groups, night, status_frames, platform, sample)
+            _render_status_view(
+                latest_groups, night, status_frames, platform, sample,
+                status_rel_hist,
+            )
             return
 
         # ── Shaping controls shared by the two figure views. Same widget keys
@@ -1093,11 +1177,13 @@ def render(
         unreliable_pairs, exclude_unreliable = _render_reliability_filter(
             rel_hist, key="det_ov_exclude_unreliable"
         )
-        if exclude_unreliable and unreliable_pairs and not hist.empty:
-            hist = hist[[
-                (n, d) not in unreliable_pairs
-                for n, d in zip(hist["night"], hist["detector"])
-            ]]
+        # Dropped before the tag reduction, never after: a flag belongs to the run
+        # that earned it, so excluding that run has to take its marker with it —
+        # and must not take the marker of a reliable rerun of the same tag.
+        hist = collapse_history(
+            drop_unreliable_runs(hist_rows, unreliable_pairs)
+            if exclude_unreliable else hist_rows
+        )
         if exclude_unreliable and unreliable_latest:
             wide = wide.drop(index=unreliable_latest, errors="ignore")
 
@@ -1156,6 +1242,7 @@ def render(
         st.caption(" ".join(notes))
 
     _views(
-        wide, hist, rel_hist, unreliable_latest, detectors_all, styles,
+        wide, hist_rows, rel_hist, unreliable_latest, detectors_all, styles,
         night, night_frames, excluded, latest_groups, status_frames,
+        status_rel_hist,
     )

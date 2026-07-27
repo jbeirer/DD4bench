@@ -75,6 +75,17 @@ def _group(detector: str, verdicts: list[MetricVerdict], **overrides) -> RunGrou
     return RunGroupReport(**base, verdicts=verdicts)
 
 
+def _collapsed_history(night_frames, platform, sample, label) -> pd.DataFrame:
+    """The unfiltered history the tab plots when nothing is excluded.
+
+    Production always filters runs between the two calls, so there is no helper
+    that composes them; these tests exercise the composition itself.
+    """
+    return ov.collapse_history(
+        ov.history_rows(night_frames, platform, sample, label)
+    )
+
+
 def _report() -> NightlyReport:
     """Two comparable detectors plus one that only hard-failed tonight.
 
@@ -180,7 +191,7 @@ def test_reliability_history_scopes_and_drops_stale():
     hist = ov.reliability_history(
         [("2026-01-12", rf1), ("2026-01-13", rf2)], "PLAT", "single_e"
     )
-    assert list(hist.columns) == ["night", "detector", "reliable"]
+    assert list(hist.columns) == ["night", "run_night", "detector", "reliable"]
     # CLD on both nights; SiD (other sample) and stale IDEA excluded.
     assert set(zip(hist["night"], hist["detector"])) == {
         ("2026-01-12", "CLD"), ("2026-01-13", "CLD"),
@@ -189,27 +200,30 @@ def test_reliability_history_scopes_and_drops_stale():
     assert list(zip(flagged["night"], flagged["detector"])) == [("2026-01-12", "CLD")]
 
 
-def test_reliability_history_collapses_same_tag_reruns():
-    # Two CI runs (07-01, 07-02) that benchmarked the *same* nightly
-    # key4hep-2026-07-01 collapse to one entry at the tag date, keeping the
-    # newest run — so the count matches Run Trends' per-tag view (the exact
-    # Overview-vs-Run-Trends mismatch this fixes).
+def test_reliability_history_keeps_same_tag_reruns_apart():
+    # Two CI runs (07-01, 07-02) benchmarked the *same* nightly
+    # key4hep-2026-07-01, and only the first was contended. Reliability is a
+    # property of the run, so the two stay separate rows sharing a tag date —
+    # collapsing them would let the contended run condemn its reliable sibling,
+    # and the exclusion could no longer say which measurement it drops.
     rf1 = ov.report_reliability_frame(NightlyReport(generated_at="", groups=[
         _group("ALLEGRO", [], run_date="2026-07-01",
                k4h_release="key4hep-2026-07-01", reliable=False),
     ]))
     rf2 = ov.report_reliability_frame(NightlyReport(generated_at="", groups=[
         _group("ALLEGRO", [], run_date="2026-07-02",
-               k4h_release="key4hep-2026-07-01", reliable=False),
+               k4h_release="key4hep-2026-07-01", reliable=True),
     ]))
     hist = ov.reliability_history(
         [("2026-07-01", rf1), ("2026-07-02", rf2)], "PLAT", "single_e"
     )
-    # One row, at the nightly-tag date — not two separate run-date rows.
-    assert list(zip(hist["night"], hist["detector"])) == [("2026-07-01", "ALLEGRO")]
+    assert list(zip(hist["night"], hist["run_night"], hist["reliable"])) == [
+        ("2026-07-01", "2026-07-01", False),
+        ("2026-07-01", "2026-07-02", True),
+    ]
 
 
-def test_history_frame_collapses_same_tag_reruns():
+def test_history_collapses_same_tag_reruns():
     # First run of the tag CONFIRMED a step; the rerun's report shows OK (a
     # marginal night, or a report predating the release-grouped engine).
     n1 = ov.report_metrics_frame(NightlyReport(generated_at="", groups=[
@@ -220,7 +234,7 @@ def test_history_frame_collapses_same_tag_reruns():
         _group("CLD", [_verdict(value=200.0, severity=Severity.OK)],
                run_date="2026-07-02", k4h_release="key4hep-2026-07-01"),
     ]))
-    hist = ov.history_frame(
+    hist = _collapsed_history(
         [("2026-07-01", n1), ("2026-07-02", n2)], "PLAT", "single_e", "baseline_all"
     )
     # Same tag → one point at the tag date, carrying the newest run's value …
@@ -229,6 +243,121 @@ def test_history_frame_collapses_same_tag_reruns():
     # … but the worst verdict across the tag's runs, so the CONFIRMED survives.
     assert hist["severity"].tolist() == ["CONFIRMED"]
 
+
+def _same_tag_rerun_rows() -> pd.DataFrame:
+    """One nightly tag benchmarked twice: the 07-01 run CONFIRMED a step, the
+    07-02 rerun of the same tag came out OK."""
+    n1 = ov.report_metrics_frame(NightlyReport(generated_at="", groups=[
+        _group("CLD", [_verdict(value=100.0, severity=Severity.CONFIRMED)],
+               run_date="2026-07-01", k4h_release="key4hep-2026-07-01"),
+    ]))
+    n2 = ov.report_metrics_frame(NightlyReport(generated_at="", groups=[
+        _group("CLD", [_verdict(value=200.0, severity=Severity.OK)],
+               run_date="2026-07-02", k4h_release="key4hep-2026-07-01"),
+    ]))
+    return ov.history_rows(
+        [("2026-07-01", n1), ("2026-07-02", n2)], "PLAT", "single_e", "baseline_all"
+    )
+
+
+def test_history_rows_keeps_one_row_per_run():
+    rows = _same_tag_rerun_rows()
+    # Both runs survive under their shared tag, each naming the night it ran on
+    # — that is what lets a caller drop one rerun without dropping the tag.
+    assert list(zip(rows["night"], rows["run_night"], rows["severity"])) == [
+        ("2026-07-01", "2026-07-01", "CONFIRMED"),
+        ("2026-07-01", "2026-07-02", "OK"),
+    ]
+
+
+def test_dropping_an_unreliable_run_takes_its_flag_with_it():
+    # The run that earned the CONFIRMED is excluded; the tag keeps its point,
+    # measured by the reliable rerun — and the flag goes with the run that
+    # earned it rather than ringing on a measurement that was never flagged.
+    kept = ov.drop_unreliable_runs(
+        _same_tag_rerun_rows(), {("2026-07-01", "CLD")}
+    )
+    hist = ov.collapse_history(kept)
+    assert hist["night"].tolist() == ["2026-07-01"]
+    assert hist["value"].tolist() == [200.0]
+    assert hist["severity"].tolist() == ["OK"]
+
+
+def test_dropping_the_reliable_rerun_leaves_the_flagged_run_standing():
+    # The mirror case: excluding the quiet rerun leaves the tag on the
+    # contended run's own measurement, flag included.
+    kept = ov.drop_unreliable_runs(
+        _same_tag_rerun_rows(), {("2026-07-02", "CLD")}
+    )
+    hist = ov.collapse_history(kept)
+    assert hist["value"].tolist() == [100.0]
+    assert hist["severity"].tolist() == ["CONFIRMED"]
+
+
+def _flag_trend_series(monkeypatch, *, exclude: bool) -> pd.DataFrame:
+    """The series the Regression Status trend preview would plot."""
+    n1 = ov.report_metrics_frame(NightlyReport(generated_at="", groups=[
+        _group("CLD", [_verdict(value=100.0, severity=Severity.CONFIRMED)],
+               run_date="2026-07-01", k4h_release="key4hep-2026-07-01"),
+    ]))
+    n2 = ov.report_metrics_frame(NightlyReport(generated_at="", groups=[
+        _group("CLD", [_verdict(value=200.0, severity=Severity.OK)],
+               run_date="2026-07-02", k4h_release="key4hep-2026-07-01"),
+    ]))
+    flagged = _verdict(value=100.0, severity=Severity.CONFIRMED)
+    groups = [_group("CLD", [flagged], run_date="2026-07-02")]
+
+    monkeypatch.setattr(
+        ov, "_render_reliability_filter",
+        lambda rel_hist, *, key: ({("2026-07-01", "CLD")}, exclude),
+    )
+    monkeypatch.setattr(ov, "_reset_widget_on_scope", lambda *a, **kw: None)
+    # The picker's own behaviour is the Regressions tab's to test; here it just
+    # has to land on the flag so the history pipeline below runs.
+    monkeypatch.setattr(
+        ov, "render_metric_picker", lambda choices, **kw: choices[0],
+    )
+    captured = {}
+    monkeypatch.setattr(
+        ov, "_flag_trend_figure",
+        lambda series, v: captured.setdefault("series", series),
+    )
+
+    class _St:
+        markdown = caption = info = plotly_chart = staticmethod(
+            lambda *a, **kw: None
+        )
+
+    monkeypatch.setattr(ov, "st", _St)
+    ov._render_flag_trend(
+        groups, [("2026-07-01", n1), ("2026-07-02", n2)],
+        "PLAT", "single_e", pd.DataFrame(),
+    )
+    return captured["series"]
+
+
+def test_status_trend_preview_honours_the_unreliable_run_filter(monkeypatch):
+    # The preview plots raw nightly measurements, so it has to drop the excluded
+    # run like every other historical view here — and take that run's flag with
+    # it, leaving the tag on the reliable rerun's own value.
+    series = _flag_trend_series(monkeypatch, exclude=True)
+    assert series["value"].tolist() == [200.0]
+    assert series["severity"].tolist() == ["OK"]
+
+
+def test_status_trend_preview_keeps_every_run_when_exclusion_is_off(monkeypatch):
+    # Toggle off: the contended run is back, and the tag carries its verdict.
+    series = _flag_trend_series(monkeypatch, exclude=False)
+    assert series["value"].tolist() == [200.0]
+    assert series["severity"].tolist() == ["CONFIRMED"]
+
+
+def test_drop_unreliable_runs_is_a_no_op_without_pairs():
+    rows = _same_tag_rerun_rows()
+    assert len(ov.drop_unreliable_runs(rows, set())) == len(rows)
+    empty = ov.history_rows([], "PLAT", "single_e", "baseline_all")
+    assert ov.drop_unreliable_runs(empty, {("2026-07-01", "CLD")}).empty
+    assert ov.collapse_history(empty).empty
 
 # ── scoped_snapshot ────────────────────────────────────────────────────────────
 
@@ -279,16 +408,16 @@ def test_nights_in_window_filters_and_orders():
     assert fallback[0] == "2026-02-28"
 
 
-# ── history_frame / relative_history ───────────────────────────────────────────
+# ── history_rows / relative_history ───────────────────────────────────────────
 
-def test_history_frame_scope_and_gaps():
+def test_history_rows_scope_and_gaps():
     n1 = ov.report_metrics_frame(_report())
     # Second night: only IDEA has the scope combo (a distinct nightly tag).
     night2 = NightlyReport(generated_at="", groups=[
         _group("IDEA", [_verdict(detector="IDEA", value=95.0)], run_date="2026-01-13"),
     ])
     n2 = ov.report_metrics_frame(night2)
-    hist = ov.history_frame(
+    hist = _collapsed_history(
         [("2026-01-12", n1), ("2026-01-13", n2)], "PLAT", "single_e", "baseline_all"
     )
     assert list(hist.columns) == [
@@ -299,8 +428,8 @@ def test_history_frame_scope_and_gaps():
     assert hist[(hist["night"] == "2026-01-13")]["detector"].tolist() == ["IDEA"]
 
 
-def test_history_frame_empty_scope_keeps_columns():
-    hist = ov.history_frame([], "PLAT", "single_e", "baseline_all")
+def test_history_empty_scope_keeps_columns():
+    hist = _collapsed_history([], "PLAT", "single_e", "baseline_all")
     assert hist.empty
     assert list(hist.columns) == [
         "night", "detector", "metric", "value", "k4h_release", "severity", "reliable",
@@ -362,7 +491,7 @@ def _fixture_frames():
     ])
     n2 = ov.report_metrics_frame(night2)
     wide, _ = ov.scoped_snapshot(n1, "PLAT", "single_e", "baseline_all")
-    hist = ov.history_frame(
+    hist = _collapsed_history(
         [("2026-01-12", n1), ("2026-01-13", n2)], "PLAT", "single_e", "baseline_all"
     )
     detectors = sorted(set(wide.index) | set(hist["detector"]))
@@ -435,7 +564,7 @@ def test_history_figure_handles_partial_data():
     fig = ov._history_figure(hist_disp, "mean_time_s", "mean_rss_mb", styles, detectors)
     assert fig is not None
     # No history rows for the scope at all → no figure.
-    empty_hist = ov.history_frame([], "PLAT", "single_e", "baseline_all")
+    empty_hist = _collapsed_history([], "PLAT", "single_e", "baseline_all")
     assert ov._history_figure(empty_hist, "mean_time_s", "peak_rss_mb",
                               styles, detectors) is None
 

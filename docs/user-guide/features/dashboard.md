@@ -376,7 +376,20 @@ comparisons read at a glance. Runs that failed the host-reliability check are
 excluded by default with the same warning/toggle as every other historical
 view (the nightly report carries each night's per-detector verdict); their raw
 values are still recorded — as unjudged points, never flagged — so disabling
-the toggle plots them like Run Trends does. Value
+the toggle plots them like Run Trends does. One toggle covers all three views,
+the Regression Status trend preview included. Exclusion drops the *run*,
+not the nightly tag: a tag benchmarked twice keeps the point measured by
+whichever rerun passed, and a 🔴/⚠️ marker leaves the chart with the run that
+earned it rather than ringing on a rerun that was never flagged.
+
+A point on these charts is a Key4hep nightly **tag**, not a run — the unit the
+regression engine judges on — so where a tag was benchmarked more than once it
+carries the *newest* run's value and the *worst* verdict among its runs. A
+release that regressed is therefore still marked even when a later rerun of the
+same stack came out quiet. The per-run view is the Regressions tab's drill-down,
+where every run gets its own point and a flag sits only on the run that earned
+it; if that run was excluded or falls outside the window, the drill-down hides
+the marker and says why rather than moving it. Value
 axes are logarithmic by default (a toggle switches to linear) — the detectors
 span more than a decade in both time and memory, so a linear scale squashes
 the small ones into an unreadable cluster.

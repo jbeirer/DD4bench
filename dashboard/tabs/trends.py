@@ -9,7 +9,7 @@ from k4bench.analysis.plots._theme import _TEMPLATE
 from k4bench.regression.render import from_json
 from remote_cache import _cached_fetch_reports
 from tabs._regression_flags import SEVERITY_RANK, add_severity_markers, render_flag_pills
-from tabs._reliability import render_reliability_filter
+from tabs._reliability import resolve_reliability_filter
 from ui_utils import _DASHES, _PALETTES, _PALETTE_NAMES, _SYMBOLS, _auto_palette_index, _legend_below, _to_rgba
 
 
@@ -45,20 +45,20 @@ def _severity_lookup(
     sample: str | None,
     run_ids: tuple[str, ...],
 ) -> dict[tuple[str, str, str], str]:
-    """``{(label, k4h_release, metric): worst severity}`` for the selected detector.
+    """``{(label, run_id, metric): severity}`` for the selected detector.
 
     Reads the precomputed nightly reports for *run_ids* (report dates — a run
     dir's name is its report date) and keeps the run-level verdicts scoped to
-    this detector/platform/sample. Keyed on the **Key4hep nightly tag**
-    (``k4h_release``, the plot's x-axis), not the run id, and reduced to the
-    *most severe* verdict across all runs of that tag: nights of one tag are
-    judged against a shared baseline but can still differ (the first strike is
-    only a WATCH, a marginal night can come out OK, and reports predating the
-    release-grouped engine confirm on a single night), while Run Trends plots
-    only the newest run of the tag — so joining by run id could drop the
-    CONFIRMED. *run_ids* must therefore cover **every**
-    run in the window, not just the ones the same-tag dedup keeps. Empty when
-    remote data is unavailable, so the caller draws no flags.
+    this detector/platform/sample. Keyed on the **run** that earned the verdict,
+    because that run is what the reliability filter drops: a flag is evidence
+    about one measurement, and joining on the nightly tag instead would let it
+    survive on a sibling run of the same tag after its own run was excluded.
+    :func:`_tag_severity` reduces this to the plotted point afterwards, over the
+    runs still on the chart.
+
+    *run_ids* must cover **every** run in the window, not just the ones the
+    same-tag dedup keeps, so the reduction can see a flag the dedup drops. Empty
+    when remote data is unavailable, so the caller draws no flags.
     """
     if not (data_url and detector and platform and sample and run_ids):
         return {}
@@ -72,10 +72,59 @@ def _severity_lookup(
             for v in g.verdicts:
                 if v.sub_detector is not None:
                     continue
-                key = (v.label, g.k4h_release, v.metric)
+                key = (v.label, v.run_id, v.metric)
                 if SEVERITY_RANK.get(v.severity.value, 0) > SEVERITY_RANK.get(lookup.get(key), 0):
                     lookup[key] = v.severity.value
     return lookup
+
+
+def _tag_severity(
+    per_run: dict[tuple[str, str, str], str],
+    runs: pd.DataFrame,
+) -> dict[tuple[str, str, str], str]:
+    """Reduce :func:`_severity_lookup`'s per-run verdicts onto the plotted point:
+    ``{(label, k4h_release, metric): worst severity}``.
+
+    This chart's x-axis is the Key4hep nightly **tag**, so a point is a
+    *release*, not a run — and a release is the unit the engine itself judges on
+    (:class:`k4bench.regression.models.ReleasePoint`). Its severity is therefore
+    the release's, reduced the way the engine reduces it: the **worst** of the
+    release's runs. Nights of one tag are judged against a shared baseline but
+    can still differ (the first strike is only a WATCH, a marginal night can come
+    out OK, and reports predating the release-grouped engine confirm on a single
+    night), and a flag must not be masked by a quieter sibling.
+
+    That the plotted *value* comes from the newest run while the severity comes
+    from the worst is deliberate, and is the same pairing
+    ``k4bench.regression.history`` makes when it summarises a release — value
+    from one reduction over the release's runs, severity from another. Anchoring
+    the marker to a single run instead would need a per-run x-axis, which is what
+    the regression drill-down is for (see ``tabs._blame.run_point``).
+
+    *runs* is the window's runs **after** the reliability filter and **before**
+    the same-tag dedup — every measurement still standing, including the ones
+    dedup is about to collapse away. Reducing over those rather than over every
+    run in the window is what keeps the filter honest: an excluded run
+    contributes no key here, so a release whose only flagged run was dropped
+    stops flagging.
+    """
+    if "run_id" not in runs.columns:
+        return {}
+    tags = {
+        (label, run_id): release
+        for label, run_id, release in zip(
+            runs["label"], runs["run_id"], runs["k4h_release"]
+        )
+    }
+    reduced: dict[tuple[str, str, str], str] = {}
+    for (label, run_id, metric), sev in per_run.items():
+        release = tags.get((label, run_id))
+        if release is None:
+            continue
+        key = (label, release, metric)
+        if SEVERITY_RANK.get(sev, 0) > SEVERITY_RANK.get(reduced.get(key), 0):
+            reduced[key] = sev
+    return reduced
 
 
 def _render_timeseries(
@@ -316,24 +365,17 @@ def _trends_body(
     df["x_date"]   = pd.to_datetime(df["x_date"])
     df["run_date"] = pd.to_datetime(df["run_date"])
     df = df.dropna(subset=["x_date"])
-    # Every run in the window, captured *before* the same-tag dedup below — the
-    # flag lookup must fetch the reports of the runs dedup drops too, since a
-    # dropped run's report can carry the worse verdict for its tag (a WATCH
-    # night before the confirmation, or a report predating the release-grouped
-    # engine that confirmed on a single night). Also stable across the
-    # reliability toggle, so toggling reuses the cached reports rather than
-    # re-issuing a threaded HTTPS fetch (whose shutdown can race a rerun).
-    all_run_ids = tuple(sorted(df["run_id"].dropna().unique())) if "run_id" in df.columns else ()
-    # When multiple CI runs share the same nightly tag, keep only the latest run.
-    df = df.loc[df.groupby(["label", "x_date"])["run_date"].idxmax()].reset_index(drop=True)
-    df["run_date_str"] = df["run_date"].dt.strftime("%Y-%m-%d").fillna("unknown")
-
-    # Derived metrics
-    if "user_cpu_s" in df.columns and "wall_time_s" in df.columns:
-        df["cpu_efficiency"] = df["user_cpu_s"] / df["wall_time_s"].replace(0, float("nan"))
     if df.empty:
         st.warning("No trend data for the selected configurations.")
         return
+    # Every run in the window, captured *before* the reliability filter and the
+    # same-tag dedup below — the flag lookup must fetch the reports of the runs
+    # both of them drop, since a dropped run's report can still carry the worse
+    # verdict for its tag. Keeping the fetch set independent of the toggle also
+    # means toggling reuses the cached reports rather than re-issuing a threaded
+    # HTTPS fetch (whose shutdown can race a rerun); which of those verdicts
+    # actually reach the plot is decided by _tag_severity, not here.
+    all_run_ids = tuple(sorted(df["run_id"].dropna().unique())) if "run_id" in df.columns else ()
 
     # ── Data freshness ────────────────────────────────────────────────────────
     earliest = df["x_date"].min()
@@ -349,18 +391,37 @@ def _trends_body(
     # Reliability is a per-run verdict (one machine condition per run, shared by
     # all its configs), computed once in app.py from the full trend so it matches
     # the Machine Info tab regardless of which configs are selected here.
-    df = render_reliability_filter(df, reliability, key="trends_exclude_unreliable")
-    if df.empty:
+    #
+    # Applied *before* the same-tag dedup below, so excluding a run means the run
+    # is gone rather than the tag: a tag whose newest run is unreliable falls back
+    # to its newest reliable one instead of dropping off the chart entirely.
+    runs, _excluded = resolve_reliability_filter(
+        df, reliability, key="trends_exclude_unreliable",
+    )
+    if runs.empty:
         return
+
+    # When multiple CI runs share the same nightly tag, keep only the latest run.
+    df = runs.loc[
+        runs.groupby(["label", "x_date"])["run_date"].idxmax()
+    ].reset_index(drop=True)
+    df["run_date_str"] = df["run_date"].dt.strftime("%Y-%m-%d").fillna("unknown")
+
+    # Derived metrics
+    if "user_cpu_s" in df.columns and "wall_time_s" in df.columns:
+        df["cpu_efficiency"] = df["user_cpu_s"] / df["wall_time_s"].replace(0, float("nan"))
 
     # ── Regression flags ────────────────────────────────────────────────────────
     # Sourced from the same nightly reports as the Overview/Regressions tabs and
     # joined per run, so a flag here means exactly what it means there. Only
-    # fetched when a flag is actually switched on.
+    # fetched when a flag is actually switched on. The per-run verdicts are then
+    # reduced onto the plotted point over the runs that survived the filter, so a
+    # flag disappears with the run that earned it.
     severity: dict[tuple[str, str, str], str] = {}
     if (show_confirmed or show_watch) and all_run_ids:
-        severity = _severity_lookup(
-            data_url, detector, platform, sample, all_run_ids,
+        severity = _tag_severity(
+            _severity_lookup(data_url, detector, platform, sample, all_run_ids),
+            runs,
         )
 
     # ── Time-series plots ──────────────────────────────────────────────────────

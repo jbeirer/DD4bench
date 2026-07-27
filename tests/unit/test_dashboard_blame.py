@@ -128,6 +128,49 @@ def test_changes_summary_links_only_packages_with_a_known_forge():
     assert " · " in s  # joined
 
 
+# ── run_point ─────────────────────────────────────────────────────────────────
+
+def test_run_point_matches_the_exact_run_not_its_release_siblings():
+    # 2026-06-26 and 2026-06-26x share the 2026-06-25 release. A verdict is
+    # evidence about one measurement, so its marker must land on its own run.
+    assert _blame.run_point(_history(), "2026-06-26", "wall_time_s") == (
+        pd.Timestamp("2026-06-25"), 5.9,
+    )
+    assert _blame.run_point(_history(), "2026-06-26x", "wall_time_s") == (
+        pd.Timestamp("2026-06-25"), 5.1,
+    )
+
+
+def test_run_point_none_when_the_run_is_not_on_the_chart():
+    # Excluded as unreliable, or outside the fetched window — either way the
+    # caller must draw nothing rather than move the marker to a survivor.
+    df = _history()
+    assert _blame.run_point(df[df["run_id"] != "2026-06-27"], "2026-06-27",
+                            "wall_time_s") is None
+    assert _blame.run_point(df, "never-ran", "wall_time_s") is None
+
+
+def test_run_point_guards_missing_inputs():
+    df = _history()
+    assert _blame.run_point(df, None, "wall_time_s") is None
+    assert _blame.run_point(df, "2026-06-27", "absent_metric") is None
+    assert _blame.run_point(df.drop(columns=["run_id"]), "2026-06-27",
+                            "wall_time_s") is None
+
+
+def test_run_point_none_on_nan_value():
+    df = _history()
+    df.loc[df["run_id"] == "2026-06-27", "wall_time_s"] = float("nan")
+    assert _blame.run_point(df, "2026-06-27", "wall_time_s") is None
+
+
+def test_run_point_is_independent_of_row_order():
+    shuffled = _history().iloc[[3, 1, 0, 2]].reset_index(drop=True)
+    assert _blame.run_point(shuffled, "2026-06-26", "wall_time_s") == (
+        pd.Timestamp("2026-06-25"), 5.9,
+    )
+
+
 # ── onset_point ───────────────────────────────────────────────────────────────
 
 def test_onset_point_matches_the_exact_run_not_just_the_release():
