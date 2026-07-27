@@ -245,6 +245,25 @@ def test_local_report_flags_missing_run_and_drops_retired(tmp_path):
     assert report.has_alertable  # a missing run alerts immediately
 
 
+def test_local_report_keeps_a_triple_one_night_behind(tmp_path):
+    # A batch started before midnight stamps its early jobs with the previous
+    # date (each job is dated when it starts), so DET_B trails DET_A by a
+    # night. Both ran; neither is missing.
+    _make_history(_local_tree(tmp_path, "DET_A", "single_e"), [100.0] * 13)
+    walls = [100.0] * 10 + [120.0, 120.5]  # a step DET_B must still report
+    _make_history(_local_tree(tmp_path, "DET_B", "single_e"), walls)
+    report = build_nightly_report_local(str(tmp_path))
+
+    assert report.report_night == "2026-01-13"
+    late = next(g for g in report.groups if g.detector == "DET_B")
+    assert late.run_date == "2026-01-12"
+    assert late.job_failures == []
+    assert any("2026-01-12" in note and "2026-01-13" in note for note in late.notes)
+    # Its verdicts are this night's news, not suppressed as a stale group's.
+    assert any(v.metric == "wall_time_s" for v in late.regressions)
+    assert report.has_alertable  # …and they alert on their own merit
+
+
 def test_local_report_quiet_night_not_alertable(tmp_path):
     _make_history(_local_tree(tmp_path, "DET_A", "single_e"), [100.0] * 12)
     report = build_nightly_report_local(str(tmp_path))

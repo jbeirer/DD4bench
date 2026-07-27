@@ -56,6 +56,15 @@ _log = logging.getLogger(__name__)
 #: stretch of nights was contaminated or failed.
 FETCH_WINDOW_RUNS = 2 * BASELINE_WINDOW_RUNS
 
+#: A triple whose newest run is this many days behind the report night is still
+#: part of the same nightly batch, not a missing run. One night's benchmark jobs
+#: are stamped with the date each one *starts*, and they start staggered on a
+#: runner they queue for, so a batch that begins near midnight lands partly on
+#: one date and partly on the next. Both halves are that night's measurements
+#: and are reported as such — a lag of a single day only ever means the batch
+#: crossed midnight or the triple has yet to run, and neither is a failure.
+SAME_BATCH_LAG_DAYS = 1
+
 #: A triple whose newest run is older than the report night by more than this
 #: many days is treated as retired (dropped from the report) rather than
 #: flagged as a missing run every night forever — e.g. a detector removed from
@@ -506,10 +515,11 @@ def build_nightly_report(
     """Build the cross-detector report for the most recent nightly.
 
     The report night is the newest run date seen across all triples. A triple
-    whose newest run is older than that gets a *missing run* job failure (a
-    hard crash uploads nothing, so absence is itself the failure signal) —
-    unless it is stale by more than :data:`MISSING_RUN_GRACE_DAYS`, in which
-    case it is treated as retired and dropped.
+    within :data:`SAME_BATCH_LAG_DAYS` of it ran in the same batch (see there)
+    and is reported normally; one that is older gets a *missing run* job
+    failure (a hard crash uploads nothing, so absence is itself the failure
+    signal) — unless it is stale by more than :data:`MISSING_RUN_GRACE_DAYS`,
+    in which case it is treated as retired and dropped.
 
     *as_of* truncates every triple's history to runs on or before that night
     (see :func:`build_group_report`), making the report night the newest run
@@ -576,7 +586,11 @@ def build_nightly_report_local(
 
 def _finalize_report(groups: list[RunGroupReport]) -> NightlyReport:
     """Resolve the report night and turn stale triples into missing-run
-    failures (or drop them as retired past the grace period)."""
+    failures (or drop them as retired past the grace period).
+
+    Triples within :data:`SAME_BATCH_LAG_DAYS` of the report night are reported
+    as they are: they belong to the same batch, and their verdicts are this
+    night's news."""
     if groups:
         report_night = max(g.run_date for g in groups)
         night = pd.Timestamp(report_night)
@@ -586,6 +600,14 @@ def _finalize_report(groups: list[RunGroupReport]) -> NightlyReport:
                 kept.append(g)
                 continue
             age_days = (night - pd.Timestamp(g.run_date)).days
+            if age_days <= SAME_BATCH_LAG_DAYS:
+                g.notes.append(
+                    f"run is dated {g.run_date}, this report {report_night} — "
+                    "a job is dated when it starts, so a batch that crosses "
+                    "midnight splits across two dates"
+                )
+                kept.append(g)
+                continue
             if age_days > MISSING_RUN_GRACE_DAYS:
                 _log.info(
                     "_finalize_report: dropping retired triple %s/%s/%s "
