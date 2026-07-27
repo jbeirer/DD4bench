@@ -26,7 +26,7 @@ from k4bench.analysis.plots._theme import PALETTE, _TEMPLATE
 from k4bench.regression.engine import Z_THRESHOLD
 from k4bench.regression.models import MetricVerdict, Severity
 from k4bench.labels import pretty_sample
-from k4bench.regression.render import _badge, _fmt_pct, _metric_name
+from k4bench.regression.render import _metric_name
 from k4bench.regression.report_builder import (
     EVENT_METRICS,
     RUN_METRICS,
@@ -34,7 +34,7 @@ from k4bench.regression.report_builder import (
 )
 from k4bench.results.reliability_evidence import run_reliability_map
 from tabs import _blame
-from tabs._regression_flags import add_severity_markers, pretty_metric
+from tabs._regression_flags import add_severity_markers, metric_option
 from tabs._reliability import render_reliability_filter
 from ui_utils import _is_valid_df, _METRIC_LABELS, _METRIC_UNITS, _to_rgba
 
@@ -48,27 +48,8 @@ _HISTORY_TAGS = 14
 _FUTURE_TAGS = 7
 
 
-def metric_option(
-    verdict: MetricVerdict, *, include_scope: bool = False,
-    include_window: bool = False,
-) -> str:
-    """Compact selector label for one flagged metric.
-
-    Stack Changes can widen across detectors and can contain repeated steps of
-    one series, so it opts into the scope and window suffixes. Regressions is
-    already scoped to one group/night and keeps the shorter form.
-    """
-    parts = [_badge(verdict), pretty_metric(verdict), verdict.label]
-    if include_scope:
-        parts.append(f"{verdict.detector}, {pretty_sample(verdict.sample)}")
-    if include_window:
-        base = verdict.last_accepted_run_date or "?"
-        parts.append(f"{base} → {verdict.onset_run_date}")
-    return " · ".join(parts) + f" — Δ {_fmt_pct(verdict.pct_change)}"
-
-
 def render_metric_picker(
-    verdicts: list[MetricVerdict], *, key: str,
+    verdicts: list[MetricVerdict], *, key: str, include_detector: bool = False,
     include_scope: bool = False, include_window: bool = False,
     label: str = "Trend preview", help: str | None = None,
     default: MetricVerdict | None = None,
@@ -76,8 +57,8 @@ def render_metric_picker(
     """Render the shared worst-first metric picker and return its selection."""
     labels = [
         metric_option(
-            verdict, include_scope=include_scope,
-            include_window=include_window,
+            verdict, include_detector=include_detector,
+            include_scope=include_scope, include_window=include_window,
         )
         for verdict in verdicts
     ]
