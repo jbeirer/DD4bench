@@ -85,18 +85,28 @@ def _tag_severity(
     """Reduce :func:`_severity_lookup`'s per-run verdicts onto the plotted point:
     ``{(label, k4h_release, metric): worst severity}``.
 
+    This chart's x-axis is the Key4hep nightly **tag**, so a point is a
+    *release*, not a run — and a release is the unit the engine itself judges on
+    (:class:`k4bench.regression.models.ReleasePoint`). Its severity is therefore
+    the release's, reduced the way the engine reduces it: the **worst** of the
+    release's runs. Nights of one tag are judged against a shared baseline but
+    can still differ (the first strike is only a WATCH, a marginal night can come
+    out OK, and reports predating the release-grouped engine confirm on a single
+    night), and a flag must not be masked by a quieter sibling.
+
+    That the plotted *value* comes from the newest run while the severity comes
+    from the worst is deliberate, and is the same pairing
+    ``k4bench.regression.history`` makes when it summarises a release — value
+    from one reduction over the release's runs, severity from another. Anchoring
+    the marker to a single run instead would need a per-run x-axis, which is what
+    the regression drill-down is for (see ``tabs._blame.run_point``).
+
     *runs* is the window's runs **after** the reliability filter and **before**
     the same-tag dedup — every measurement still standing, including the ones
-    dedup is about to collapse away. Nights of one tag are judged against a
-    shared baseline but can still differ (the first strike is only a WATCH, a
-    marginal night can come out OK, and reports predating the release-grouped
-    engine confirm on a single night), so the tag shows the worst of them; the
-    plot plots only the newest, and a flag must not be masked by a quieter
-    sibling.
-
-    Reducing over *runs* rather than over every run in the window is what ties a
-    flag to its own measurement: an excluded run contributes no key here, so its
-    verdict cannot ring the sibling that survived it.
+    dedup is about to collapse away. Reducing over those rather than over every
+    run in the window is what keeps the filter honest: an excluded run
+    contributes no key here, so a release whose only flagged run was dropped
+    stops flagging.
     """
     if "run_id" not in runs.columns:
         return {}

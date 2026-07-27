@@ -35,7 +35,7 @@ from k4bench.regression.report_builder import (
 from k4bench.results.reliability_evidence import run_reliability_map
 from tabs import _blame
 from tabs._regression_flags import add_severity_markers, metric_option
-from tabs._reliability import render_reliability_filter
+from tabs._reliability import resolve_reliability_filter
 from ui_utils import _is_valid_df, _METRIC_LABELS, _METRIC_UNITS, _to_rgba
 
 #: Fill for the accepted-baseline band, shared by every metric drill-down.
@@ -227,6 +227,28 @@ def _metric_history(
     return df.sort_values("x_date"), reliability
 
 
+def _missing_run_reason(
+    fetched: pd.DataFrame, excluded_runs: set[str], verdict: MetricVerdict,
+) -> str:
+    """Why the flagged run has no point, as a clause completing "it …".
+
+    Three different facts reach :func:`_blame.run_point` as the same ``None``,
+    and they call for three different reactions from the reader: an exclusion
+    they chose and can undo, a window they can widen, and a gap in the data that
+    is neither. Collapsing them into one guess would let a partial download read
+    as a reliability problem.
+    """
+    if str(verdict.run_id) in {str(r) for r in excluded_runs}:
+        return "was excluded by the unreliable-run filter above"
+    present = (
+        "run_id" in fetched.columns
+        and (fetched["run_id"].astype(str) == str(verdict.run_id)).any()
+    )
+    if not present:
+        return "falls outside the fetched window"
+    return f"recorded no {verdict.metric} value"
+
+
 def render_metric_trend(
     verdict: MetricVerdict, data_url: str, cache_dir: str, *,
     list_run_dates: Callable, fetch_runs_windowed: Callable,
@@ -244,7 +266,8 @@ def render_metric_trend(
     df, reliability = history
 
     series_key = _series_key(verdict)
-    df = render_reliability_filter(
+    fetched = df
+    df, excluded_runs = resolve_reliability_filter(
         df, reliability,
         key=f"{widget_namespace}_drill_excl_{series_key}",
         date_col="x_date",
@@ -324,7 +347,7 @@ def render_metric_trend(
         # Without this the chart is a baseline band and an unmarked line, which
         # reads as "nothing was flagged here" — the opposite of what happened.
         st.caption(
-            f"⚠️ The flagged run ({verdict.run_id}) is not on this chart — it "
-            "was excluded as unreliable, or falls outside the fetched window. "
+            f"⚠️ The flagged run ({verdict.run_id}) carries no point on this "
+            f"chart — it {_missing_run_reason(fetched, excluded_runs, verdict)}. "
             "Its marker is hidden rather than moved to another run."
         )

@@ -251,25 +251,6 @@ def nights_in_window(dates: list[str], window: tuple[date, date] | None) -> list
 _HIST_COLS = ["detector", "metric", "value", "k4h_release", "severity", "reliable"]
 
 
-def history_frame(
-    night_frames: list[tuple[str, pd.DataFrame]],
-    platform: str,
-    sample: str,
-    label: str,
-) -> pd.DataFrame:
-    """Concatenate the scope's rows across nights into a tidy history:
-    columns ``night, detector, metric, value, k4h_release, severity,
-    reliable``. A detector missing the combo on some night simply contributes
-    no row — a gap in its line.
-
-    The unfiltered composition of :func:`history_rows` and
-    :func:`collapse_history`. A caller that filters runs — the unreliable-run
-    toggle — must call those two around its filter instead, so the severity
-    reduction never sees a run the reader has excluded.
-    """
-    return collapse_history(history_rows(night_frames, platform, sample, label))
-
-
 def history_rows(
     night_frames: list[tuple[str, pd.DataFrame]],
     platform: str,
@@ -285,6 +266,11 @@ def history_rows(
     report night the row was measured on; the two differ whenever a nightly is
     benchmarked more than once, and keeping both is what lets a caller drop one
     rerun of a tag without dropping the tag.
+
+    Not plottable on its own — pass it through :func:`collapse_history` to get
+    one point per tag, dropping unwanted runs in between. There is deliberately
+    no helper that composes the two directly: every historical view here filters,
+    so a one-call shortcut would only ever be the wrong one to reach for.
     """
     parts = []
     for report_night, frame in night_frames:
@@ -310,16 +296,21 @@ def history_rows(
 def collapse_history(rows: pd.DataFrame) -> pd.DataFrame:
     """Reduce :func:`history_rows` to one point per (detector, metric, tag).
 
-    Two CI runs that benchmarked the *same* nightly (a rerun) collapse to one
-    point: the newest run wins for the plotted value, but ``severity`` keeps the
-    *worst* verdict across the tag's runs — nights of one tag share a baseline
-    yet can still differ (WATCH before the confirmation, a marginal OK night, or
-    a report predating the release-grouped engine), and the flag must not be
-    masked by the quieter night.
+    A point here is a nightly **tag** — a release — so two CI runs that
+    benchmarked the same nightly (a rerun) collapse to one: the newest run wins
+    for the plotted value, but ``severity`` keeps the *worst* verdict across the
+    tag's runs. Nights of one tag share a baseline yet can still differ (WATCH
+    before the confirmation, a marginal OK night, or a report predating the
+    release-grouped engine), and the flag must not be masked by the quieter
+    night. Pairing a value from one reduction with a severity from another is
+    the same thing the engine does when it summarises a release
+    (:class:`k4bench.regression.models.ReleasePoint`); ``tabs.trends``'
+    ``_tag_severity`` is this rule for Run Trends.
 
-    The reduction only ever sees the runs it is handed, which is what ties a flag
-    to its own measurement: filter *rows* first and an excluded run's verdict
-    cannot reach the tag, so its marker leaves the chart with it.
+    The reduction only ever sees the runs it is handed, which is what keeps the
+    reliability filter honest: filter *rows* first and an excluded run's verdict
+    cannot reach the tag, so a release whose only flagged run was dropped stops
+    flagging.
     """
     if rows.empty:
         return pd.DataFrame(columns=["night", *_HIST_COLS])
@@ -876,11 +867,17 @@ def _render_flag_trend(
     status_frames: list[tuple[str, pd.DataFrame]],
     platform: str,
     sample: str,
+    status_rel_hist: pd.DataFrame,
 ) -> None:
     """The Regression Status view's trend preview — the shared worst-first
     picker, leading with the detector because this view spans them, above a
     chart that costs no run downloads: the series is the verdicts' raw nightly
-    values across the already-fetched reports."""
+    values across the already-fetched reports.
+
+    Runs the same filter-before-collapse pipeline as the other historical views,
+    on the same widget key: a chart of raw nightly measurements has to honour the
+    unreliable-run exclusion, and honouring it in one Overview sub-view but not
+    another would make the tab's answer depend on which radio button is held."""
     choices = _flag_choices(latest_groups)
     if not choices:
         return
@@ -898,7 +895,13 @@ def _render_flag_trend(
     )
     if v is None:
         return
-    hist = history_frame(status_frames, platform, sample, v.label)
+    unreliable_pairs, exclude_unreliable = _render_reliability_filter(
+        status_rel_hist, key="det_ov_exclude_unreliable"
+    )
+    rows = history_rows(status_frames, platform, sample, v.label)
+    if exclude_unreliable:
+        rows = drop_unreliable_runs(rows, unreliable_pairs)
+    hist = collapse_history(rows)
     series = hist[(hist["detector"] == v.detector) & (hist["metric"] == v.metric)]
     if series.empty:
         st.info("No history for this metric in the current trend window.")
@@ -915,10 +918,15 @@ def _render_status_view(
     status_frames: list[tuple[str, pd.DataFrame]],
     platform: str,
     sample: str,
+    status_rel_hist: pd.DataFrame,
 ) -> None:
     """The Regression Status view: verdict banner, per-detector roster, and
     the worst flag's trend — the cross-detector regression picture the
-    (detector-scoped) Regressions tab no longer carries."""
+    (detector-scoped) Regressions tab no longer carries.
+
+    Only the trend is filtered by *status_rel_hist*: the banner and roster report
+    what tonight's report *says*, including that a detector was too contended to
+    judge, and a filter that hid those rows would hide the very runs it excluded."""
     if not latest_groups:
         st.info(
             f"No detector has a run group for **{sample}** on **{platform}** "
@@ -927,7 +935,9 @@ def _render_status_view(
         return
     _render_regression_banner(latest_groups, night)
     _render_detector_status(latest_groups, night, platform, sample)
-    _render_flag_trend(latest_groups, status_frames, platform, sample)
+    _render_flag_trend(
+        latest_groups, status_frames, platform, sample, status_rel_hist,
+    )
 
 
 def _render_reliability_filter(
@@ -1030,10 +1040,8 @@ def render(
     ]
     # The flag trend plots across the window *and* the latest night (the flags
     # shown come from the latest report, which can sit outside the window).
-    status_frames = (
-        night_frames if any(n == night for n, _ in night_frames)
-        else [*night_frames, (night, frames[night])]
-    )
+    status_nights = list(dict.fromkeys([*hist_nights, night]))
+    status_frames = [(n, frames[n]) for n in status_nights if n in frames]
 
     if wide.empty and hist.empty and not latest_groups:
         st.info(
@@ -1055,6 +1063,15 @@ def render(
     # from the pre-filter ``wide``/``hist`` so they don't shift with the toggle.
     rel_hist = reliability_history(
         [(n, rel_frames[n]) for n in hist_nights if n in rel_frames],
+        platform, sample,
+    )
+    # The Regression Status view's own filter input. Built over ``status_nights``
+    # rather than reused from ``rel_hist``, because that view plots one night
+    # ``rel_hist`` does not cover — the latest report, which sits outside the
+    # window whenever the window ends before it. Reusing ``rel_hist`` there would
+    # leave exactly that night's runs unfilterable.
+    status_rel_hist = reliability_history(
+        [(n, rel_frames[n]) for n in status_nights if n in rel_frames],
         platform, sample,
     )
     latest_rel = rel_frames[night]
@@ -1086,13 +1103,17 @@ def render(
     def _views(
         wide, hist_rows, rel_hist, unreliable_latest, detectors_all, styles,
         night, night_frames, excluded, latest_groups, status_frames,
+        status_rel_hist,
     ):
         view = st.radio(
             "View", _VIEWS, horizontal=True, key="det_ov_view_mode",
             label_visibility="collapsed",
         )
         if view == "Regression Status":
-            _render_status_view(latest_groups, night, status_frames, platform, sample)
+            _render_status_view(
+                latest_groups, night, status_frames, platform, sample,
+                status_rel_hist,
+            )
             return
 
         # ── Shaping controls shared by the two figure views. Same widget keys
@@ -1223,4 +1244,5 @@ def render(
     _views(
         wide, hist_rows, rel_hist, unreliable_latest, detectors_all, styles,
         night, night_frames, excluded, latest_groups, status_frames,
+        status_rel_hist,
     )

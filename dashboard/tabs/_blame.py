@@ -110,13 +110,19 @@ def changes_summary(changes: list) -> str:
 def run_point(df: pd.DataFrame, run_id: str | None, metric: str) -> tuple | None:
     """The plotted ``(x_date, value)`` of one *run*, or ``None`` when it has none.
 
-    The anchor every verdict marker is placed on. A verdict is evidence about one
-    measurement, so its marker belongs on that run's own point and nowhere else —
-    several runs can share a release, and a sibling run is a different measurement
-    that must not be dressed up as this one. ``None`` when the run is absent from
-    *df* (excluded by the reliability filter, outside the fetched window) or
-    measured nothing for *metric*, so the caller draws no marker rather than a
-    misplaced or free-floating one.
+    The marker anchor for a **run-level** chart — one where every run of a
+    release gets its own point, as the regression drill-down does. There a
+    verdict is evidence about one measurement and its marker belongs on that
+    run's own point and nowhere else: several runs can share a release, and a
+    sibling run is a different measurement that must not be dressed up as this
+    one. ``None`` when the run is absent from *df* (excluded by the reliability
+    filter, outside the fetched window) or measured nothing for *metric*, so the
+    caller draws no marker rather than a misplaced or free-floating one.
+
+    **Not** the rule for the release-level charts (Run Trends, the Overview's
+    trends), which plot one point per Key4hep nightly tag and so have no
+    per-run point to anchor to. Those reduce a release's runs the way the engine
+    reduces them itself — see ``_tag_severity`` in ``tabs.trends``.
     """
     if not run_id or metric not in df.columns or "run_id" not in df.columns:
         return None

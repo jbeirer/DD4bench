@@ -9,11 +9,13 @@ stubbed, so nothing touches the network.
 
 from __future__ import annotations
 
+import base64
 import importlib.util
 import json
 import sys
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -202,6 +204,37 @@ def test_flag_markers_share_legendgroup_with_their_curve():
     assert "baseline" in line_groups
 
 
+def test_flag_marker_sits_on_the_plotted_point():
+    # Coordinates, not trace counts: a marker drawn anywhere but on the point it
+    # describes accuses whichever release the eye lands on instead. user_cpu_s
+    # rings only its own panel, so every marker in the figure belongs to the
+    # 2026-05-21 point at y=4.2.
+    severity = {("baseline", "key4hep-2026-05-21", "user_cpu_s"): "CONFIRMED"}
+    markers = [
+        t for fig in _capture_figs(_trend_df(), ["baseline"], severity)
+        for t in fig.data if t.mode == "markers"
+    ]
+    assert markers, "expected a halo and a badge"
+    for t in markers:
+        assert list(t.x) == [pd.Timestamp("2026-05-21")]
+        assert list(t.y) == [4.2]
+
+
+def _capture_figs(df, labels, severity):
+    """Every figure ``_render_timeseries`` draws, in order — one per metric panel."""
+    figs = []
+    orig = tr.st.plotly_chart
+    tr.st.plotly_chart = lambda fig, **kw: figs.append(fig)
+    try:
+        tr._render_timeseries(
+            df, labels, ["#123456", "#654321"], "linear", 0.75, False, False,
+            severity, True, True,
+        )
+    finally:
+        tr.st.plotly_chart = orig
+    return figs
+
+
 def _capture_fig(df, labels, severity):
     captured = {}
     orig = tr.st.plotly_chart
@@ -243,7 +276,7 @@ def _reports_stub(confirmed: bool):
     return {"2026-05-21": to_json(report)}
 
 
-def _app(dashboard_dir, reports, reliability=None):
+def _app(dashboard_dir, reports, reliability=None, same_tag=False):
     import sys as _sys
     if dashboard_dir not in _sys.path:
         _sys.path.insert(0, dashboard_dir)
@@ -253,12 +286,16 @@ def _app(dashboard_dir, reports, reliability=None):
 
     _trends._cached_fetch_reports = lambda url, ids: reports
 
+    # *same_tag* makes the two runs reruns of one nightly tag: same x_date and
+    # release, different run dates — what the dedup below collapses to a point.
+    tags = (["2026-05-21", "2026-05-21"] if same_tag
+            else ["2026-05-20", "2026-05-21"])
     df = _pd.DataFrame({
         "label": ["baseline", "baseline"],
         "run_id": ["2026-05-20", "2026-05-21"],
         "run_date": _pd.to_datetime(["2026-05-20", "2026-05-21"]),
-        "x_date": _pd.to_datetime(["2026-05-20", "2026-05-21"]),
-        "k4h_release": ["key4hep-2026-05-20", "key4hep-2026-05-21"],
+        "x_date": _pd.to_datetime(tags),
+        "k4h_release": [f"key4hep-{t}" for t in tags],
         "wall_time_s": [5.0, 6.0],
         "user_cpu_s": [4.0, 4.2],
         "peak_rss_mb": [1000.0, 1100.0],
@@ -272,13 +309,28 @@ def _app(dashboard_dir, reports, reliability=None):
     )
 
 
-def _run(reports, reliability=None) -> AppTest:
+def _run(reports, reliability=None, same_tag=False) -> AppTest:
     at = AppTest.from_function(
-        _app, args=(str(_DASHBOARD_DIR), reports, reliability), default_timeout=30
+        _app, args=(str(_DASHBOARD_DIR), reports, reliability, same_tag),
+        default_timeout=30,
     )
     at.run()
     assert not at.exception, at.exception
     return at
+
+
+def _axis(trace: dict, key: str) -> list:
+    """A trace's ``x``/``y`` as a plain list.
+
+    Plotly ships numeric arrays base64-packed rather than as JSON numbers, so
+    reading coordinates off a serialized figure has to unpack them.
+    """
+    v = trace.get(key)
+    if isinstance(v, dict) and "bdata" in v:
+        return np.frombuffer(
+            base64.b64decode(v["bdata"]), dtype=v.get("dtype", "f8")
+        ).tolist()
+    return list(v or [])
 
 
 def _marker_modes(at: AppTest) -> list[str]:
@@ -303,6 +355,42 @@ def test_flags_reach_the_chart_end_to_end():
     # each with a halo and a badge.
     assert confirmed.count("markers") == 4
     assert "markers" not in _marker_modes(_run(_reports_stub(confirmed=False)))
+
+
+def test_same_tag_rerun_flags_the_release_on_its_plotted_point():
+    # One nightly tag benchmarked twice: the 05-20 run confirmed a step, the
+    # 05-21 rerun came out OK. The x-axis is the *release*, which is the unit the
+    # engine judges on, so the point carries the release's worst verdict — the
+    # same value/severity pairing ReleasePoint makes. What must not happen is a
+    # marker floating off the point: it belongs at the plotted coordinates.
+    reports = {
+        "2026-05-20": to_json(NightlyReport(generated_at="", groups=[
+            _group("2026-05-20", [_verdict("peak_rss_mb", Severity.CONFIRMED)],
+                   k4h_release="key4hep-2026-05-21"),
+        ])),
+        "2026-05-21": to_json(NightlyReport(generated_at="", groups=[
+            _group("2026-05-21", [_verdict("peak_rss_mb", Severity.OK)],
+                   k4h_release="key4hep-2026-05-21"),
+        ])),
+    }
+    at = _run(reports, same_tag=True)
+    specs = [json.loads(c.proto.spec) for c in at.get("plotly_chart")]
+    markers = [
+        t for spec in specs for t in spec["data"] if t.get("mode") == "markers"
+    ]
+    # peak_rss_mb rings only its own panel: one halo + one badge, both on the
+    # single collapsed point — the newest run's value, at the tag's date.
+    assert len(markers) == 2
+    for t in markers:
+        assert [pd.Timestamp(v) for v in _axis(t, "x")] == [pd.Timestamp("2026-05-21")]
+        assert _axis(t, "y") == [1100.0]
+    # And the curve really does have exactly that one point there, so the
+    # markers are not sitting on a release the chart never drew.
+    curves = [
+        t for spec in specs for t in spec["data"]
+        if t.get("mode") == "lines+markers" and 1100.0 in _axis(t, "y")
+    ]
+    assert curves and all(len(_axis(t, "y")) == 1 for t in curves)
 
 
 def test_excluding_the_flagged_run_takes_its_markers_off_the_chart():

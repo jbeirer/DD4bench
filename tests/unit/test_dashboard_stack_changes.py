@@ -977,6 +977,30 @@ def test_whole_platform_trend_caption_names_the_detector():
     assert "IDEA" not in local
 
 
+def test_hidden_marker_note_names_the_actual_reason():
+    import pandas as pd
+
+    from tabs._regression_trend import _missing_run_reason
+
+    verdict = _confirmed()
+    fetched = pd.DataFrame({
+        "run_id": ["2026-06-26", "2026-06-27"],
+        "x_date": pd.to_datetime(["2026-06-26", "2026-06-27"]),
+        "wall_time_s": [5.0, 6.0],
+    })
+    # Three ways a marker goes missing, and the reader can only act on the right
+    # one — re-enable the run, widen the window, or neither.
+    assert "excluded" in _missing_run_reason(fetched, {"2026-06-27"}, verdict)
+    assert "outside" in _missing_run_reason(
+        fetched[fetched["run_id"] != "2026-06-27"], set(), verdict
+    )
+    # Present and kept, but the metric never landed — a download gap, not a
+    # reliability call, and saying "unreliable" here would misdiagnose it.
+    assert "no wall_time_s value" in _missing_run_reason(
+        fetched.drop(columns=["wall_time_s"]), set(), verdict
+    )
+
+
 def test_scoped_miss_with_hits_elsewhere_points_at_the_toggle():
     report = _raw_report([
         _confirmed(detector="IDEA", metric="wall_time_s", pct_change=0.10,
