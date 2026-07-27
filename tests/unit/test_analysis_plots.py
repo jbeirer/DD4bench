@@ -18,7 +18,6 @@ import pytest
 from k4bench.analysis.loader import load_results
 from k4bench.analysis.plots import (
     _compute_core_range,
-    plot_event_memory,
     plot_event_timing,
     plot_region_timing,
     plot_run_overview,

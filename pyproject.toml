@@ -50,3 +50,6 @@ markers = [
 [tool.ruff]
 line-length = 100
 target-version = "py313"
+# Agent worktrees are full checkouts of this repo; linting them reports every
+# finding once per worktree and hides the ones in the tree being worked on.
+extend-exclude = [".claude/worktrees"]

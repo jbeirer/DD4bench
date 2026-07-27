@@ -26,3 +26,5 @@ plugin/install
 JupyterNotebooks
 sweep_test
 site/
+# Agent worktrees (git worktree add) — checkouts of this same repo, not sources.
+.claude/worktrees/
