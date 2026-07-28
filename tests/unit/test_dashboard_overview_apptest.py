@@ -114,7 +114,13 @@ def _app(dashboard_dir, dates, reports, window) -> None:
     ov._cached_fetch_reports = lambda url, nights: {
         n: reports[n] for n in nights if n in reports
     }
-    ov.render("https://example.invalid", "PLAT", "single_e_10GeV", window)
+    # No blame sidecar: the Nightly Report view's mail then renders unranked,
+    # which is what most nights actually look like.
+    ov._nightly_email._cached_fetch_blame = lambda url, night: None
+    ov.render(
+        "https://example.invalid", "https://dash.invalid",
+        "PLAT", "single_e_10GeV", window,
+    )
 
 
 def _run(window: tuple[date, date] | None = _WINDOW) -> AppTest:
@@ -255,7 +261,11 @@ def _status_scope_app(dashboard_dir, dates, scenarios, window) -> None:
     ov._cached_fetch_reports = lambda url, nights: {
         n: reports[n] for n in nights if n in reports
     }
-    ov.render("https://example.invalid", "PLAT", "single_e_10GeV", window)
+    ov._nightly_email._cached_fetch_blame = lambda url, night: None
+    ov.render(
+        "https://example.invalid", "https://dash.invalid",
+        "PLAT", "single_e_10GeV", window,
+    )
 
 
 def test_status_view_renders_banner_and_roster():
@@ -377,7 +387,8 @@ def _status_sample_app(dashboard_dir, dates, reports, window) -> None:
     ov._cached_fetch_reports = lambda url, nights: {
         n: reports[n] for n in nights if n in reports
     }
-    ov.render("https://example.invalid", "PLAT",
+    ov._nightly_email._cached_fetch_blame = lambda url, night: None
+    ov.render("https://example.invalid", "https://dash.invalid", "PLAT",
               _st.session_state.get("_sample", "single_e_10GeV"), window)
 
 
@@ -678,3 +689,190 @@ def test_failed_night_status_view_shows_the_failure():
     by_label = {m.label: m.value for m in at.metric}
     assert by_label["❌ Failures"] == "1"
     assert by_label["Detectors checked"] == "1"
+
+
+# ── Nightly Report view ──────────────────────────────────────────────────────
+
+def _email_view(at: AppTest) -> AppTest:
+    at.radio(key="det_ov_view_mode").set_value("Nightly Report").run()
+    assert not at.exception, at.exception
+    return at
+
+
+def _srcdoc(at: AppTest) -> str:
+    """The embedded mail's HTML. ``st.iframe`` has no typed AppTest accessor, so
+    the element's proto is read directly."""
+    frames = at.get("iframe")
+    assert len(frames) == 1
+    return frames[0].proto.srcdoc
+
+
+def test_email_view_embeds_the_rendered_mail():
+    at = _email_view(_run())
+    doc = _srcdoc(at)
+    # The document wrapper: links must escape the sandboxed frame, and the mail's
+    # fixed light-mode palette needs the white canvas a mail client provides.
+    assert '<base target="_blank">' in doc
+    assert "background: #ffffff" in doc
+    # The mail itself, rendered by the same function notify hands to the relay.
+    assert "k4Bench nightly report" in doc
+    assert "Needs attention" in doc
+    # Its deep links are absolute and point at the dashboard URL passed in —
+    # without one they would degrade to plain text and the report stops being
+    # navigable.
+    assert "https://dash.invalid?tab=Overview" in doc
+    # It opens on the newest night, which the mail names for itself.
+    assert "Report night <strong>11 Jul 2026</strong>" in doc
+
+
+def test_email_view_night_picker_offers_every_loaded_night_newest_first():
+    at = _email_view(_run())
+    picker = at.selectbox(key="det_ov_email_night")
+    # Newest first, each badged with that night's worst state across *every*
+    # detector in the report, and deep-linkable through ?report=.
+    assert picker.options == ["✅ 2026-07-11", "✅ 2026-07-10", "✅ 2026-07-09"]
+    assert picker.value == "2026-07-11"
+    assert at.query_params["report"] == ["2026-07-11"]
+
+
+def test_email_view_night_picker_switches_the_mail():
+    at = _email_view(_run())
+    at.selectbox(key="det_ov_email_night").set_value("2026-07-09").run()
+    assert not at.exception, at.exception
+    doc = _srcdoc(at)
+    assert "Report night <strong>9 Jul 2026</strong>" in doc
+    assert "Key4hep release: 2026-07-09" in doc
+    assert at.query_params["report"] == ["2026-07-09"]
+    captions = "\n".join(str(c.value) for c in at.caption)
+    assert "Historical view · report night **2026-07-09**" in captions
+
+
+def _deep_linked(**params: str) -> AppTest:
+    """A *fresh* session opened on ``?params`` — no widget touched afterwards.
+
+    The distinction is the whole point of a deep link: driving the radio first
+    would prove only that the view reads the parameter once it is already on
+    screen, which is not what pasting a URL does."""
+    at = AppTest.from_function(
+        _app, args=(str(_DASHBOARD_DIR), DATES, REPORTS, _WINDOW),
+        default_timeout=30,
+    )
+    for name, value in params.items():
+        at.query_params[name] = value
+    at.run()
+    assert not at.exception, at.exception
+    return at
+
+
+def test_view_deep_link_opens_the_email_view_directly():
+    # ?report= alone cannot do this: it is shared with the Regression Status
+    # picker (and the Regressions tab), so the view has to be named.
+    at = _deep_linked(view="Nightly Report", report="2026-07-09")
+
+    assert at.radio(key="det_ov_view_mode").value == "Nightly Report"
+    assert at.selectbox(key="det_ov_email_night").value == "2026-07-09"
+    assert "Report night <strong>9 Jul 2026</strong>" in _srcdoc(at)
+
+
+def test_a_copied_url_restores_both_the_view_and_the_night():
+    # The round trip a reader actually performs: open the tab, navigate to a
+    # historical night, copy the URL out of the bar, paste it into a new
+    # session. Both halves of the location have to survive it.
+    at = _email_view(_run())
+    at.selectbox(key="det_ov_email_night").set_value("2026-07-10").run()
+    assert not at.exception, at.exception
+    copied = {name: values[0] for name, values in at.query_params.items()}
+    assert copied["view"] == "Nightly Report"
+    assert copied["report"] == "2026-07-10"
+
+    restored = _deep_linked(view=copied["view"], report=copied["report"])
+
+    assert restored.radio(key="det_ov_view_mode").value == "Nightly Report"
+    assert restored.selectbox(key="det_ov_email_night").value == "2026-07-10"
+    assert "Report night <strong>10 Jul 2026</strong>" in _srcdoc(restored)
+
+
+def test_view_deep_link_reopens_the_status_view_too():
+    # The parameter is the tab's, not the mail's — Regression Status owns
+    # ?report= as well, and was equally unreachable from a pasted URL.
+    at = _deep_linked(view="Regression Status", report="2026-07-09")
+
+    assert at.radio(key="det_ov_view_mode").value == "Regression Status"
+    assert at.selectbox(key="det_ov_report_night").value == "2026-07-09"
+
+
+def test_an_unknown_view_falls_back_to_the_default():
+    # A stale or hand-edited parameter must not blank the tab.
+    at = _deep_linked(view="Nightly Reports")
+
+    assert at.radio(key="det_ov_view_mode").value == "Performance Trends"
+    assert at.query_params["view"] == ["Performance Trends"]
+
+
+def test_email_view_renders_when_the_scope_has_no_benchmarks():
+    # The mail covers every scope the night measured, so it stays readable when
+    # the sidebar's platform/sample has nothing — the case the scoped views
+    # (which correctly say so) would otherwise have hidden it behind.
+    def _other_scope(dashboard_dir, dates, reports, window) -> None:
+        import sys as _sys
+        if dashboard_dir not in _sys.path:
+            _sys.path.insert(0, dashboard_dir)
+
+        from tabs import detectors_overview as ov
+
+        ov._cached_list_report_dates = lambda url: dates
+        ov._cached_fetch_reports = lambda url, nights: {
+            n: reports[n] for n in nights if n in reports
+        }
+        ov._nightly_email._cached_fetch_blame = lambda url, night: None
+        ov.render(
+            "https://example.invalid", "https://dash.invalid",
+            "OTHER_PLAT", "single_e_10GeV", window,
+        )
+
+    at = AppTest.from_function(
+        _other_scope, args=(str(_DASHBOARD_DIR), DATES, REPORTS, _WINDOW),
+        default_timeout=30,
+    ).run()
+    assert not at.exception, at.exception
+    # The scoped default view says the scope is empty and names the way out…
+    assert at.info
+    assert "Nightly Report" in str(at.info[0].value)
+    assert not at.get("iframe")
+    # …and the mail is still there, whole.
+    at = _email_view(at)
+    assert "Needs attention" in _srcdoc(at)
+
+
+#: A report whose group is missing the ``detector`` key — the shape a
+#: half-uploaded or schema-drifted report takes, and what ``from_json`` raises on.
+_UNPARSEABLE = {"groups": [{"platform": "PLAT", "sample": "single_e_10GeV"}]}
+
+
+def test_malformed_historical_report_does_not_blank_the_tab():
+    # Every view here spans many nights, so one half-uploaded or schema-drifted
+    # report must cost its own night and not the whole tab.
+    reports = dict(REPORTS)
+    reports["2026-07-10"] = _UNPARSEABLE
+    at = AppTest.from_function(
+        _app, args=(str(_DASHBOARD_DIR), DATES, reports, _WINDOW),
+        default_timeout=30,
+    ).run()
+    assert not at.exception, at.exception
+    assert len(at.get("plotly_chart")) == 1
+    # The Nightly Report view still offers the nights that did parse.
+    at.radio(key="det_ov_view_mode").set_value("Nightly Report").run()
+    assert not at.exception, at.exception
+    offered = at.selectbox(key="det_ov_email_night").options
+    assert [o.split()[-1] for o in offered] == ["2026-07-11", "2026-07-09"]
+
+
+def test_malformed_latest_report_is_reported_not_raised():
+    reports = dict(REPORTS)
+    reports["2026-07-11"] = _UNPARSEABLE
+    at = AppTest.from_function(
+        _app, args=(str(_DASHBOARD_DIR), DATES, reports, _WINDOW),
+        default_timeout=30,
+    ).run()
+    assert not at.exception, at.exception
+    assert "2026-07-11" in "\n".join(str(w.value) for w in at.warning)

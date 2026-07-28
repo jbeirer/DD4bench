@@ -485,8 +485,13 @@ def main() -> None:
     # Overview (remote only) — cross-detector comparison built from the same
     # nightly reports as the Regressions tab, scoped by the sidebar's
     # platform/sample/Trend window like Run Trends (but spanning all detectors).
+    # Its Nightly Report view re-renders the e-group mail for one night, which is
+    # why this is the one section that gets the dashboard's own URL: the mail's
+    # deep links have to be absolute.
     if active_section == "Overview":
-        detectors_overview.render(config.data_url, platform, sample, sidebar_window)
+        detectors_overview.render(
+            config.data_url, config.dashboard_url, platform, sample, sidebar_window,
+        )
 
     # Stack Changes (remote only) — the package diff is cross-detector (a
     # Key4hep release is one stack whatever benchmarked it, so only the

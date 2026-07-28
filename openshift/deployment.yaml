@@ -28,6 +28,12 @@ spec:
           env:
             - name: K4BENCH_DATA_URL
               value: "https://k4bench-data.web.cern.ch"
+            # This deployment's own public URL (the route below). The Overview
+            # tab's Nightly Report view re-renders the nightly e-group mail, and
+            # the mail's deep links have to be absolute — it is embedded in a
+            # srcdoc iframe, which has no base to resolve a relative URL against.
+            - name: K4BENCH_DASHBOARD_URL
+              value: "https://k4bench-dashboard.app.cern.ch"
           resources:
             requests:
               memory: "256Mi"

@@ -703,6 +703,27 @@ def test_malformed_historical_is_simply_absent():
     assert "AI-generated PR ranking" not in html
 
 
+# ── Footer ────────────────────────────────────────────────────────────────────
+
+def test_the_mail_signs_off_by_default():
+    html = to_html(_report(_group(_v(first_confirmed_run_id="2026-06-27"))))
+    assert "For the benefit of the" in html
+    assert "jbeirer@cern.ch" in html
+
+
+def test_an_embedding_can_render_the_body_without_the_sign_off():
+    # For a host page that already carries the same CERN/FCC banner — the
+    # dashboard's Nightly Report view. Nothing above the footer changes.
+    r = _report(_group(_v(first_confirmed_run_id="2026-06-27")))
+    bare = to_html(r, footer=False)
+    assert "For the benefit of the" not in bare
+    assert "jbeirer@cern.ch" not in bare
+    assert "Needs attention" in bare
+    assert "k4Bench nightly report" in bare
+    # The markdown rendering has no such host and keeps its own footer.
+    assert "For the benefit of the" in to_markdown(r)
+
+
 # ── Links ─────────────────────────────────────────────────────────────────────
 
 def test_scoped_links_present_only_when_inputs_exist():
@@ -717,6 +738,71 @@ def test_scoped_links_present_only_when_inputs_exist():
     without = to_html(r)
     assert "tab=" not in without
     assert "ci/run" not in without
+
+
+def test_a_candidate_url_with_an_unexpected_scheme_is_not_linked():
+    # A candidate's URL is data read back from a blame sidecar, and the body is
+    # rendered in a browser (the dashboard's Nightly Report view) as well as in
+    # a mail client. Escaping alone keeps such a URL from breaking out of the
+    # attribute, but would still leave it a live destination.
+    v = _windowed(first_confirmed_run_id="2026-06-27")
+    for href in ("javascript:alert(1)", "data:text/html,<b>hi", "JAVASCRIPT:x",
+                 "java\nscript:alert(1)"):
+        hostile = _candidate(1, 80.0)
+        hostile = CandidatePR(**{**hostile.__dict__, "url": href})
+        html = to_html(_report(_group(v)), blame=_blame(hostile))
+        assert "javascript" not in html.lower()
+        assert "data:text/html" not in html
+        # The candidate itself is not hidden — only its link is dropped, so the
+        # ranking still names the PR it attributed the step to.
+        assert "key4hep/k4geo#1" in html
+
+
+def test_a_malformed_url_costs_its_link_and_not_the_report():
+    # ``urlsplit`` raises on a malformed netloc, and every href here is data
+    # read back from a report or a blame sidecar. A single corrupt string must
+    # not take down the render — the same to_html builds the nightly mail and
+    # the dashboard's Nightly Report view, and neither has a fallback.
+    v = _windowed(first_confirmed_run_id="2026-06-27")
+    for href in ("http://[", "https://[::1", "http://a]b"):
+        broken = _candidate(1, 80.0)
+        broken = CandidatePR(**{**broken.__dict__, "url": href})
+        html = to_html(_report(_group(v)), blame=_blame(broken))
+        assert "Needs attention" in html
+        assert "key4hep/k4geo#1" in html   # named, just not linked
+        assert f'href="{href}"' not in html
+
+    # The report-level action button takes the same route.
+    html = to_html(_report(_group(_v(first_confirmed_run_id="2026-06-27"))),
+                   actions_url="http://[")
+    assert "CI run" in html
+    assert 'href="http://["' not in html
+
+
+def test_a_well_formed_ipv6_url_still_links():
+    # The guard above must not swallow the addresses that parse — bracketed
+    # IPv6 is legal, and only the unterminated form raises.
+    assert email._safe_href("https://[::1]:8501/x") == "https://[::1]:8501/x"
+
+
+def test_an_unexpected_scheme_costs_the_ci_button_its_link_only():
+    r = _report(_group(_v(first_confirmed_run_id="2026-06-27")))
+    html = to_html(r, dashboard_url="https://dash.example/",
+                   actions_url="javascript:alert(1)")
+    assert "javascript" not in html.lower()
+    assert "CI run" in html          # the label survives as plain text
+    assert 'href="https://dash.example/?tab=Overview"' in html
+
+
+def test_ordinary_schemes_still_link():
+    assert email._safe_href("https://github.com/a/b") == "https://github.com/a/b"
+    assert email._safe_href("http://cern.ch") == "http://cern.ch"
+    assert email._safe_href("mailto:key4hep@cern.ch") == "mailto:key4hep@cern.ch"
+    # Scheme-less hrefs are relative and resolve against the enclosing document.
+    assert email._safe_href("/docs/report") == "/docs/report"
+    assert email._safe_href(None) is None
+    assert email._safe_href("vbscript:x") is None
+    assert email._safe_href("http://[") is None
 
 
 def test_dashboard_query_string_merges():

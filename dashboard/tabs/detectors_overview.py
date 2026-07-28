@@ -1,18 +1,23 @@
 """Overview tab — cross-detector comparison of the nightly benchmarks.
 
 Compares every detector's baseline benchmark for the sidebar-selected platform
-and sample, over the sidebar's shared Trend window, in three views:
+and sample, over the sidebar's shared Trend window, in four views:
 **Performance Trends** (the two selected metrics' history), **Performance
 Landscape** (time against memory, one point per detector at its own most recent
-run — independent of which report night is open), and **Regression Status**
-(one report night's verdict banner, the per-detector roster, and the worst
-flag's trend — the Regressions tab itself is scoped to one detector, so this is
-where the cross-detector regression picture lives; the night is selectable and
-defaults to the newest).
+run — independent of which report night is open), **Regression Status** (one
+report night's verdict banner, the per-detector roster, and the worst flag's
+trend — the Regressions tab itself is scoped to one detector, so this is where
+the cross-detector regression picture lives; the night is selectable and
+defaults to the newest), and **Nightly Report** (that night's e-group mail
+itself, see :mod:`tabs._nightly_email`).
 The data comes from the precomputed ``_reports/{date}/report.json`` files on
 EOS, whose verdicts carry the raw nightly value of every run/event metric for
 **all** detectors — one small cached JSON fetch per night, no per-detector run
 downloads.
+
+Only the first three views are scoped to the sidebar's platform/sample; the mail
+is the whole night, across every scope, so it stays readable even when the
+selected scope has nothing (see :func:`render`).
 """
 
 from __future__ import annotations
@@ -34,7 +39,7 @@ from k4bench.regression.engine import Z_THRESHOLD
 from k4bench.regression.models import NightlyReport, RunGroupReport, Severity
 from k4bench.regression.render import _detector_badge, from_json
 from remote_cache import _cached_fetch_reports, _cached_list_report_dates
-from tabs import _blame
+from tabs import _blame, _nightly_email
 from tabs._regression_flags import (
     SEVERITY_RANK,
     add_severity_markers,
@@ -76,8 +81,19 @@ _METRIC_ORDER: list[str] = [*_TIME_METRICS, *_MEMORY_METRICS]
 _FALLBACK_NIGHTS = 30
 
 #: The tab's views, dispatched by the same radio pattern as Region Timing and
-#: Machine Info: the two figure views, then the latest night's verdicts.
-_VIEWS = ["Performance Trends", "Performance Landscape", "Regression Status"]
+#: Machine Info: the two figure views, then a night's verdicts, then that
+#: night's report in the form the e-group received it. Only the first three
+#: read the sidebar's platform/sample scope, so the mail is dispatched ahead of
+#: the empty-scope notice.
+_VIEWS = [
+    "Performance Trends", "Performance Landscape", "Regression Status",
+    "Nightly Report",
+]
+
+#: Session key of the view radio, seeded from and written back to ``?view=`` so
+#: a copied URL reopens the view it was copied from — along with the parameters
+#: only that view reads (``?report=``, ``?tmetric=``/``?mmetric=``).
+_VIEW_KEY = "det_ov_view_mode"
 
 #: Fill for the accepted-baseline band on the flag-trend chart — the same
 #: visual device as the Regressions tab's drill-down.
@@ -1252,19 +1268,33 @@ def _render_reliability_filter(
 
 
 def render(
-    data_url: str, platform: str, sample: str, window: tuple[date, date] | None
+    data_url: str, dashboard_url: str, platform: str, sample: str,
+    window: tuple[date, date] | None,
 ) -> None:
-    """The tab's three views (:data:`_VIEWS`), dispatched by a radio like the
+    """The tab's four views (:data:`_VIEWS`), dispatched by a radio like the
     other multi-view tabs. *platform* and *sample* are the sidebar's
     selections, the same scoping as Run Trends. *window* is the sidebar's
     shared Trend window (``None`` when the sidebar hasn't resolved one yet,
     e.g. a mid-edit custom range or no run dates for the selected detector) —
     in that case :func:`nights_in_window` falls back to the latest
     :data:`_FALLBACK_NIGHTS`. The window sets which report nights are fetched,
-    and so how far back the Regression Status picker reaches; the landscape
-    reads whichever of them measured each detector last, plus the nights of any
-    detector whose last run predates the window's end (see
-    :func:`stale_run_nights`)."""
+    and so how far back the Regression Status and Nightly Report pickers reach;
+    the landscape reads whichever of them measured each detector last, plus the
+    nights of any detector whose last run predates the window's end (see
+    :func:`stale_run_nights`). *dashboard_url* is this deployment's own public
+    URL, which only the Nightly Report view needs (see
+    :mod:`tabs._nightly_email`).
+
+    The selected view is itself deep-linkable through ``?view=``, so a copied
+    URL reopens the view it was copied from rather than the default one — the
+    only way the parameters a single view owns (``?report=`` above all) can
+    survive being shared.
+
+    A scope with no benchmarks is reported *inside* the view switcher rather
+    than in place of it: three of the four views have nothing to draw without
+    it, but the mail covers every scope the night measured and must stay
+    reachable — a scope with no data is often exactly when it is worth
+    reading."""
     dates = _cached_list_report_dates(data_url)
     if not dates:
         st.info(
@@ -1345,13 +1375,15 @@ def render(
         if groups:
             scoped_groups[n] = groups
 
-    if scoped_wide.empty and hist.empty and not scoped_groups:
-        st.info(
-            f"No detector has {_BASELINE_LABEL} results for "
-            f"**{sample}** on **{platform}** — pick another sample or "
-            "platform in the sidebar."
-        )
-        return
+    # The Nightly Report view's picker: the same nights, *unfiltered* by the
+    # sidebar scope, since the mail is the whole night. Stragglers are left out
+    # for the same reason as above — they are one detector's, not the reader's
+    # range.
+    mail_reports = {n: reports[n] for n in fetch_nights if n in reports}
+
+    # Reported inside the fragment (see the docstring): the three scoped views
+    # have nothing to draw, but the Nightly Report does.
+    scope_empty = scoped_wide.empty and hist.empty and not scoped_groups
 
     # One colour per detector family, dash/symbol per version — stable across
     # every panel.
@@ -1391,12 +1423,31 @@ def render(
     def _views(
         hist_rows, snap_rows, rel_hist, detectors_all, styles,
         latest_night, window_nights, status_frames, excluded, scoped_detectors,
-        scoped_groups,
+        scoped_groups, reports, scope_empty,
     ):
+        # The chosen view is part of the URL, so a copied link reopens the one
+        # being read. Without it every Overview link lands on the default view,
+        # and the parameters the *other* views own — ``?report=`` above all,
+        # which both Regression Status and Nightly Report speak — would be
+        # carried in the URL with no picker on screen to seed from them.
+        seed_query_param(_VIEW_KEY, "view", _VIEWS)
         view = st.radio(
-            "View", _VIEWS, horizontal=True, key="det_ov_view_mode",
+            "View", _VIEWS, horizontal=True, key=_VIEW_KEY,
             label_visibility="collapsed",
-        )
+        ) or _VIEWS[0]
+        st.query_params["view"] = view
+        if view == "Nightly Report":
+            _nightly_email.render(data_url, dashboard_url, reports, latest_night)
+            return
+        # Below the mail, so an empty scope can still read the night's report.
+        if scope_empty:
+            st.info(
+                f"No detector has {_BASELINE_LABEL} results for "
+                f"**{sample}** on **{platform}** — pick another sample or "
+                "platform in the sidebar, or read the whole night's report in "
+                "**Nightly Report**."
+            )
+            return
         if view == "Regression Status":
             _render_status_view(
                 scoped_groups, status_frames, window_nights, latest_night,
@@ -1525,5 +1576,5 @@ def render(
     _views(
         hist_rows, snap_rows, rel_hist, detectors_all, styles,
         latest_night, [n for n, _ in window_frames], status_frames, excluded,
-        scoped_detectors, scoped_groups,
+        scoped_detectors, scoped_groups, mail_reports, scope_empty,
     )
