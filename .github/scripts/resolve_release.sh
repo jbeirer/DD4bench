@@ -6,12 +6,22 @@
 # release, so a stack landing mid-fan-out cannot file some samples under one
 # release and the rest under the next.
 #
-# Key4hep publishes the day's stack to CVMFS at 00:40–00:58 UTC, occasionally as
-# late as ~07:30 UTC, and on some days not at all. This waits for today's stack
-# and, when it never appears, falls back to the newest published release: a
-# re-measurement, which the regression engine uses as confirmation evidence
-# (k4bench/regression/engine.py judges the median of a release's nights), so the
-# night runs either way — flagged, not skipped.
+# Key4hep publishes the day's stack to CVMFS at 00:40–00:58 UTC, and on some days
+# not at all. The retry budget covers that window several times over but stops
+# deliberately short of the rare ~07:30 publications: waiting that long would
+# push the fan-out onto the shared runners during working hours on every day that
+# has no nightly at all, and those days are the more common of the two. A stack
+# landing after the budget expires is benchmarked the following night instead.
+#
+# When today's stack never appears, the newest published release is measured
+# again rather than the night being skipped: the regression engine judges the
+# median of a release's nights and confirms a WATCH from a repeat measurement
+# (k4bench/regression/engine.py), so a re-measurement still carries information.
+# The job summary flags it as one.
+#
+# A release is either named here or the job fails: publishing an empty release
+# would send every benchmark job back to resolving `latest` on its own, which is
+# the split-night race this gate exists to prevent.
 #
 # Optional env vars (defaults are the production values):
 #   RELEASE_REQUESTED — release to use verbatim, skipping all waiting
@@ -50,9 +60,17 @@ publish() {
     fi
 }
 
-# A pinned release is taken at its word — it is how the plumbing is tested, and
-# the release may well be one CVMFS never publishes under today's date.
+# A pinned release skips the waiting entirely, but still has to name a stack that
+# exists: a typo would otherwise be caught 18 times over, once per benchmark job.
 if [[ -n "${RELEASE_REQUESTED:-}" ]]; then
+    if [[ ! "${RELEASE_REQUESTED}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+        echo "::error::Requested Key4hep release '${RELEASE_REQUESTED}' is not a YYYY-MM-DD date"
+        exit 1
+    fi
+    if [[ ! -d "${RELEASES_ROOT}/${RELEASE_REQUESTED}/${PLATFORM_DIR}" ]]; then
+        echo "::error::Requested Key4hep release ${RELEASE_REQUESTED} has no ${PLATFORM_DIR} build under ${RELEASES_ROOT}"
+        exit 1
+    fi
     if [[ "${RELEASE_REQUESTED}" == "${TODAY}" ]]; then IS_TODAY=true; else IS_TODAY=false; fi
     publish "${RELEASE_REQUESTED}" "${IS_TODAY}" \
         "Key4hep release pinned by workflow_dispatch: \`${RELEASE_REQUESTED}\`."
@@ -79,14 +97,13 @@ done
 FALLBACK="$(readlink -f "${RELEASES_ROOT}/${LATEST_DIR}/${PLATFORM_DIR}" 2>/dev/null || true)"
 FALLBACK="$(grep -oP '\d{4}-\d{2}-\d{2}' <<< "${FALLBACK}" | head -1 || true)"
 
-if [[ -n "${FALLBACK}" ]]; then
-    echo "::warning::No Key4hep nightly published for ${TODAY}; benchmarking ${FALLBACK} again"
-    publish "${FALLBACK}" false \
-        "**No Key4hep nightly for \`${TODAY}\`.** Benchmarking \`${FALLBACK}\` — a re-measurement of an already-benchmarked stack, not a new release."
-else
-    # Nothing to pin. The jobs fall back to their own unpinned source, which is
-    # the pre-gate behaviour: they may disagree with each other about the release.
-    echo "::warning::No Key4hep nightly for ${TODAY} and ${RELEASES_ROOT}/${LATEST_DIR}/${PLATFORM_DIR} does not resolve; jobs will each source the latest stack"
-    publish "" false \
-        "**No Key4hep nightly for \`${TODAY}\` and \`${LATEST_DIR}\` could not be resolved.** Each job sources whatever \`latest\` points at when it starts."
+if [[ -z "${FALLBACK}" ]]; then
+    # Nothing left to name. One red job beats a night of measurements that cannot
+    # be compared with each other.
+    echo "::error::No Key4hep nightly for ${TODAY} and ${RELEASES_ROOT}/${LATEST_DIR}/${PLATFORM_DIR} does not resolve to a dated release"
+    exit 1
 fi
+
+echo "::warning::No Key4hep nightly published for ${TODAY}; benchmarking ${FALLBACK} again"
+publish "${FALLBACK}" false \
+    "**No Key4hep nightly for \`${TODAY}\`.** Benchmarking \`${FALLBACK}\` — a re-measurement of an already-benchmarked stack, not a new release."

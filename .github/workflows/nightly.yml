@@ -75,12 +75,15 @@ jobs:
     secrets: inherit
 
   # ── Nightly regression report over the full EOS history ────────────────────
-  # `if: always()` so a crashed detector job still produces a FAILURE verdict
-  # (its missing upload is the signal) instead of the report vanishing. The job
+  # Runs through a failed fan-out, so a crashed detector job still produces a
+  # FAILURE verdict (its missing upload is the signal) instead of the report
+  # vanishing. A fan-out that never started is a different case: the report night
+  # is the newest run date found on EOS, so building a report for a night with no
+  # runs would re-send last night's verdicts as if they were tonight's. The job
   # body lives in the reusable regression-report.yml, which is also
   # workflow_dispatch-able for a manual, on-demand send.
   regression-report:
     needs: benchmark
-    if: always()
+    if: ${{ !cancelled() && needs.benchmark.result != 'skipped' }}
     uses: ./.github/workflows/regression-report.yml
     secrets: inherit
