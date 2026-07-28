@@ -784,6 +784,54 @@ def test_log_range_pads_in_decades():
     assert ov._log_range(pd.Series([0.0, -1.0]), 0.1, 0.1) is None
 
 
+# ── _trend_notes ───────────────────────────────────────────────────────────────
+
+def _hist(rows: list[tuple[str, str, float]]) -> pd.DataFrame:
+    return pd.DataFrame(
+        [{"detector": d, "metric": m, "value": v, "night": "2026-01-12"}
+         for d, m, v in rows],
+        columns=["detector", "metric", "value", "night"],
+    )
+
+
+def test_trend_notes_silent_when_every_detector_is_drawn():
+    hist = _hist([("CLD", "wall_time_s", 1.0), ("IDEA", "wall_time_s", 2.0)])
+    assert ov._trend_notes(
+        hist, hist, "wall_time_s", "peak_rss_mb", ["CLD", "IDEA"], [], {},
+    ) == []
+
+
+def test_trend_notes_separates_why_each_detector_is_absent():
+    # SiD ran in the window but every run was excluded by the reliability
+    # toggle; IDEA is in the window with other metrics only; ALLEGRO has no run
+    # in the window at all and is placed by its last run.
+    window = _hist([
+        ("CLD", "wall_time_s", 1.0),
+        ("SiD", "wall_time_s", 3.0),
+        ("IDEA", "mean_time_s", 2.0),
+    ])
+    hist = _hist([("CLD", "wall_time_s", 1.0), ("IDEA", "mean_time_s", 2.0)])
+    notes = ov._trend_notes(
+        hist, window, "wall_time_s", "peak_rss_mb",
+        ["CLD", "IDEA", "SiD", "ALLEGRO"], ["SiD_o2"],
+        {"ALLEGRO": "2026-01-02"},
+    )
+    joined = " ".join(notes)
+    assert "excluded as unreliable: SiD." in joined
+    assert "No value for the selected metrics: IDEA." in joined
+    assert "No run in the trend window: ALLEGRO (last ran 2026-01-02)." in joined
+    assert "Not benchmarked with this sample/platform: SiD_o2." in joined
+    # CLD is on the chart, so it is named nowhere.
+    assert "CLD" not in joined
+
+
+def test_trend_notes_names_an_unplaceable_detector_without_a_date():
+    notes = ov._trend_notes(
+        _hist([]), _hist([]), "wall_time_s", "peak_rss_mb", ["CLD"], [], {},
+    )
+    assert notes == ["No run in the trend window: CLD."]
+
+
 # ── Shared contracts ───────────────────────────────────────────────────────────
 
 def test_baseline_label_matches_benchmark():

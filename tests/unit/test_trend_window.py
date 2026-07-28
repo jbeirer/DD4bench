@@ -63,3 +63,32 @@ def test_single_date_collapses_to_a_point_window():
     one = [date(2026, 5, 21)]
     assert tw.resolve_window("Last 7 days", one, None) == (date(2026, 5, 15), date(2026, 5, 21))
     assert tw.resolve_window("All", one, None) == (date(2026, 5, 21), date(2026, 5, 21))
+
+
+# ── window_domain ─────────────────────────────────────────────────────────────
+
+def test_window_domain_unions_and_sorts_uniquely():
+    runs = [date(2026, 5, 14), date(2026, 5, 12), date(2026, 5, 14)]
+    nights = [date(2026, 5, 15), date(2026, 5, 12)]
+    assert tw.window_domain(runs, nights) == [
+        date(2026, 5, 12), date(2026, 5, 14), date(2026, 5, 15),
+    ]
+
+
+def test_window_domain_anchor_ignores_a_lagging_detector():
+    """The whole point: a detector whose last run predates the newest report
+    night must not drag the window back with it — otherwise the cross-detector
+    Overview loses every detector that ran more recently."""
+    nights = [date(2026, 5, d) for d in range(15, 22)]
+    lagging = tw.window_domain([date(2026, 5, 16)], nights)
+    current = tw.window_domain([date(2026, 5, 21)], nights)
+    assert tw.resolve_window("Last 7 days", lagging, None) == \
+           tw.resolve_window("Last 7 days", current, None)
+    assert tw.resolve_window("Last 7 days", lagging, None)[1] == date(2026, 5, 21)
+
+
+def test_window_domain_falls_back_to_either_side_alone():
+    runs = [date(2026, 5, 21)]
+    assert tw.window_domain(runs, []) == runs
+    assert tw.window_domain([], runs) == runs
+    assert tw.window_domain([], []) == []

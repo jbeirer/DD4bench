@@ -34,6 +34,13 @@ The sidebar lets you drill down through that hierarchy: **detector → platform 
 physics sample → Key4hep release**. Single-run tabs use the newest uploaded
 run for that selection; the trend window controls the multi-run views.
 
+Each level is rebuilt from the one above it, so changing the detector can leave
+the selected platform or sample with no match — in which case it re-defaults to
+a valid one and says so right under the selector. That notice matters because
+the Overview tab is scoped by platform and sample *across all detectors*:
+without it, a sample that quietly moved would look like detectors vanishing
+from its charts.
+
 !!! note "Example detectors"
     A couple of detectors (currently: `SiD`) come from a simulation toolkit's
     own reference/tutorial geometry rather than a maintained FCC/Key4hep
@@ -74,11 +81,18 @@ Plots a metric over time. The x-axis is anchored on the **Key4hep release date**
 (falling back to the run date), so you see regressions aligned with releases.
 A sidebar **look-back window** (`Last 7 days`, `14` — the default — `30`, `90`,
 `6 months`, `All`, or a custom range) controls how much history is downloaded
-and shown. The window is
-anchored on the *latest available* run, not today, so it always shows data even
-if the nightly hasn't run recently (see
-[`trend_window.resolve_window`](../../reference/api/analysis/index.md) — pure
-logic, unit-tested).
+and shown. The window is anchored on the *latest available* nightly, not today,
+so it always shows data even if the nightly hasn't run recently. That anchor is
+deliberately **detector-independent** — it is the newest of the nightly report
+nights and the selected detector's own runs — so the same preset covers the same
+dates whichever detector the sidebar has selected. This matters most for the
+cross-detector Overview tab, which draws every detector over this one window: an
+anchor that followed the selected detector's last run would pull the window back
+whenever a lagging detector was picked, and detectors that had run more recently
+would silently vanish from its charts. If the selected detector has no runs in
+the window, the sidebar caption says so and names the night it last ran (see
+[`trend_window`](../../reference/api/analysis/index.md) — pure logic,
+unit-tested).
 
 Nights the nightly regression detector **confirmed** a step are ringed in red
 on the lines, and nights it flagged but hasn't confirmed are ringed as ⚠️ watch
@@ -336,7 +350,9 @@ so rather than showing an empty diff.
 Where every other metric tab compares configs *within* the selected detector,
 this one compares the detectors *against each other* — always on their
 **baseline** config, for the sidebar-selected platform and sample, over the
-sidebar's trend window (the same scoping as Run Trends, minus the detector).
+sidebar's trend window (the same scoping as Run Trends, minus the detector —
+and the window is anchored detector-independently, so switching the sidebar
+detector never changes which detectors this tab shows).
 It reads the same nightly `_reports/{date}/report.json` as the Regressions
 tab — whose verdicts carry the raw nightly value of every run and per-event
 metric for all detectors — so the whole comparison loads from one small JSON
@@ -356,7 +372,12 @@ along with the parameters only that view reads:
   nights it flagged but hasn't confirmed are ringed as ⚠️ watch points — both
   on by default, each behind its own toggle. A *relative* toggle
   rescales each line to its first night = 100 %, making drift comparable
-  across detectors of very different absolute cost;
+  across detectors of very different absolute cost. Any scoped detector the
+  chart has **no line for** is named in the caption with the reason (every run
+  excluded as unreliable · no value for the selected metrics · no run in the
+  window, with the night it last ran · not benchmarked with this
+  sample/platform), so a missing detector is never silently indistinguishable
+  from a quiet one;
 - **Performance Landscape** — the selected time metric against the selected
   memory metric, one point per detector at its **most recent run** — closer to
   the origin is faster *and* leaner. It follows the runs rather than the

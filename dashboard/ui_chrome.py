@@ -590,8 +590,9 @@ def _render_sidebar_footer() -> None:
     )
 
 
-def _drop_stale_selection(key: str, options: list[str]) -> None:
-    """Clear a keyed selectbox's stored value when it's no longer a valid option.
+def _drop_stale_selection(key: str, options: list[str]) -> str | None:
+    """Clear a keyed selectbox's stored value when it's no longer a valid option,
+    returning the value dropped (``None`` when nothing was).
 
     The dependent dropdowns (Platform → Sample → Stack) rebuild their option lists
     whenever an upstream selection changes, so a value left in ``session_state``
@@ -599,9 +600,28 @@ def _drop_stale_selection(key: str, options: list[str]) -> None:
     selection. Popping it *before* the widget is created (the only point at which
     a widget-backed key may be mutated) lets the selectbox re-default cleanly to a
     valid option. A no-op when the stored value is still present in *options*.
+
+    The dropped value is returned because a silent re-default is a scope change
+    the reader did not ask for: switching detector can take the selected sample
+    with it, and the cross-detector Overview is scoped by sample, so its roster
+    changes for a reason nothing on screen would otherwise state (see
+    :func:`_render_scope_reset` for the notice).
     """
     if key in st.session_state and st.session_state[key] not in options:
-        del st.session_state[key]
+        return st.session_state.pop(key)
+    return None
+
+
+def _render_scope_reset(dropped: str | None, current: str, reason: str) -> None:
+    """Note that a sidebar scope selector re-defaulted, and why.
+
+    Rendered right under the selector whose value moved, on the one rerun where
+    it moved. Kept to a caption rather than a warning: nothing is wrong, the
+    previous selection simply does not exist in the new scope — but the tabs
+    below are scoped by it, so the change has to be visible.
+    """
+    if dropped and dropped != current:
+        st.caption(f"⚠️ `{dropped}` {reason} — showing `{current}`.")
 
 
 def _drop_stale_multiselect(key: str, options: list[str]) -> None:

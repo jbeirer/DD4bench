@@ -69,3 +69,47 @@ def test_first_scope_keeps_the_deep_linked_query_param(monkeypatch):
 
     assert params == {"report": "2026-07-09"}
 
+
+
+# ── _drop_stale_selection / _render_scope_reset ───────────────────────────────
+
+def test_drop_stale_selection_reports_the_value_it_dropped(monkeypatch):
+    # The caller needs the old value to say *what* moved: switching detector can
+    # take the selected sample with it, silently rescoping the Overview tab.
+    import ui_chrome
+
+    state = {"sb_sample": "single_e_10GeV"}
+    monkeypatch.setattr(ui_chrome.st, "session_state", state)
+
+    dropped = ui_chrome._drop_stale_selection("sb_sample", ["single_mu_10GeV"])
+
+    assert dropped == "single_e_10GeV"
+    assert "sb_sample" not in state
+
+
+def test_drop_stale_selection_is_silent_when_the_value_survives(monkeypatch):
+    import ui_chrome
+
+    state = {"sb_sample": "single_e_10GeV"}
+    monkeypatch.setattr(ui_chrome.st, "session_state", state)
+
+    assert ui_chrome._drop_stale_selection(
+        "sb_sample", ["single_e_10GeV", "single_mu_10GeV"]
+    ) is None
+    assert state == {"sb_sample": "single_e_10GeV"}
+    # Nothing dropped and nothing to say.
+    assert ui_chrome._drop_stale_selection("sb_missing", ["a"]) is None
+
+
+def test_scope_reset_notice_only_fires_on_a_real_change(monkeypatch):
+    import ui_chrome
+
+    said: list[str] = []
+    monkeypatch.setattr(ui_chrome.st, "caption", said.append)
+
+    ui_chrome._render_scope_reset(None, "b", "isn't benchmarked for CLD")
+    ui_chrome._render_scope_reset("b", "b", "isn't benchmarked for CLD")
+    assert said == []
+
+    ui_chrome._render_scope_reset("a", "b", "isn't benchmarked for CLD")
+    assert said == ["⚠️ `a` isn't benchmarked for CLD — showing `b`."]

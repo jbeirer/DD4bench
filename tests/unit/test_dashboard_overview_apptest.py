@@ -553,6 +553,37 @@ def test_landscape_falls_back_to_a_detectors_last_run():
     assert "Not benchmarked" not in captions
 
 
+def test_trends_caption_places_a_detector_missing_from_the_window():
+    # SiD's only run (07-11) sits outside the trend window, so it has no line.
+    # Both figure views account for a detector they cannot draw, or
+    # "disappeared" is indistinguishable from "never existed".
+    reports = {
+        "2026-07-11": _report("2026-07-11"),
+        "2026-07-10": _report("2026-07-10", scale=1.05,
+                              detectors=("CLD_o2_v08", "IDEA_o1_v03")),
+        "2026-07-09": _report("2026-07-09", scale=1.1,
+                              detectors=("CLD_o2_v08", "IDEA_o1_v03")),
+    }
+    at = AppTest.from_function(
+        _app, args=(str(_DASHBOARD_DIR), DATES, reports,
+                    (date(2026, 7, 9), date(2026, 7, 10))),
+        default_timeout=30,
+    ).run()
+    assert not at.exception, at.exception
+    captions = "\n".join(str(c.value) for c in at.caption)
+    assert "No run in the trend window: SiD (last ran 2026-07-11)." in captions
+    # The detectors that are on the chart are named nowhere.
+    assert "CLD_o2_v08" not in captions
+
+
+def test_trends_caption_is_silent_when_every_detector_is_drawn():
+    at = _run()
+    captions = "\n".join(str(c.value) for c in at.caption)
+    assert "No run in the trend window" not in captions
+    assert "excluded as unreliable" not in captions
+    assert "Not benchmarked" not in captions
+
+
 def test_landscape_reaches_a_run_between_the_window_and_the_latest_report():
     # SiD last ran on 07-10 — after the trend window ends (07-09) and before the
     # latest report (07-11), which carries SiD only as a stale group with its

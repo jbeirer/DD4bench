@@ -1222,6 +1222,74 @@ def _landscape_notes(
     return notes
 
 
+def _plotted_detectors(hist: pd.DataFrame, metrics: tuple[str, ...]) -> set[str]:
+    """Detectors the trend chart can draw at least one line for — those with a
+    value for one of the *metrics* on screen (see :func:`_history_figure`,
+    which skips a detector with no rows for the panel's metric)."""
+    if hist.empty:
+        return set()
+    return set(hist.loc[hist["metric"].isin(metrics), "detector"].unique())
+
+
+def _trend_notes(
+    hist: pd.DataFrame,
+    window_rows: pd.DataFrame,
+    time_metric: str,
+    mem_metric: str,
+    detectors: list[str],
+    excluded: list[str],
+    as_of: dict[str, str],
+) -> list[str]:
+    """The caption under the trend chart: every detector in the scope the chart
+    has no line for, and why.
+
+    Absence is the one thing a cross-detector comparison must not report
+    silently: a reader tracking a detector cannot tell "no data" from "no
+    regression" if the line is simply gone. Both figure views therefore account
+    for the detectors they cannot draw — this is the trend chart's half of the
+    pair, :func:`_landscape_notes` the landscape's.
+
+    *hist* is the collapsed history actually plotted, *window_rows* the window's
+    rows **before** the reliability filter (which separates a detector the
+    toggle dropped from one that never ran), and *as_of* names each detector's
+    most recent run so one that has fallen out of the window is placed rather
+    than merely missed.
+    """
+    metrics = (time_metric, mem_metric)
+    plotted = _plotted_detectors(hist, metrics)
+    missing = [d for d in detectors if d not in plotted]
+
+    in_window = _plotted_detectors(window_rows, metrics)
+    judged = _plotted_detectors(hist, tuple(_METRIC_ORDER))
+    dropped   = [d for d in missing if d in in_window]
+    no_metric = [d for d in missing if d not in in_window and d in judged]
+    absent    = [d for d in missing if d not in in_window and d not in judged]
+
+    notes: list[str] = []
+    if dropped:
+        notes.append(
+            "Every run in the window excluded as unreliable: "
+            f"{', '.join(dropped)}."
+        )
+    if no_metric:
+        notes.append(
+            f"No value for the selected metrics: {', '.join(no_metric)}."
+        )
+    if absent:
+        notes.append(
+            "No run in the trend window: "
+            + ", ".join(
+                f"{d} (last ran {as_of[d]})" if d in as_of else d for d in absent
+            )
+            + "."
+        )
+    if excluded:
+        notes.append(
+            f"Not benchmarked with this sample/platform: {', '.join(excluded)}."
+        )
+    return notes
+
+
 def _render_reliability_filter(
     rel_hist: pd.DataFrame, *, key: str
 ) -> tuple[set[tuple[str, str]], bool]:
@@ -1274,10 +1342,15 @@ def render(
     """The tab's four views (:data:`_VIEWS`), dispatched by a radio like the
     other multi-view tabs. *platform* and *sample* are the sidebar's
     selections, the same scoping as Run Trends. *window* is the sidebar's
-    shared Trend window (``None`` when the sidebar hasn't resolved one yet,
-    e.g. a mid-edit custom range or no run dates for the selected detector) —
-    in that case :func:`nights_in_window` falls back to the latest
-    :data:`_FALLBACK_NIGHTS`. The window sets which report nights are fetched,
+    shared Trend window (``None`` only when the sidebar hasn't resolved one
+    yet, e.g. a mid-edit custom range) — in that case
+    :func:`nights_in_window` falls back to the latest
+    :data:`_FALLBACK_NIGHTS`. It carries no detector scope: its preset resolves
+    against the nightly report nights as well as the selected detector's runs
+    (see ``trend_window.window_domain``), so the range this tab draws stays put
+    when the sidebar detector changes rather than sliding to that detector's
+    last run and dropping the more recently benchmarked detectors off the
+    charts. The window sets which report nights are fetched,
     and so how far back the Regression Status and Nightly Report pickers reach;
     the landscape reads whichever of them measured each detector last, plus the
     nights of any detector whose last run predates the window's end (see
@@ -1525,11 +1598,16 @@ def render(
         # The snapshot is filtered *before* it is taken, so an unreliable newest
         # run falls back to the detector's last reliable one rather than dropping
         # it off the landscape entirely.
+        #
+        # The unfiltered frames stay bound: the trend caption tells a detector
+        # the toggle dropped from one that never ran in the window, which it can
+        # only do by comparing the two.
+        kept_hist_rows, kept_snap_rows = hist_rows, snap_rows
         if exclude_unreliable:
-            hist_rows = drop_unreliable_runs(hist_rows, unreliable)
-            snap_rows = drop_unreliable_runs(snap_rows, unreliable)
-        hist = collapse_history(hist_rows)
-        wide, as_of = latest_snapshot(snap_rows)
+            kept_hist_rows = drop_unreliable_runs(hist_rows, unreliable)
+            kept_snap_rows = drop_unreliable_runs(snap_rows, unreliable)
+        hist = collapse_history(kept_hist_rows)
+        wide, as_of = latest_snapshot(kept_snap_rows)
 
         wide_disp, hist_disp = _to_display_units(wide, hist)
         if relative:
@@ -1548,12 +1626,16 @@ def render(
                 )
                 return
             st.plotly_chart(fig, width="stretch", key="det_ov_hist_chart")
-            st.caption(
+            span = (
                 f"Latest night: **{latest_night}** · trend window: "
                 f"**{window_nights[-1]}** → **{window_nights[0]}** "
                 f"({len(window_nights)} night{'s' if len(window_nights) != 1 else ''})."
                 if window_nights else f"Latest night: **{latest_night}**."
             )
+            st.caption(" ".join([span, *_trend_notes(
+                hist, hist_rows, time_metric, mem_metric,
+                detectors_all, excluded, as_of,
+            )]))
             return
 
         # Performance Landscape
