@@ -12,6 +12,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
+#: Opening words of the job failure a report records for a triple that uploaded
+#: no run for the report night. Part of the report's wire format — reports are
+#: read back by whatever dashboard is deployed, so the writer
+#: (``report_builder._finalize_report``) and the readers
+#: (:attr:`RunGroupReport.missing_run`) share this one constant rather than
+#: each spelling the sentence out.
+MISSING_RUN_FAILURE = "no run uploaded for"
+
 
 class Severity(str, Enum):
     """How much attention a metric verdict deserves.
@@ -311,6 +319,20 @@ class RunGroupReport:
     @property
     def failures(self) -> list[MetricVerdict]:
         return self._select(Severity.FAILURE)
+
+    @property
+    def missing_run(self) -> bool:
+        """Whether this group stands in for a run that never arrived.
+
+        The report keeps such a triple at its *last* run date, stripped of
+        verdicts and carrying only the missing-run failure (see
+        ``k4bench.regression.report_builder._finalize_report``). A consumer has
+        to tell it apart from a group that is merely dated earlier because its
+        job started before midnight — that one really ran for this report and
+        keeps everything. The dates alone cannot: both are older than the
+        report night.
+        """
+        return any(f.startswith(MISSING_RUN_FAILURE) for f in self.job_failures)
 
 
 @dataclass

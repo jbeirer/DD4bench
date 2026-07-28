@@ -10,6 +10,7 @@ control changes.
 from __future__ import annotations
 
 import copy
+import json
 from datetime import date
 from pathlib import Path
 
@@ -43,9 +44,22 @@ def _verdict(det: str, metric: str, value: float, **kw) -> MetricVerdict:
     return MetricVerdict(**base)
 
 
-def _report(night: str, *, scale: float = 1.0, reliable: bool | None = True) -> dict:
+def _report(
+    night: str, *, scale: float = 1.0, reliable: bool | None = True,
+    detectors: tuple[str, ...] | None = None,
+    stale: tuple[str, str] | None = None,
+) -> dict:
+    """A night's report. *detectors* narrows the roster, modelling a detector
+    that wasn't benchmarked that night.
+
+    *stale* adds a ``(detector, last_run)`` group shaped the way the engine
+    carries one that missed the night: its own older run date, every verdict
+    stripped, only the missing-run failure left (see
+    ``k4bench.regression.report_builder._finalize_report``)."""
     groups = []
     for det, f in (("CLD_o2_v08", 1.0), ("IDEA_o1_v03", 1.4), ("SiD", 0.7)):
+        if detectors is not None and det not in detectors:
+            continue
         groups.append(RunGroupReport(
             detector=det, platform="PLAT", sample="single_e_10GeV",
             k4h_release=f"key4hep-{night}", run_date=night, run_id=night,
@@ -58,6 +72,14 @@ def _report(night: str, *, scale: float = 1.0, reliable: bool | None = True) -> 
                 _verdict(det, "mean_time_s", 0.6 * f * scale),
                 _verdict(det, "mean_rss_mb", 1200.0 * f),
             ],
+        ))
+    if stale is not None:
+        det, last_run = stale
+        groups.append(RunGroupReport(
+            detector=det, platform="PLAT", sample="single_e_10GeV",
+            k4h_release=f"key4hep-{last_run}", run_date=last_run, run_id=last_run,
+            verdicts=[],
+            job_failures=[f"no run uploaded for {night} (latest is {last_run})"],
         ))
     return to_json(NightlyReport(generated_at=f"{night}T06:00:00+00:00", groups=groups))
 
@@ -134,7 +156,8 @@ def test_landscape_view_renders_its_own_figure():
     assert scale.value == "Log"
     assert not at.pills  # flag pills belong to the trends view
     captions = "\n".join(str(c.value) for c in at.caption)
-    assert "Latest night: **2026-07-11**" in captions
+    # Every detector ran on the newest tag, so one tag covers the whole chart.
+    assert "Nightly tag: **2026-07-11**" in captions
 
 
 def test_unreliable_night_warned_and_excludable():
@@ -246,8 +269,9 @@ def test_status_view_renders_banner_and_roster():
     assert not at.expander
     roster = at.dataframe[0].value
     assert sorted(roster["Detector"]) == ["CLD_o2_v08", "IDEA_o1_v03", "SiD"]
-    # All quiet → no flagged metric to preview.
-    assert not at.selectbox
+    # All quiet → no flagged metric to preview (the night picker is the view's
+    # only selectbox).
+    assert [s.key for s in at.selectbox] == ["det_ov_report_night"]
     assert not at.get("plotly_chart")
 
 
@@ -322,6 +346,309 @@ def test_status_preview_redefaults_when_the_worst_flag_context_changes():
 
     assert not at.exception, at.exception
     assert at.selectbox(key="det_ov_flag_trend").value.detector == "IDEA_o1_v03"
+
+
+def _two_sample_report(night: str, **kw) -> dict:
+    """The night's report duplicated into a second sample, so both scopes offer
+    the very same report nights — the case where a stale selection stays a
+    *valid* option after a scope change, and so survives unless it is actively
+    cleared."""
+    rep = _report(night, **kw)
+    other = copy.deepcopy(rep)
+    for g in other["groups"]:
+        g["sample"] = "single_mu_10GeV"
+        for v in g["verdicts"]:
+            v["sample"] = "single_mu_10GeV"
+    rep["groups"].extend(other["groups"])
+    return rep
+
+
+def _status_sample_app(dashboard_dir, dates, reports, window) -> None:
+    """Render the tab under a sample chosen through persistent session state,
+    so a sidebar scope change can be driven across reruns."""
+    import sys as _sys
+    if dashboard_dir not in _sys.path:
+        _sys.path.insert(0, dashboard_dir)
+
+    import streamlit as _st
+    from tabs import detectors_overview as ov
+
+    ov._cached_list_report_dates = lambda url: dates
+    ov._cached_fetch_reports = lambda url, nights: {
+        n: reports[n] for n in nights if n in reports
+    }
+    ov.render("https://example.invalid", "PLAT",
+              _st.session_state.get("_sample", "single_e_10GeV"), window)
+
+
+def test_status_night_picker_redefaults_when_the_sample_changes():
+    # Both samples carry the same nights, so an old selection stays a valid
+    # option across the scope change. It must still be dropped: the picker
+    # writes its night to ?report=, and clearing only the widget state would let
+    # that untouched URL parameter seed the old night straight back in.
+    reports = {n: _two_sample_report(n) for n in DATES}
+    at = AppTest.from_function(
+        _status_sample_app, args=(str(_DASHBOARD_DIR), DATES, reports, _WINDOW),
+        default_timeout=30,
+    ).run()
+    at = _status_view(at)
+    at.selectbox(key="det_ov_report_night").set_value("2026-07-09").run()
+    assert at.query_params["report"] == ["2026-07-09"]
+
+    at.session_state["_sample"] = "single_mu_10GeV"
+    at.run()
+
+    assert not at.exception, at.exception
+    assert at.selectbox(key="det_ov_report_night").value == "2026-07-11"
+    assert at.query_params["report"] == ["2026-07-11"]
+
+
+#: A trend window ending before the latest report — which is fetched anyway, so
+#: the Regression Status picker can open on it.
+_SHORT_WINDOW = (date(2026, 7, 9), date(2026, 7, 10))
+
+
+def _all_reliable_reports() -> dict:
+    """The fixture nights with every run reliable, so what the flag trend plots
+    is decided by the window alone and not by the exclusion toggle."""
+    return {
+        "2026-07-11": _report("2026-07-11"),
+        "2026-07-10": _report("2026-07-10", scale=1.05),
+        "2026-07-09": _report("2026-07-09", scale=1.1),
+    }
+
+
+def test_flag_trend_stays_inside_the_window_on_a_historical_night():
+    # Reading a night inside the window must not pull the much later report into
+    # the chart beside the selected verdict's baseline band.
+    reports = _all_reliable_reports()
+    reports["2026-07-09"] = _with_confirmed_flag(reports["2026-07-09"])
+    at = AppTest.from_function(
+        _app, args=(str(_DASHBOARD_DIR), DATES, reports, _SHORT_WINDOW),
+        default_timeout=30,
+    ).run()
+    at = _status_view(at)
+    at.selectbox(key="det_ov_report_night").set_value("2026-07-09").run()
+    assert not at.exception, at.exception
+    assert _flag_trend_nights(at) == ["2026-07-09", "2026-07-10"]
+
+
+def test_flag_trend_keeps_a_selected_night_outside_the_window():
+    # The flip side: the picker's default night lies beyond a window that ends
+    # earlier, and its own point must still be on the chart.
+    reports = _all_reliable_reports()
+    reports["2026-07-11"] = _with_confirmed_flag(reports["2026-07-11"])
+    at = AppTest.from_function(
+        _app, args=(str(_DASHBOARD_DIR), DATES, reports, _SHORT_WINDOW),
+        default_timeout=30,
+    ).run()
+    at = _status_view(at)
+    assert at.selectbox(key="det_ov_report_night").value == "2026-07-11"
+    assert _flag_trend_nights(at) == ["2026-07-09", "2026-07-10", "2026-07-11"]
+
+
+def _flag_trend_nights(at: AppTest) -> list[str]:
+    """The nightly-tag dates plotted by the flagged-metric trend chart, read
+    off the serialized figure (``.value`` wants a chart-selection state the
+    trend chart has none of)."""
+    spec = json.loads(at.get("plotly_chart")[0].proto.spec)
+    return sorted({str(x)[:10] for x in spec["data"][0]["x"]})
+
+
+def _older_flagged_reports() -> dict:
+    """The fixture nights with the *oldest* one carrying the confirmed flag —
+    so defaulting to the newest night and picking another are distinguishable."""
+    reports = dict(REPORTS)
+    reports["2026-07-09"] = _with_confirmed_flag(reports["2026-07-09"])
+    return reports
+
+
+def test_status_night_picker_offers_every_loaded_night_newest_first():
+    at = AppTest.from_function(
+        _app, args=(str(_DASHBOARD_DIR), DATES, _older_flagged_reports(), _WINDOW),
+        default_timeout=30,
+    ).run()
+    at = _status_view(at)
+    picker = at.selectbox(key="det_ov_report_night")
+    # Newest first, each labelled with that night's worst cross-detector state.
+    assert picker.options == ["✅ 2026-07-11", "✅ 2026-07-10", "🔴 2026-07-09"]
+    assert picker.value == "2026-07-11"          # defaults to the newest
+    assert at.query_params["report"] == ["2026-07-11"]
+    assert {m.label: m.value for m in at.metric}["🔴 Regressed"] == "0"
+
+
+def test_status_night_picker_switches_the_verdicts():
+    at = AppTest.from_function(
+        _app, args=(str(_DASHBOARD_DIR), DATES, _older_flagged_reports(), _WINDOW),
+        default_timeout=30,
+    ).run()
+    at = _status_view(at)
+    at.selectbox(key="det_ov_report_night").set_value("2026-07-09").run()
+    assert not at.exception, at.exception
+    by_label = {m.label: m.value for m in at.metric}
+    assert by_label["🔴 Regressed"] == "1"
+    roster = at.dataframe[0].value
+    assert roster.iloc[0]["Detector"] == "CLD_o2_v08"
+    # The roster's deep links and the URL both pin the night on screen.
+    assert "report=2026-07-09" in roster.iloc[0]["Inspect"]
+    assert at.query_params["report"] == ["2026-07-09"]
+    captions = "\n".join(str(c.value) for c in at.caption)
+    assert "Historical view · report night **2026-07-09**" in captions
+
+
+def test_status_night_picker_honours_a_report_deep_link():
+    at = AppTest.from_function(
+        _app, args=(str(_DASHBOARD_DIR), DATES, _older_flagged_reports(), _WINDOW),
+        default_timeout=30,
+    )
+    at.query_params["report"] = "2026-07-09"
+    at.run()
+    at = _status_view(at)
+    assert at.selectbox(key="det_ov_report_night").value == "2026-07-09"
+    assert {m.label: m.value for m in at.metric}["🔴 Regressed"] == "1"
+
+
+def test_landscape_ignores_the_selected_report_night():
+    # The landscape follows the runs, not the report picker: reading an older
+    # night's verdicts leaves the snapshot on the newest nightly tag.
+    at = AppTest.from_function(
+        _app, args=(str(_DASHBOARD_DIR), DATES, _older_flagged_reports(), _WINDOW),
+        default_timeout=30,
+    ).run()
+    at = _status_view(at)
+    at.selectbox(key="det_ov_report_night").set_value("2026-07-09").run()
+    at.radio(key="det_ov_view_mode").set_value("Performance Landscape").run()
+    assert not at.exception, at.exception
+    captions = "\n".join(str(c.value) for c in at.caption)
+    assert "Nightly tag: **2026-07-11**" in captions
+
+
+def test_landscape_falls_back_to_a_detectors_last_run():
+    # SiD wasn't benchmarked on the newest night: it keeps its last measured
+    # point (named with its own tag) instead of dropping off the chart.
+    reports = {
+        "2026-07-11": _report("2026-07-11", detectors=("CLD_o2_v08", "IDEA_o1_v03")),
+        "2026-07-10": _report("2026-07-10", scale=1.05),
+        "2026-07-09": _report("2026-07-09", scale=1.1),
+    }
+    at = AppTest.from_function(
+        _app, args=(str(_DASHBOARD_DIR), DATES, reports, _WINDOW), default_timeout=30,
+    ).run()
+    at.radio(key="det_ov_view_mode").set_value("Performance Landscape").run()
+    assert not at.exception, at.exception
+    captions = "\n".join(str(c.value) for c in at.caption)
+    assert "Newest nightly tag: **2026-07-11**" in captions
+    assert "SiD (2026-07-10)" in captions
+    assert "Not benchmarked" not in captions
+
+
+def test_landscape_reaches_a_run_between_the_window_and_the_latest_report():
+    # SiD last ran on 07-10 — after the trend window ends (07-09) and before the
+    # latest report (07-11), which carries SiD only as a stale group with its
+    # verdicts stripped. Neither the window's reports nor the latest one holds
+    # that measurement, so the tab has to fetch 07-10 as well; without it the
+    # landscape would quietly show SiD at the window's end instead.
+    dates = ["2026-07-11", "2026-07-10", "2026-07-09", "2026-07-08"]
+    reports = {
+        "2026-07-11": _report("2026-07-11", detectors=("CLD_o2_v08", "IDEA_o1_v03"),
+                              stale=("SiD", "2026-07-10")),
+        "2026-07-10": _report("2026-07-10", scale=1.05),
+        "2026-07-09": _report("2026-07-09", scale=1.1),
+        "2026-07-08": _report("2026-07-08", scale=1.15),
+    }
+    at = AppTest.from_function(
+        _app, args=(str(_DASHBOARD_DIR), dates, reports,
+                    (date(2026, 7, 8), date(2026, 7, 9))),
+        default_timeout=30,
+    ).run()
+    assert not at.exception, at.exception
+    at.radio(key="det_ov_view_mode").set_value("Performance Landscape").run()
+    assert not at.exception, at.exception
+    captions = "\n".join(str(c.value) for c in at.caption)
+    assert "Newest nightly tag: **2026-07-11**" in captions
+    assert "SiD (2026-07-10)" in captions
+    assert "Not benchmarked" not in captions
+
+
+def _report_cross_midnight(night: str, det: str, ran_on: str) -> dict:
+    """*night*'s report where *det*'s job started before midnight: dated
+    *ran_on*, but part of this batch, so it keeps its verdicts and its
+    reliability — here a contended host, whose raw values the report still
+    records (unjudged) for display."""
+    rep = _report(night, detectors=tuple(
+        d for d in ("CLD_o2_v08", "IDEA_o1_v03", "SiD") if d != det
+    ))
+    lagging = _report(ran_on, detectors=(det,), reliable=False)["groups"][0]
+    lagging["k4h_release"] = f"key4hep-{night}"
+    for v in lagging["verdicts"]:
+        v["severity"] = "UNKNOWN"
+        v["reason"] = "unreliable host — value recorded but not judged"
+    lagging["notes"] = [
+        f"run is dated {ran_on}, this report {night} — same CI run as tonight's "
+        "other jobs, and a job is dated when it starts, so this batch crossed "
+        "midnight"
+    ]
+    rep["groups"].append(lagging)
+    return rep
+
+
+def test_cross_midnight_unreliable_run_is_warned_and_excludable():
+    # SiD's job started before midnight: dated 07-10 inside the 07-11 report,
+    # same batch, contended host. Its raw values are kept for display, so the
+    # exclusion has to be able to reach them — keyed on the report night rather
+    # than the run's own date, it never could, and the run stayed on the
+    # landscape with the toggle on and nothing said about it.
+    reports = dict(REPORTS)
+    reports["2026-07-11"] = _report_cross_midnight("2026-07-11", "SiD", "2026-07-10")
+    at = AppTest.from_function(
+        _app, args=(str(_DASHBOARD_DIR), DATES, reports, _WINDOW),
+        default_timeout=30,
+    ).run()
+    assert not at.exception, at.exception
+
+    warnings = "\n".join(str(w.value) for w in at.warning)
+    assert "2026-07-11" in warnings          # the tag the reader sees on the axis
+    assert at.toggle(key="det_ov_exclude_unreliable").value is True
+
+    at.radio(key="det_ov_view_mode").set_value("Performance Landscape").run()
+    assert not at.exception, at.exception
+    captions = "\n".join(str(c.value) for c in at.caption)
+    # SiD falls back to its last reliable run rather than being plotted from
+    # the contended one.
+    assert "SiD (2026-07-09)" in captions
+
+    # Toggle off and the contended run is back, on the newest tag.
+    at.toggle(key="det_ov_exclude_unreliable").set_value(False).run()
+    assert not at.exception, at.exception
+    captions = "\n".join(str(c.value) for c in at.caption)
+    assert "Nightly tag: **2026-07-11**" in captions
+
+
+def test_unreliable_run_outside_the_window_is_still_warned_and_excludable():
+    # The landscape reads the newest run it can find, which sits outside the
+    # sidebar window whenever the range ends before the latest report. Scoping
+    # the filter to the window would plot that run with no warning beside it and
+    # no toggle to drop it — the one state the filter exists to prevent.
+    reports = {
+        "2026-07-11": _report("2026-07-11", reliable=False),
+        "2026-07-10": _report("2026-07-10", scale=1.05),
+        "2026-07-09": _report("2026-07-09", scale=1.1),
+    }
+    at = AppTest.from_function(
+        _app, args=(str(_DASHBOARD_DIR), DATES, reports,
+                    (date(2026, 7, 9), date(2026, 7, 10))),
+        default_timeout=30,
+    ).run()
+    assert not at.exception, at.exception
+    warnings = "\n".join(str(w.value) for w in at.warning)
+    assert "3 unreliable runs detected" in warnings
+    assert "2026-07-11" in warnings
+    assert at.toggle(key="det_ov_exclude_unreliable").value is True
+    # …and the landscape falls back to each detector's last reliable run.
+    at.radio(key="det_ov_view_mode").set_value("Performance Landscape").run()
+    assert not at.exception, at.exception
+    captions = "\n".join(str(c.value) for c in at.caption)
+    assert "Nightly tag: **2026-07-10**" in captions
 
 
 def test_failed_night_status_view_shows_the_failure():

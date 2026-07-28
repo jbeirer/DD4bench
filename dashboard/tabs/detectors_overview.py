@@ -3,10 +3,12 @@
 Compares every detector's baseline benchmark for the sidebar-selected platform
 and sample, over the sidebar's shared Trend window, in three views:
 **Performance Trends** (the two selected metrics' history), **Performance
-Landscape** (time against memory, one point per detector on the latest night),
-and **Regression Status** (the latest night's verdict banner, the per-detector
-roster, and the worst flag's trend — the Regressions tab itself is scoped to
-one detector, so this is where the cross-detector regression picture lives).
+Landscape** (time against memory, one point per detector at its own most recent
+run — independent of which report night is open), and **Regression Status**
+(one report night's verdict banner, the per-detector roster, and the worst
+flag's trend — the Regressions tab itself is scoped to one detector, so this is
+where the cross-detector regression picture lives; the night is selectable and
+defaults to the newest).
 The data comes from the precomputed ``_reports/{date}/report.json`` files on
 EOS, whose verdicts carry the raw nightly value of every run/event metric for
 **all** detectors — one small cached JSON fetch per night, no per-detector run
@@ -15,6 +17,7 @@ downloads.
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 from datetime import date
@@ -40,7 +43,7 @@ from tabs._regression_flags import (
     render_flag_pills,
 )
 from tabs._regression_trend import render_metric_picker
-from ui_chrome import seed_query_param
+from ui_chrome import _drop_stale_selection, seed_query_param
 from ui_utils import (
     _DASHES,
     _METRIC_LABELS,
@@ -53,6 +56,8 @@ from ui_utils import (
     _reset_widget_on_scope,
     _to_rgba,
 )
+
+_log = logging.getLogger(__name__)
 
 #: The one config compared across detectors — the unpatched full-detector run
 #: every sweep starts with (``baseline_all``, see ``k4bench.benchmark.ddsim``).
@@ -80,7 +85,7 @@ _BASELINE_FILL = "rgba(31,119,180,0.08)"
 
 _FRAME_COLUMNS = [
     "detector", "platform", "sample", "label", "metric", "value", "severity",
-    "k4h_release", "reliable",
+    "k4h_release", "run_date", "reliable",
 ]
 
 #: Trailing version tokens of a detector directory name (``_o1_v03``, ``_v02``)
@@ -152,6 +157,12 @@ def report_metrics_frame(report: NightlyReport) -> pd.DataFrame:
     (``returncode`` failures, ``cpu_efficiency``), and missing/non-finite
     values. ``reliable`` is the group's per-night host-reliability tri-state
     (``None`` on reports predating the field).
+
+    ``run_date`` is the night the group's job actually ran, which is not always
+    the night of the report carrying it: a batch that starts near midnight is
+    dated a day earlier and still reported as tonight's. Carrying it is what
+    lets the reliability filter address these rows at all — keyed on the report
+    instead, they would never match the group's own ``reliable`` verdict.
     """
     rows = [
         {
@@ -163,6 +174,7 @@ def report_metrics_frame(report: NightlyReport) -> pd.DataFrame:
             "value":       float(v.value),
             "severity":    v.severity.value,
             "k4h_release": g.k4h_release,
+            "run_date":    g.run_date,
             "reliable":    g.reliable,
         }
         for g in report.groups
@@ -182,9 +194,15 @@ def report_reliability_frame(report: NightlyReport) -> pd.DataFrame:
     unreliable night is deliberately *not judged*, so it has **zero** verdict
     rows and would vanish entirely from :func:`report_metrics_frame`. Extracting
     it per-group instead is what lets the unreliable-run filter see a failed
-    night at all (columns: ``detector, platform, sample, run_date, reliable``).
-    ``run_date`` lets callers keep only groups whose run actually happened that
-    night, dropping stale carried-forward groups.
+    night at all (columns: ``detector, platform, sample, run_date, k4h_release,
+    missing_run, reliable``).
+
+    ``run_date`` is the night the job actually ran — a group dated before the
+    report night is normal for a batch that crossed midnight, and its
+    reliability describes that run. ``missing_run`` is what separates those from
+    the carried-forward placeholders for a run that never arrived (see
+    :attr:`~k4bench.regression.models.RunGroupReport.missing_run`), which
+    callers drop so the warning counts real runs.
     """
     rows = [
         {
@@ -193,37 +211,63 @@ def report_reliability_frame(report: NightlyReport) -> pd.DataFrame:
             "sample":      g.sample,
             "run_date":    g.run_date,
             "k4h_release": g.k4h_release,
+            "missing_run": g.missing_run,
             "reliable":    g.reliable,
         }
         for g in report.groups
     ]
     return pd.DataFrame(
         rows,
-        columns=["detector", "platform", "sample", "run_date", "k4h_release", "reliable"],
+        columns=[
+            "detector", "platform", "sample", "run_date", "k4h_release",
+            "missing_run", "reliable",
+        ],
     )
 
 
-def scoped_snapshot(
-    df: pd.DataFrame, platform: str, sample: str, label: str
-) -> tuple[pd.DataFrame, list[str]]:
-    """Pivot the scope's rows to one wide row per detector (columns = metrics).
+def snapshot_runs(rows: pd.DataFrame) -> pd.DataFrame:
+    """The :func:`history_rows` rows of the one run each detector's landscape
+    point comes from: its newest nightly tag, and within that tag the newest
+    run night.
 
-    Second return: detectors present in *df* but not benchmarked with this
-    (platform, sample, label) combo, so the caller can name what's excluded.
+    Picking the run *before* the metrics are pivoted into a point is what makes
+    the landscape's one-run invariant hold. The newest *tag* alone is not
+    enough: a tag benchmarked twice can have a rerun that re-measured only some
+    metrics, and taking each metric's newest value independently — which is
+    what :func:`collapse_history` does, correctly, for the trend lines — would
+    then read a point's two coordinates off two different runs.
     """
-    sub = df[
-        (df["platform"] == platform)
-        & (df["sample"] == sample)
-        & (df["label"] == label)
-    ]
-    if sub.empty:
-        wide = pd.DataFrame()
-    else:
-        wide = sub.pivot_table(
-            index="detector", columns="metric", values="value", aggfunc="first"
+    if rows.empty:
+        return rows
+    chosen = (
+        rows.sort_values(["night", "run_night"])
+        .drop_duplicates("detector", keep="last")
+        .set_index("detector")[["night", "run_night"]]
+    )
+    return rows[[
+        (night, run_night) == (chosen.at[d, "night"], chosen.at[d, "run_night"])
+        for d, night, run_night in zip(
+            rows["detector"], rows["night"], rows["run_night"]
         )
-    excluded = sorted(set(df["detector"]) - set(wide.index))
-    return wide, excluded
+    ]]
+
+
+def latest_snapshot(rows: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, str]]:
+    """Each detector's most recent measurement as one wide row (columns =
+    metrics), plus ``{detector: nightly tag}`` naming the run behind each row.
+
+    Built from :func:`history_rows` via :func:`snapshot_runs` — the *uncollapsed*
+    rows, so the snapshot follows the *runs*, not whichever report night is open,
+    and a detector that missed the newest night keeps its last measured point
+    (labelled with its own tag) instead of dropping off the chart.
+    """
+    if rows.empty:
+        return pd.DataFrame(), {}
+    newest = snapshot_runs(rows)
+    wide = newest.pivot_table(
+        index="detector", columns="metric", values="value", aggfunc="first"
+    )
+    return wide, dict(zip(newest["detector"], newest["night"]))
 
 
 def scatter_points(wide: pd.DataFrame, x_metric: str, y_metric: str) -> pd.DataFrame:
@@ -268,9 +312,11 @@ def history_rows(
     rerun of a tag without dropping the tag.
 
     Not plottable on its own — pass it through :func:`collapse_history` to get
-    one point per tag, dropping unwanted runs in between. There is deliberately
-    no helper that composes the two directly: every historical view here filters,
-    so a one-call shortcut would only ever be the wrong one to reach for.
+    one point per tag, dropping unwanted runs in between, or through
+    :func:`snapshot_runs` for the landscape's one run per detector. There is
+    deliberately no helper that composes the two directly: every historical view
+    here filters, so a one-call shortcut would only ever be the wrong one to
+    reach for.
     """
     parts = []
     for report_night, frame in night_frames:
@@ -282,7 +328,16 @@ def history_rows(
         if sub.empty:
             continue
         part = sub[_HIST_COLS].copy()
-        part["run_night"] = report_night
+        # The run's own date, not the report's: a batch that starts near
+        # midnight is dated a day earlier and still reported as tonight's, and
+        # keying these rows on the report would put them out of reach of the
+        # reliability filter, which knows that run by the date it ran. Falls
+        # back to the report night only for a frame built before the column
+        # existed.
+        part["run_night"] = (
+            sub["run_date"].fillna(report_night)
+            if "run_date" in sub.columns else report_night
+        )
         parts.append(part)
     if not parts:
         return pd.DataFrame(columns=["night", "run_night", *_HIST_COLS])
@@ -337,11 +392,20 @@ def reliability_history(
     ``night, run_night, detector, reliable``.
 
     Takes :func:`report_reliability_frame` outputs (one per report night) and
-    keeps only groups whose run actually happened that night
-    (``run_date == report_night``), dropping stale carried-forward groups so the
-    warning counts real runs. ``night`` is the **Key4hep nightly tag** date, as
-    in :func:`history_rows`, and ``run_night`` the report night — one row per
-    run, *not* collapsed to the tag.
+    keeps every group that describes a real run, dropping only the
+    carried-forward placeholders for a run that never arrived
+    (``missing_run``) so the warning counts runs rather than absences. ``night``
+    is the **Key4hep nightly tag** date, as in :func:`history_rows`, and
+    ``run_night`` the date the run itself carries — one row per run, *not*
+    collapsed to the tag.
+
+    Keying on the run's own date rather than the report's is what keeps this
+    frame addressing the same runs :func:`history_rows` does. A batch that
+    starts near midnight is dated a day earlier and still reported as tonight's,
+    so a report-night key would silently exclude those runs here while their
+    values stayed in the history — leaving a contended run plotted with the
+    exclusion on and nothing said about it. A run that appears in two reports
+    (its own night's and the next one's) lands on one key and dedupes.
 
     Reliability is a property of the run, so same-tag reruns must stay apart
     here: collapsing them would make one contended rerun condemn its tag's
@@ -349,16 +413,16 @@ def reliability_history(
     measurement it is dropping.
     """
     parts = []
-    for report_night, frame in night_frames:
+    for _report_night, frame in night_frames:
         sub = frame[
             (frame["platform"] == platform)
             & (frame["sample"] == sample)
-            & (frame["run_date"] == report_night)
+            & ~frame["missing_run"].fillna(False).astype(bool)
         ]
         if sub.empty:
             continue
         part = sub[["detector", "k4h_release", "reliable"]].copy()
-        part["run_night"] = report_night
+        part["run_night"] = sub["run_date"]
         parts.append(part)
     if not parts:
         return pd.DataFrame(columns=["night", "run_night", "detector", "reliable"])
@@ -366,7 +430,11 @@ def reliability_history(
     rel["night"] = [
         _tag_date(k, rn) for k, rn in zip(rel["k4h_release"], rel["run_night"])
     ]
-    return rel[["night", "run_night", "detector", "reliable"]].reset_index(drop=True)
+    return (
+        rel[["night", "run_night", "detector", "reliable"]]
+        .drop_duplicates()
+        .reset_index(drop=True)
+    )
 
 
 def drop_unreliable_runs(
@@ -639,11 +707,17 @@ def _landscape_figure(
     detectors: list[str],
     alpha: float = 0.75,
     log: bool = True,
+    as_of: dict[str, str] | None = None,
 ) -> go.Figure | None:
     """The performance landscape: the selected time metric against the
     selected memory metric, one point per detector — closer to the origin is
     faster *and* leaner. One legend below, the same house pattern as every
-    other trend view."""
+    other trend view.
+
+    *as_of* names the nightly tag behind each point. Points need not share one
+    (each detector is shown at its own most recent run, see
+    :func:`latest_snapshot`), so the tag rides the hover where the reader is
+    already looking at the point it belongs to."""
     pts = scatter_points(wide, time_metric, mem_metric)
     if pts.empty:
         return None
@@ -652,6 +726,7 @@ def _landscape_figure(
     plotted = [d for d in detectors if d in pts.index]
     for detector in plotted:
         color, _, symbol = styles[detector]
+        tag = (as_of or {}).get(detector)
         fig.add_trace(
             go.Scatter(
                 x=[pts.loc[detector, time_metric]],
@@ -664,7 +739,8 @@ def _landscape_figure(
                             line=dict(width=1.5, color=color)),
                 hovertemplate=(
                     f"<b>{detector}</b><br>"
-                    f"{_metric_title(time_metric)}: %{{x:.4g}}"
+                    + (f"Tag: {tag}<br>" if tag else "")
+                    + f"{_metric_title(time_metric)}: %{{x:.4g}}"
                     f"<br>{_metric_title(mem_metric)}: %{{y:.4g}}<extra></extra>"
                 ),
             ),
@@ -696,7 +772,7 @@ def _landscape_figure(
 # ── Streamlit render flow ──────────────────────────────────────────────────────
 
 def _render_regression_banner(groups: list[RunGroupReport], night: str) -> None:
-    """The latest night's cross-detector verdict at a glance, over the same
+    """The selected night's cross-detector verdict at a glance, over the same
     platform/sample scope as the rest of the tab — the summary the (now
     detector-scoped) Regressions tab no longer carries."""
     n_regr = sum(len(g.regressions) for g in groups)
@@ -733,7 +809,7 @@ def _render_regression_banner(groups: list[RunGroupReport], night: str) -> None:
 def _render_detector_status(
     groups: list[RunGroupReport], night: str, platform: str, sample: str
 ) -> None:
-    """Per-detector roster for the latest night — each row deep-links into
+    """Per-detector roster for the selected night — each row deep-links into
     the Regressions tab scoped to that detector and pinned to *night*."""
     rows = detector_status_rows(groups, platform, sample, night)
     if rows:
@@ -776,13 +852,13 @@ def _render_detector_status(
         )
 
 
-def _flag_choices(latest_groups: list[RunGroupReport]) -> list:
-    """The latest night's flagged verdicts that the report history can plot
+def _flag_choices(groups: list[RunGroupReport]) -> list:
+    """The selected night's flagged verdicts that the report history can plot
     (top-level rows of the compared metric set), worst first — the options of
     the Regression Status view's trend preview."""
     return sorted(
         (
-            v for g in latest_groups for v in g.verdicts
+            v for g in groups for v in g.verdicts
             if v.severity in (Severity.WATCH, Severity.CONFIRMED)
             and v.sub_detector is None and v.metric in _METRIC_ORDER
         ),
@@ -862,8 +938,28 @@ def _flag_trend_figure(series: pd.DataFrame, verdict) -> go.Figure:
     return fig
 
 
+def _flag_trend_frames(
+    night_frames: list[tuple[str, pd.DataFrame]],
+    window_nights: list[str],
+    night: str,
+) -> list[tuple[str, pd.DataFrame]]:
+    """The report nights the flagged-metric trend plots: the sidebar's trend
+    window, plus the selected night when it falls outside it.
+
+    The window is what the chart promises, and the verdict's baseline band
+    belongs beside the nights it was judged over. Handing the trend every
+    fetched night instead would drop the newest report into a historical view
+    — a point weeks past the window on screen, sitting next to an older
+    verdict's band. The selected night is kept regardless so its own point is
+    never missing, which also covers the default case of the newest report
+    lying beyond a window that ends earlier.
+    """
+    keep = {*window_nights, night}
+    return [(n, frame) for n, frame in night_frames if n in keep]
+
+
 def _render_flag_trend(
-    latest_groups: list[RunGroupReport],
+    groups: list[RunGroupReport],
     status_frames: list[tuple[str, pd.DataFrame]],
     platform: str,
     sample: str,
@@ -878,7 +974,7 @@ def _render_flag_trend(
     on the same widget key: a chart of raw nightly measurements has to honour the
     unreliable-run exclusion, and honouring it in one Overview sub-view but not
     another would make the tab's answer depend on which radio button is held."""
-    choices = _flag_choices(latest_groups)
+    choices = _flag_choices(groups)
     if not choices:
         return
     st.markdown("###### Flagged-metric trend")
@@ -912,32 +1008,202 @@ def _render_flag_trend(
     st.caption(f"**{v.reason}** — {v.detector} · {v.label}")
 
 
-def _render_status_view(
-    latest_groups: list[RunGroupReport],
-    night: str,
-    status_frames: list[tuple[str, pd.DataFrame]],
+#: Session key of the report-night picker. Shares ``?report=`` with the
+#: Regressions tab's own picker — one parameter meaning "the report night being
+#: read", so the roster's Inspect links, the nightly email's deep links and this
+#: view all speak the same URL.
+_NIGHT_KEY = "det_ov_report_night"
+
+
+def _select_report_night(
+    scoped_groups: dict[str, list[RunGroupReport]],
+    latest_night: str,
     platform: str,
     sample: str,
-    status_rel_hist: pd.DataFrame,
-) -> None:
-    """The Regression Status view: verdict banner, per-detector roster, and
-    the worst flag's trend — the cross-detector regression picture the
-    (detector-scoped) Regressions tab no longer carries.
+) -> str:
+    """The report night the status view describes — newest by default, with
+    every already-fetched night that covers the scope on offer.
 
-    Only the trend is filtered by *status_rel_hist*: the banner and roster report
-    what tonight's report *says*, including that a detector was too contended to
-    judge, and a filter that hid those rows would hide the very runs it excluded."""
-    if not latest_groups:
+    The options are the nights this tab has loaded anyway (the sidebar's trend
+    window plus the newest report), so picking one costs no download. The
+    picker re-defaults when the sidebar scope changes: two scopes can share the
+    same night *dates* while flagging their regression on different ones, so a
+    night carried over from the previous scope could open on a quiet report and
+    hide exactly the regression this view exists to surface. The reset drops
+    ``?report=`` along with the stored night — this picker writes its selection
+    back to the URL, so leaving the parameter behind would re-seed the old
+    night on the same run (see :func:`ui_utils._reset_widget_on_scope`).
+    """
+    nights = sorted(scoped_groups, reverse=True)
+    _reset_widget_on_scope(_NIGHT_KEY, (platform, sample), query_param="report")
+    _drop_stale_selection(_NIGHT_KEY, nights)   # night out of the window → re-default
+    seed_query_param(_NIGHT_KEY, "report", nights)
+    if _NIGHT_KEY not in st.session_state:
+        st.session_state[_NIGHT_KEY] = nights[0]
+    night = st.selectbox(
+        "Report night",
+        nights,
+        format_func=lambda n: f"{_detector_badge(scoped_groups[n])} {n}",
+        key=_NIGHT_KEY,
+        width=260,
+        help="Which night's report the verdicts below come from — the badge is "
+             "that night's worst state across the scoped detectors. Defaults "
+             "to the newest; the trend window sets how far back the picker "
+             "reaches. The figures' history and the landscape are unaffected.",
+    ) or nights[0]
+    st.query_params["report"] = night
+    if night != latest_night:
+        st.caption(f"Historical view · report night **{night}**")
+    return night
+
+
+def _render_status_view(
+    scoped_groups: dict[str, list[RunGroupReport]],
+    night_frames: list[tuple[str, pd.DataFrame]],
+    window_nights: list[str],
+    latest_night: str,
+    platform: str,
+    sample: str,
+    rel_hist: pd.DataFrame,
+) -> None:
+    """The Regression Status view: the report-night picker, that night's
+    verdict banner and per-detector roster, and its worst flag's trend — the
+    cross-detector regression picture the (detector-scoped) Regressions tab no
+    longer carries.
+
+    *night_frames* spans the nights the picker offers (the trend window plus
+    the newest report); *window_nights* names the window within them, which is
+    what the flag trend is drawn over (see :func:`_flag_trend_frames`).
+
+    Only the trend is filtered by *rel_hist*: the banner and roster report what
+    the selected night's report *says*, including that a detector was too
+    contended to judge, and a filter that hid those rows would hide the very
+    runs it excluded."""
+    if not scoped_groups:
         st.info(
             f"No detector has a run group for **{sample}** on **{platform}** "
-            f"in the {night} report."
+            f"in the reports in view (newest: {latest_night})."
         )
         return
-    _render_regression_banner(latest_groups, night)
-    _render_detector_status(latest_groups, night, platform, sample)
+    night = _select_report_night(scoped_groups, latest_night, platform, sample)
+    groups = scoped_groups[night]
+    _render_regression_banner(groups, night)
+    _render_detector_status(groups, night, platform, sample)
     _render_flag_trend(
-        latest_groups, status_frames, platform, sample, status_rel_hist,
+        groups, _flag_trend_frames(night_frames, window_nights, night),
+        platform, sample, rel_hist,
     )
+
+
+def stale_run_nights(
+    report: NightlyReport, report_night: str, platform: str, sample: str
+) -> list[str]:
+    """The report nights holding the last real run of each scoped detector that
+    missed *report_night*, oldest first.
+
+    A detector that misses a night is not dropped from that night's report: it
+    is carried as a *stale* group, keeping its own older ``run_date`` but
+    stripped of every verdict, leaving only the missing-run failure (see
+    ``k4bench.regression.report_builder._finalize_report``). Its last actual
+    measurement therefore lives in the report of *that* night — which the
+    sidebar's trend window need not cover. Fetching those nights as well is
+    what lets the landscape show such a detector at its own most recent run
+    rather than at whatever older night the window happens to end on.
+
+    Selected on the missing-run marker, not on the dates: a group dated before
+    the report night is just as likely to be a job that started before midnight
+    and ran for this very report, and that one's measurements are already here
+    — chasing its date would only refetch a report we have the data from.
+    """
+    return sorted({
+        g.run_date for g in report.groups
+        if g.platform == platform and g.sample == sample
+        and g.run_date and g.run_date != report_night and g.missing_run
+    })
+
+
+def _load_reports(data_url: str, nights: tuple[str, ...]) -> dict[str, NightlyReport]:
+    """Fetch and parse each night **independently**, keyed by night.
+
+    Nights that fail to fetch or parse are simply absent. Parsing per night
+    rather than in one comprehension keeps a single half-uploaded or
+    schema-drifted historical report from blanking the whole tab — the same
+    containment the Regressions tab applies to its own report history."""
+    raws = _cached_fetch_reports(data_url, nights)
+    reports: dict[str, NightlyReport] = {}
+    for n in nights:
+        raw = raws.get(n)
+        if not raw:
+            continue
+        try:
+            reports[n] = from_json(raw)
+        except (KeyError, TypeError, ValueError, AttributeError) as exc:
+            _log.warning("overview: skipping malformed report for %s — %s", n, exc)
+    return reports
+
+
+def unreliable_pairs(rel_hist: pd.DataFrame) -> set[tuple[str, str]]:
+    """The ``(run_night, detector)`` runs that failed the host-reliability
+    check. ``None`` (no evidence) never counts as unreliable.
+
+    Addresses runs, not tags, so :func:`drop_unreliable_runs` can drop a
+    contended run without taking a reliable rerun of the same nightly with it.
+    """
+    if rel_hist.empty:
+        return set()
+    flagged = (
+        rel_hist.loc[rel_hist["reliable"].eq(False), ["run_night", "detector"]]
+        .drop_duplicates()
+    )
+    return set(map(tuple, flagged.itertuples(index=False, name=None)))
+
+
+def _landscape_notes(
+    wide: pd.DataFrame,
+    as_of: dict[str, str],
+    time_metric: str,
+    mem_metric: str,
+    scoped_detectors: list[str],
+    excluded: list[str],
+) -> list[str]:
+    """The caption under the landscape: which run each point comes from, then
+    every scoped detector the chart cannot show and why.
+
+    Points can date from different nights — each detector is shown at its own
+    most recent run — so a tag they all share is stated once, and otherwise the
+    stragglers are named with theirs rather than the chart implying one common
+    night.
+    """
+    plotted = list(scatter_points(wide, time_metric, mem_metric).index)
+    tags = {as_of[d] for d in plotted if d in as_of}
+    notes: list[str] = []
+    if len(tags) == 1:
+        notes.append(f"Nightly tag: **{tags.pop()}**.")
+    elif tags:
+        newest = max(tags)
+        stale = sorted(
+            (d for d in plotted if as_of.get(d, newest) != newest),
+            key=lambda d: as_of[d],
+        )
+        notes.append(
+            f"Newest nightly tag: **{newest}** · each detector at its own "
+            "most recent run — "
+            + ", ".join(f"{d} ({as_of[d]})" for d in stale) + "."
+        )
+    dropped = sorted(set(wide.index) - set(plotted))
+    if dropped:
+        notes.append(f"Missing a landscape coordinate: {', '.join(dropped)}.")
+    unreliable = sorted(set(scoped_detectors) - set(wide.index))
+    if unreliable:
+        notes.append(
+            "No reliable run in this window, excluded from the landscape: "
+            f"{', '.join(unreliable)}."
+        )
+    if excluded:
+        notes.append(
+            f"Not benchmarked with this sample/platform: {', '.join(excluded)}."
+        )
+    return notes
 
 
 def _render_reliability_filter(
@@ -961,14 +1227,12 @@ def _render_reliability_filter(
     dropped, and what the sentence says — while the dates listed are the nightly
     **tags** those runs carry, which is what the reader sees on the x-axis.
     """
-    flagged = rel_hist[rel_hist["reliable"].eq(False)] if not rel_hist.empty else rel_hist
-    if flagged.empty:
+    pairs = unreliable_pairs(rel_hist)
+    if not pairs:
         return set(), False
 
-    unique = flagged[["run_night", "detector"]].drop_duplicates()
-    pairs = set(map(tuple, unique.itertuples(index=False, name=None)))
     n = len(pairs)
-    dates = ", ".join(sorted(flagged["night"].unique()))
+    dates = ", ".join(sorted(rel_hist.loc[rel_hist["reliable"].eq(False), "night"].unique()))
     warn_col, toggle_col = st.columns([3, 1], vertical_alignment="center")
     with warn_col:
         st.warning(
@@ -996,7 +1260,11 @@ def render(
     shared Trend window (``None`` when the sidebar hasn't resolved one yet,
     e.g. a mid-edit custom range or no run dates for the selected detector) —
     in that case :func:`nights_in_window` falls back to the latest
-    :data:`_FALLBACK_NIGHTS`."""
+    :data:`_FALLBACK_NIGHTS`. The window sets which report nights are fetched,
+    and so how far back the Regression Status picker reaches; the landscape
+    reads whichever of them measured each detector last, plus the nights of any
+    detector whose last run predates the window's end (see
+    :func:`stale_run_nights`)."""
     dates = _cached_list_report_dates(data_url)
     if not dates:
         st.info(
@@ -1005,45 +1273,79 @@ def render(
         )
         return
 
-    # One parallel fetch for the whole window plus the latest night (the
-    # snapshot night is always the newest report, even outside the window).
-    night = max(dates)
+    # One parallel fetch for the whole window plus the latest night (which the
+    # Regression Status picker opens on, and which carries the newest
+    # measurement the landscape can show, even outside the window).
+    latest_night = max(dates)
     hist_nights = nights_in_window(dates, window)
-    fetch_nights = tuple(dict.fromkeys([night, *hist_nights]))
-    raw_reports = _cached_fetch_reports(data_url, fetch_nights)
-    if night not in raw_reports:
-        st.warning(f"Could not load the latest report ({night}) from EOS.")
+    fetch_nights = tuple(dict.fromkeys([latest_night, *hist_nights]))
+    reports = _load_reports(data_url, fetch_nights)
+    if latest_night not in reports:
+        st.warning(f"Could not load the latest report ({latest_night}) from EOS.")
         return
-    reports = {n: from_json(r) for n, r in raw_reports.items()}
+
+    # A detector that missed the newest night is carried in that report as a
+    # stale group with its verdicts stripped, so its last real measurement sits
+    # in an older report the window need not reach. One follow-up fetch for
+    # those nights (bounded by the engine's missing-run grace period) keeps the
+    # landscape on each detector's own most recent run instead of silently
+    # showing it at the window's end — or not at all.
+    stragglers = tuple(
+        n for n in stale_run_nights(reports[latest_night], latest_night, platform, sample)
+        if n in dates and n not in reports
+    )
+    if stragglers:
+        reports.update(_load_reports(data_url, stragglers))
+    snap_nights = tuple(n for n in (*fetch_nights, *stragglers) if n in reports)
+
     frames = {n: report_metrics_frame(rep) for n, rep in reports.items()}
     # Per-group reliability, kept separately: an unreliable night is *not
     # judged*, so it has no metric verdict rows in ``frames`` at all — the only
     # place its ``reliable=False`` survives is here (see report_reliability_frame).
     rel_frames = {n: report_reliability_frame(rep) for n, rep in reports.items()}
 
-    df = frames[night]
-    wide, excluded = scoped_snapshot(df, platform, sample, _BASELINE_LABEL)
-    night_frames = [(n, frames[n]) for n in hist_nights if n in frames]
-    # Kept uncollapsed so the reliability filter inside the fragment can drop
-    # *runs* before the tag reduction runs (see collapse_history); ``hist`` is
-    # the unfiltered view the pre-filter decisions below are made on.
-    hist_rows = history_rows(night_frames, platform, sample, _BASELINE_LABEL)
+    # The trend history covers the sidebar's window; the snapshot spans every
+    # night fetched for it, so each detector's newest run is found whether or
+    # not it falls inside the window. Both are kept uncollapsed so the
+    # reliability filter inside the fragment can drop *runs* before the
+    # reduction — which differs between the two anyway: per metric for a trend
+    # line (collapse_history), per run for a landscape point (snapshot_runs).
+    window_frames = [(n, frames[n]) for n in hist_nights if n in frames]
+    hist_rows = history_rows(window_frames, platform, sample, _BASELINE_LABEL)
     hist = collapse_history(hist_rows)
+    status_frames = [(n, frames[n]) for n in fetch_nights if n in frames]
+    snap_frames = [(n, frames[n]) for n in snap_nights]
+    snap_rows = history_rows(snap_frames, platform, sample, _BASELINE_LABEL)
 
-    # The latest night's run groups for the scope — the Regression Status
-    # view's input. Kept even when there are no plottable values: a night
-    # whose configs all failed has report groups but an empty metric frame,
-    # and hiding the failures would be the worst miss.
-    latest_groups = [
-        g for g in reports[night].groups
-        if g.platform == platform and g.sample == sample
-    ]
-    # The flag trend plots across the window *and* the latest night (the flags
-    # shown come from the latest report, which can sit outside the window).
-    status_nights = list(dict.fromkeys([*hist_nights, night]))
-    status_frames = [(n, frames[n]) for n in status_nights if n in frames]
+    # Named before the reliability filter runs, so a detector dropped as
+    # unreliable is never reported as "not benchmarked" instead.
+    scoped_wide, _ = latest_snapshot(snap_rows)
+    scoped_detectors = sorted(scoped_wide.index)
+    excluded = sorted(
+        {d for _, f in snap_frames for d in f["detector"].unique()}
+        - set(scoped_detectors)
+    )
 
-    if wide.empty and hist.empty and not latest_groups:
+    # The window's nights plus the newest report — the Regression Status view's
+    # input and its picker's options. Nights fetched only to complete the
+    # landscape are deliberately left out: they are one detector's stragglers,
+    # not part of the range the reader chose. A night with no group for the scope
+    # is dropped rather than offered as a dead option; one with groups but no
+    # plottable values is kept, since a night whose configs all failed has
+    # report groups and an empty metric frame, and hiding the failures would be
+    # the worst miss.
+    scoped_groups = {}
+    for n in fetch_nights:
+        if n not in reports:
+            continue
+        groups = [
+            g for g in reports[n].groups
+            if g.platform == platform and g.sample == sample
+        ]
+        if groups:
+            scoped_groups[n] = groups
+
+    if scoped_wide.empty and hist.empty and not scoped_groups:
         st.info(
             f"No detector has {_BASELINE_LABEL} results for "
             f"**{sample}** on **{platform}** — pick another sample or "
@@ -1053,36 +1355,22 @@ def render(
 
     # One colour per detector family, dash/symbol per version — stable across
     # every panel.
-    detectors_all = sorted(set(wide.index) | set(hist["detector"].unique()))
+    detectors_all = sorted(set(scoped_detectors) | set(hist["detector"].unique()))
 
-    # ── Reliability inputs (built from the report *groups*, not the metric
-    # frame, so unreliable nights — which carry no verdict rows — still surface).
-    # The window-level frame feeds the exclude toggle inside the fragment below;
-    # the latest-night set marks unreliable detectors on the newest report
-    # (always the latest report, even outside the trend window). Both are derived
-    # from the pre-filter ``wide``/``hist`` so they don't shift with the toggle.
+    # ── Reliability input (built from the report *groups*, not the metric frame,
+    # so unreliable nights — which carry no verdict rows — still surface).
+    # Derived from the pre-filter frames, so it doesn't shift with the toggle.
+    #
+    # Spans every night the snapshot can read, not just the window: the
+    # landscape plots the newest run it can find, which is outside the window
+    # whenever the sidebar range ends before the latest report or a straggler.
+    # Scoping this to the window instead would leave such a run plotted with no
+    # warning beside it and no toggle to drop it — the one state this whole
+    # filter exists to prevent. Spanning them all is also what lets the
+    # Regression Status view share this one frame: it plots the selected night,
+    # which is just as free to sit outside the window.
     rel_hist = reliability_history(
-        [(n, rel_frames[n]) for n in hist_nights if n in rel_frames],
-        platform, sample,
-    )
-    # The Regression Status view's own filter input. Built over ``status_nights``
-    # rather than reused from ``rel_hist``, because that view plots one night
-    # ``rel_hist`` does not cover — the latest report, which sits outside the
-    # window whenever the window ends before it. Reusing ``rel_hist`` there would
-    # leave exactly that night's runs unfilterable.
-    status_rel_hist = reliability_history(
-        [(n, rel_frames[n]) for n in status_nights if n in rel_frames],
-        platform, sample,
-    )
-    latest_rel = rel_frames[night]
-    latest_rel = latest_rel[
-        (latest_rel["platform"] == platform)
-        & (latest_rel["sample"] == sample)
-        & (latest_rel["run_date"] == night)
-    ]
-    unreliable_latest = sorted(
-        set(latest_rel.loc[latest_rel["reliable"].eq(False), "detector"])
-        & set(wide.index)
+        [(n, rel_frames[n]) for n in snap_nights], platform, sample,
     )
 
     # Default styling — one colour per detector family, no user-facing
@@ -1101,9 +1389,9 @@ def render(
     # starve the /_stcore/health probe and bounce the pod (surfacing as a 503).
     @st.fragment
     def _views(
-        wide, hist_rows, rel_hist, unreliable_latest, detectors_all, styles,
-        night, night_frames, excluded, latest_groups, status_frames,
-        status_rel_hist,
+        hist_rows, snap_rows, rel_hist, detectors_all, styles,
+        latest_night, window_nights, status_frames, excluded, scoped_detectors,
+        scoped_groups,
     ):
         view = st.radio(
             "View", _VIEWS, horizontal=True, key="det_ov_view_mode",
@@ -1111,8 +1399,8 @@ def render(
         )
         if view == "Regression Status":
             _render_status_view(
-                latest_groups, night, status_frames, platform, sample,
-                status_rel_hist,
+                scoped_groups, status_frames, window_nights, latest_night,
+                platform, sample, rel_hist,
             )
             return
 
@@ -1174,18 +1462,23 @@ def render(
 
         # ── Reliability filter (same behaviour as every other historical view;
         # one shared key, so the toggle's state survives a view switch) ──
-        unreliable_pairs, exclude_unreliable = _render_reliability_filter(
+        unreliable, exclude_unreliable = _render_reliability_filter(
             rel_hist, key="det_ov_exclude_unreliable"
         )
         # Dropped before the tag reduction, never after: a flag belongs to the run
         # that earned it, so excluding that run has to take its marker with it —
-        # and must not take the marker of a reliable rerun of the same tag.
-        hist = collapse_history(
-            drop_unreliable_runs(hist_rows, unreliable_pairs)
-            if exclude_unreliable else hist_rows
-        )
-        if exclude_unreliable and unreliable_latest:
-            wide = wide.drop(index=unreliable_latest, errors="ignore")
+        # and must not take the marker of a reliable rerun of the same tag. One
+        # pair set for both frames, so the two views can never disagree about
+        # which runs are excluded.
+        #
+        # The snapshot is filtered *before* it is taken, so an unreliable newest
+        # run falls back to the detector's last reliable one rather than dropping
+        # it off the landscape entirely.
+        if exclude_unreliable:
+            hist_rows = drop_unreliable_runs(hist_rows, unreliable)
+            snap_rows = drop_unreliable_runs(snap_rows, unreliable)
+        hist = collapse_history(hist_rows)
+        wide, as_of = latest_snapshot(snap_rows)
 
         wide_disp, hist_disp = _to_display_units(wide, hist)
         if relative:
@@ -1200,49 +1493,37 @@ def render(
                 st.info(
                     "No values for the selected metrics in this history window."
                     + (" Every run was excluded as unreliable."
-                       if exclude_unreliable and unreliable_pairs else "")
+                       if exclude_unreliable and unreliable else "")
                 )
                 return
             st.plotly_chart(fig, width="stretch", key="det_ov_hist_chart")
             st.caption(
-                f"Latest night: **{night}** · trend window: "
-                f"**{night_frames[-1][0]}** → **{night_frames[0][0]}** "
-                f"({len(night_frames)} night{'s' if len(night_frames) != 1 else ''})."
-                if night_frames else f"Latest night: **{night}**."
+                f"Latest night: **{latest_night}** · trend window: "
+                f"**{window_nights[-1]}** → **{window_nights[0]}** "
+                f"({len(window_nights)} night{'s' if len(window_nights) != 1 else ''})."
+                if window_nights else f"Latest night: **{latest_night}**."
             )
             return
 
         # Performance Landscape
         fig = _landscape_figure(
             wide_disp, time_metric, mem_metric, styles, detectors_all, 0.75, log,
+            as_of,
         )
         if fig is None:
             st.info(
-                "No values for the selected metrics on the latest night."
-                + (" Every detector's latest run was excluded as unreliable."
-                   if exclude_unreliable and unreliable_latest else "")
+                "No values for the selected metrics in this window."
+                + (" Every run was excluded as unreliable."
+                   if exclude_unreliable and unreliable else "")
             )
             return
         st.plotly_chart(fig, width="stretch", key="det_ov_land_chart")
-        notes = [f"Latest night: **{night}**."]
-        dropped = sorted(
-            set(wide.index) - set(scatter_points(wide, time_metric, mem_metric).index)
-        )
-        if dropped:
-            notes.append(f"Missing a landscape coordinate: {', '.join(dropped)}.")
-        if exclude_unreliable and unreliable_latest:
-            notes.append(
-                "Unreliable latest run, excluded from the landscape: "
-                f"{', '.join(unreliable_latest)}."
-            )
-        if excluded:
-            notes.append(
-                f"Not benchmarked with this sample/platform: {', '.join(excluded)}."
-            )
-        st.caption(" ".join(notes))
+        st.caption(" ".join(_landscape_notes(
+            wide, as_of, time_metric, mem_metric, scoped_detectors, excluded,
+        )))
 
     _views(
-        wide, hist_rows, rel_hist, unreliable_latest, detectors_all, styles,
-        night, night_frames, excluded, latest_groups, status_frames,
-        status_rel_hist,
+        hist_rows, snap_rows, rel_hist, detectors_all, styles,
+        latest_night, [n for n, _ in window_frames], status_frames, excluded,
+        scoped_detectors, scoped_groups,
     )

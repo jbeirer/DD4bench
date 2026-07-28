@@ -58,6 +58,7 @@ from tabs._regression_trend import (
 )
 from tabs.stack_changes import _release, deep_link, packages_for_release
 from ui_chrome import _drop_stale_selection, seed_query_param
+from ui_utils import _reset_widget_on_scope
 
 _log = logging.getLogger(__name__)
 
@@ -397,12 +398,7 @@ def _forget_stale_scope(scope: tuple[str, ...]) -> None:
     stored night and the ``?report=`` we wrote for the old scope, so the new
     scope re-defaults. The incoming ``?report=`` on the first load (no prior
     scope recorded) is preserved, keeping deep links intact."""
-    scope_key = "regr_night_scope"
-    prev = st.session_state.get(scope_key)
-    st.session_state[scope_key] = scope
-    if prev is not None and prev != scope:
-        st.session_state.pop(_NIGHT_KEY, None)
-        st.query_params.pop("report", None)
+    _reset_widget_on_scope(_NIGHT_KEY, scope, query_param="report")
 
 
 def _select_night(
