@@ -81,11 +81,14 @@ Plots a metric over time. The x-axis is anchored on the **Key4hep release date**
 (falling back to the run date), so you see regressions aligned with releases.
 A sidebar **look-back window** (`Last 7 days`, `14` — the default — `30`, `90`,
 `6 months`, `All`, or a custom range) controls how much history is downloaded
-and shown. The window is anchored on the *latest available* nightly, not today,
+and shown. A preset counts back from the *latest available* nightly, not today,
 so it always shows data even if the nightly hasn't run recently. That anchor is
-deliberately **detector-independent** — it is the newest of the nightly report
-nights and the selected detector's own runs — so the same preset covers the same
-dates whichever detector the sidebar has selected. This matters most for the
+deliberately **detector-independent**: it is the newest nightly *report* night,
+which every detector shares, so the same preset covers the same dates whichever
+detector the sidebar has selected — including while a batch is still uploading
+and one detector's run is already newer than the last report. (The window's
+*end* does stretch to that run, so it stays visible in Run Trends; a window can
+therefore be a day or two longer than its label.) This matters most for the
 cross-detector Overview tab, which draws every detector over this one window: an
 anchor that followed the selected detector's last run would pull the window back
 whenever a lagging detector was picked, and detectors that had run more recently
@@ -373,11 +376,17 @@ along with the parameters only that view reads:
   on by default, each behind its own toggle. A *relative* toggle
   rescales each line to its first night = 100 %, making drift comparable
   across detectors of very different absolute cost. Any scoped detector the
-  chart has **no line for** is named in the caption with the reason (every run
-  excluded as unreliable · no value for the selected metrics · no run in the
-  window, with the night it last ran · not benchmarked with this
-  sample/platform), so a missing detector is never silently indistinguishable
-  from a quiet one;
+  chart has **no line for** is named with the reason — every run excluded as
+  unreliable · no value for the selected metrics · ran but produced no
+  comparable metrics (a hard-failed config) · no run in the window, with the
+  night it last ran · not benchmarked with this sample/platform — so a missing
+  detector doesn't read as a quiet one. The roster comes from the nightly
+  reports' run *groups*, not from their metric values, which is what lets a
+  detector whose config failed outright be named at all. It is stated whether or
+  not there is a chart, since a window with nothing to draw is when it matters
+  most. One gap remains: a detector retired past the engine's seven-day
+  missing-run grace period is dropped from the reports entirely and cannot be
+  named — widen the window to a range it still ran in to see it;
 - **Performance Landscape** — the selected time metric against the selected
   memory metric, one point per detector at its **most recent run** — closer to
   the origin is faster *and* leaner. It follows the runs rather than the
@@ -385,7 +394,9 @@ along with the parameters only that view reads:
   detector that missed the newest night keeps its last measured point (the
   caption and the hover name its nightly tag) instead of dropping off the
   chart; the same fallback applies to a run excluded by the reliability
-  toggle. That last run is found even when it falls outside the trend window
+  toggle; a detector that ran but produced no usable point — a hard-failed
+  config, or one whose every run the toggle dropped — is named in the caption
+  rather than left out. That last run is found even when it falls outside the trend window
   — a detector that has been missing for a few nights is shown at the night it
   really last ran, not at wherever the window happens to end. Both coordinates
   always come from one run, reruns of a nightly tag included. The metric selectors

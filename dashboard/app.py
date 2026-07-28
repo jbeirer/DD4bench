@@ -309,7 +309,8 @@ def main() -> None:
                 st.warning(f"Could not list nightly reports: {err}")
                 report_nights = []
 
-            all_dates = window_domain(run_days, _to_dates(report_nights))
+            report_days = _to_dates(report_nights)
+            all_dates = window_domain(run_days, report_days)
             if all_dates:
                 lo_date = all_dates[0]
                 hi_date = all_dates[-1]
@@ -344,7 +345,14 @@ def main() -> None:
                         st.info("Pick both a start and end date.")
 
                 if not custom_incomplete:
-                    start, end = resolve_window(preset, all_dates, custom_range)
+                    # Presets count back from the newest report night, which
+                    # every detector shares — a run already uploaded ahead of
+                    # tonight's report must not pull the window's start forward
+                    # for the detector that uploaded it.
+                    start, end = resolve_window(
+                        preset, all_dates, custom_range,
+                        anchor=report_days[-1] if report_days else None,
+                    )
                     sidebar_window = (start, end)
                     windowed = {
                         stk: [
