@@ -747,15 +747,66 @@ def test_email_view_night_picker_switches_the_mail():
     assert "Historical view · report night **2026-07-09**" in captions
 
 
-def test_email_view_honours_a_report_deep_link():
+def _deep_linked(**params: str) -> AppTest:
+    """A *fresh* session opened on ``?params`` — no widget touched afterwards.
+
+    The distinction is the whole point of a deep link: driving the radio first
+    would prove only that the view reads the parameter once it is already on
+    screen, which is not what pasting a URL does."""
     at = AppTest.from_function(
         _app, args=(str(_DASHBOARD_DIR), DATES, REPORTS, _WINDOW),
         default_timeout=30,
     )
-    at.query_params["report"] = "2026-07-09"
+    for name, value in params.items():
+        at.query_params[name] = value
     at.run()
-    at = _email_view(at)
+    assert not at.exception, at.exception
+    return at
+
+
+def test_view_deep_link_opens_the_email_view_directly():
+    # ?report= alone cannot do this: it is shared with the Regression Status
+    # picker (and the Regressions tab), so the view has to be named.
+    at = _deep_linked(view="Nightly Report", report="2026-07-09")
+
+    assert at.radio(key="det_ov_view_mode").value == "Nightly Report"
     assert at.selectbox(key="det_ov_email_night").value == "2026-07-09"
+    assert "Report night <strong>9 Jul 2026</strong>" in _srcdoc(at)
+
+
+def test_a_copied_url_restores_both_the_view_and_the_night():
+    # The round trip a reader actually performs: open the tab, navigate to a
+    # historical night, copy the URL out of the bar, paste it into a new
+    # session. Both halves of the location have to survive it.
+    at = _email_view(_run())
+    at.selectbox(key="det_ov_email_night").set_value("2026-07-10").run()
+    assert not at.exception, at.exception
+    copied = {name: values[0] for name, values in at.query_params.items()}
+    assert copied["view"] == "Nightly Report"
+    assert copied["report"] == "2026-07-10"
+
+    restored = _deep_linked(view=copied["view"], report=copied["report"])
+
+    assert restored.radio(key="det_ov_view_mode").value == "Nightly Report"
+    assert restored.selectbox(key="det_ov_email_night").value == "2026-07-10"
+    assert "Report night <strong>10 Jul 2026</strong>" in _srcdoc(restored)
+
+
+def test_view_deep_link_reopens_the_status_view_too():
+    # The parameter is the tab's, not the mail's — Regression Status owns
+    # ?report= as well, and was equally unreachable from a pasted URL.
+    at = _deep_linked(view="Regression Status", report="2026-07-09")
+
+    assert at.radio(key="det_ov_view_mode").value == "Regression Status"
+    assert at.selectbox(key="det_ov_report_night").value == "2026-07-09"
+
+
+def test_an_unknown_view_falls_back_to_the_default():
+    # A stale or hand-edited parameter must not blank the tab.
+    at = _deep_linked(view="Nightly Reports")
+
+    assert at.radio(key="det_ov_view_mode").value == "Performance Trends"
+    assert at.query_params["view"] == ["Performance Trends"]
 
 
 def test_email_view_renders_when_the_scope_has_no_benchmarks():

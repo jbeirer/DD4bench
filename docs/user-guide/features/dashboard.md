@@ -342,7 +342,9 @@ metric for all detectors — so the whole comparison loads from one small JSON
 per night, with no per-detector run downloads.
 
 Four views, dispatched by the same View radio as the other multi-view tabs
-(one colour per detector, consistent across the figures):
+(one colour per detector, consistent across the figures). The selected view
+rides in the URL as `?view=`, so a copied link reopens the view it came from
+along with the parameters only that view reads:
 
 - **Performance Trends** — the two selected metrics side by side (CPU,
   Memory), one line per detector across every nightly tag in the sidebar's
@@ -387,17 +389,18 @@ Four views, dispatched by the same View radio as the other multi-view tabs
   reports with no run downloads. The view renders even
   on a night whose configs all hard-failed (when there are no values to plot),
   so a failure is never hidden behind an empty chart;
-- **Nightly Report** — one night's regression report exactly as the Key4hep
-  e-group received it, rendered from the already-fetched report (plus that
-  night's blame sidecar) by the same renderer the mail uses, so the embed can
-  never drift from what was sent. Its night picker reaches as far back as the
-  trend window and is deep-linkable via `?report=`, the same parameter the
-  Regressions tab and the alert emails already speak.
-  Unlike every other view it is **not** scoped to the sidebar's
+- **Nightly Report** — one night's regression report in the form the Key4hep
+  e-group received it. Nothing is archived for it: the mail body is *rebuilt*
+  from the already-fetched report (plus that night's blame sidecar) by the same
+  renderer the nightly mail uses, so it is a reconstruction rather than a stored
+  copy — an old night is redrawn by today's renderer, and the mail's *CI run*
+  button is absent because that workflow-run URL is not stored in the report.
+  Its night picker reaches as far back as the trend window and is deep-linkable
+  via `?report=`, the same parameter the Regressions tab and the alert emails
+  already speak. Unlike every other view it is **not** scoped to the sidebar's
   platform/sample — the mail covers every detector, platform and sample the
   night benchmarked — which is why it stays reachable even when the selected
-  scope has no data. Links open in a new tab; the mail's *CI run* button is
-  omitted, since that workflow-run URL is not stored in the report.
+  scope has no data. Links open in a new tab.
 
 Colours follow the detector *family* (ALLEGRO, CLD, …), with versions of one
 family distinguished by dash pattern and marker symbol, so experiment-level

@@ -719,6 +719,43 @@ def test_scoped_links_present_only_when_inputs_exist():
     assert "ci/run" not in without
 
 
+def test_a_candidate_url_with_an_unexpected_scheme_is_not_linked():
+    # A candidate's URL is data read back from a blame sidecar, and the body is
+    # rendered in a browser (the dashboard's Nightly Report view) as well as in
+    # a mail client. Escaping alone keeps such a URL from breaking out of the
+    # attribute, but would still leave it a live destination.
+    v = _windowed(first_confirmed_run_id="2026-06-27")
+    for href in ("javascript:alert(1)", "data:text/html,<b>hi", "JAVASCRIPT:x",
+                 "java\nscript:alert(1)"):
+        hostile = _candidate(1, 80.0)
+        hostile = CandidatePR(**{**hostile.__dict__, "url": href})
+        html = to_html(_report(_group(v)), blame=_blame(hostile))
+        assert "javascript" not in html.lower()
+        assert "data:text/html" not in html
+        # The candidate itself is not hidden — only its link is dropped, so the
+        # ranking still names the PR it attributed the step to.
+        assert "key4hep/k4geo#1" in html
+
+
+def test_an_unexpected_scheme_costs_the_ci_button_its_link_only():
+    r = _report(_group(_v(first_confirmed_run_id="2026-06-27")))
+    html = to_html(r, dashboard_url="https://dash.example/",
+                   actions_url="javascript:alert(1)")
+    assert "javascript" not in html.lower()
+    assert "CI run" in html          # the label survives as plain text
+    assert 'href="https://dash.example/?tab=Overview"' in html
+
+
+def test_ordinary_schemes_still_link():
+    assert email._safe_href("https://github.com/a/b") == "https://github.com/a/b"
+    assert email._safe_href("http://cern.ch") == "http://cern.ch"
+    assert email._safe_href("mailto:key4hep@cern.ch") == "mailto:key4hep@cern.ch"
+    # Scheme-less hrefs are relative and resolve against the enclosing document.
+    assert email._safe_href("/docs/report") == "/docs/report"
+    assert email._safe_href(None) is None
+    assert email._safe_href("vbscript:x") is None
+
+
 def test_dashboard_query_string_merges():
     r = _report(_group(_v(first_confirmed_run_id="2026-06-27")))
     html = to_html(r, dashboard_url="https://dash.example/app?env=prod")

@@ -81,14 +81,19 @@ _METRIC_ORDER: list[str] = [*_TIME_METRICS, *_MEMORY_METRICS]
 _FALLBACK_NIGHTS = 30
 
 #: The tab's views, dispatched by the same radio pattern as Region Timing and
-#: Machine Info: the two figure views, then the latest night's verdicts, then a
-#: night's report as the e-group received it. Only the first three read the
-#: sidebar's platform/sample scope, so the mail is dispatched ahead of the
-#: empty-scope notice.
+#: Machine Info: the two figure views, then a night's verdicts, then that
+#: night's report in the form the e-group received it. Only the first three
+#: read the sidebar's platform/sample scope, so the mail is dispatched ahead of
+#: the empty-scope notice.
 _VIEWS = [
     "Performance Trends", "Performance Landscape", "Regression Status",
     "Nightly Report",
 ]
+
+#: Session key of the view radio, seeded from and written back to ``?view=`` so
+#: a copied URL reopens the view it was copied from — along with the parameters
+#: only that view reads (``?report=``, ``?tmetric=``/``?mmetric=``).
+_VIEW_KEY = "det_ov_view_mode"
 
 #: Fill for the accepted-baseline band on the flag-trend chart — the same
 #: visual device as the Regressions tab's drill-down.
@@ -1280,6 +1285,11 @@ def render(
     URL, which only the Nightly Report view needs (see
     :mod:`tabs._nightly_email`).
 
+    The selected view is itself deep-linkable through ``?view=``, so a copied
+    URL reopens the view it was copied from rather than the default one — the
+    only way the parameters a single view owns (``?report=`` above all) can
+    survive being shared.
+
     A scope with no benchmarks is reported *inside* the view switcher rather
     than in place of it: three of the four views have nothing to draw without
     it, but the mail covers every scope the night measured and must stay
@@ -1415,10 +1425,17 @@ def render(
         latest_night, window_nights, status_frames, excluded, scoped_detectors,
         scoped_groups, reports, scope_empty,
     ):
+        # The chosen view is part of the URL, so a copied link reopens the one
+        # being read. Without it every Overview link lands on the default view,
+        # and the parameters the *other* views own — ``?report=`` above all,
+        # which both Regression Status and Nightly Report speak — would be
+        # carried in the URL with no picker on screen to seed from them.
+        seed_query_param(_VIEW_KEY, "view", _VIEWS)
         view = st.radio(
-            "View", _VIEWS, horizontal=True, key="det_ov_view_mode",
+            "View", _VIEWS, horizontal=True, key=_VIEW_KEY,
             label_visibility="collapsed",
-        )
+        ) or _VIEWS[0]
+        st.query_params["view"] = view
         if view == "Nightly Report":
             _nightly_email.render(data_url, dashboard_url, reports, latest_night)
             return

@@ -1,11 +1,19 @@
-"""The nightly regression report as the e-group receives it.
+"""The nightly regression report in the form the e-group receives it.
 
 One night's report rendered by :func:`k4bench.regression.email.to_html` — the
 very function :mod:`k4bench.regression.notify` hands to the mail relay — and
 embedded in an iframe. Nothing is archived for this: the mail body is a pure
 function of the report the Overview tab has already fetched and parsed, so every
-night in view is readable, the view costs no download of its own beyond the blame
-sidecar, and the embed can never drift from the renderer.
+night in view is readable and the view costs no download of its own beyond the
+blame sidecar.
+
+That makes this a *reconstruction*, not an archive. No sent message is kept, so
+an old night is redrawn by whichever ``to_html`` is deployed today: the embed
+can never drift from the current renderer, but a renderer change does change how
+an old night looks. Byte-for-byte fidelity would mean archiving the generated
+HTML beside ``report.json``, which is not what this is for — the value here is
+reading any night's report without leaving the dashboard, in the layout the mail
+gave it.
 
 Two things the mail gets from its sender and this view has to supply itself:
 
@@ -21,6 +29,11 @@ Two things the mail gets from its sender and this view has to supply itself:
 Unlike the rest of the Overview tab this view is **not** scoped to the sidebar's
 platform/sample: the mail covers every detector, platform and sample the night
 benchmarked, and re-scoping it would no longer be the report that was sent.
+
+Rendering the body in a browser rather than only a mail client is why
+:data:`k4bench.regression.email._SAFE_SCHEMES` exists: the hrefs in it come from
+``report.json`` and the blame sidecar, and the renderer now drops any whose
+scheme is outside http/https/mailto to plain text.
 """
 
 from __future__ import annotations
@@ -175,9 +188,10 @@ def render(
     with st.container(border=True):
         st.iframe(document, height="content")
     st.caption(
-        f"The report e-mailed to the Key4hep e-group for **{night}**, rendered "
-        "from that night's report and blame sidecar by the same renderer the "
-        "mail uses — every detector, platform and sample it covered, not just "
-        "the sidebar's scope. Links open in a new tab. The mail's *CI run* "
+        f"The report e-mailed to the Key4hep e-group for **{night}** — every "
+        "detector, platform and sample it covered, not just the sidebar's "
+        "scope. Rebuilt from that night's report and blame sidecar by the same "
+        "renderer the mail uses, rather than replayed from a stored copy, so "
+        "the layout is today's. Links open in a new tab. The mail's *CI run* "
         "button is omitted: that workflow-run URL is not stored in the report."
     )

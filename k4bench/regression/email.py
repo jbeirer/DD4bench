@@ -35,6 +35,7 @@ from __future__ import annotations
 import html
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from k4bench.blame.models import (
@@ -764,9 +765,36 @@ _CONTAINER_STYLE = (
 )
 
 
+#: Schemes an href in the body may carry. Most hrefs here are *data* — a
+#: candidate PR's URL, a package compare link, a benchmark's CI run — read back
+#: from ``report.json`` or a blame sidecar rather than written here, so the set
+#: is stated rather than assumed. Anything else renders as plain text: escaping
+#: makes ``javascript:``/``data:`` inert as *markup*, but not as a destination,
+#: and this body is now rendered in a browser (the dashboard's Nightly Report
+#: view) as well as in a mail client.
+_SAFE_SCHEMES = frozenset({"http", "https", "mailto"})
+
+
+def _safe_href(href: str | None) -> str | None:
+    """*href* if it is safe to link to, else ``None``.
+
+    Scheme-less hrefs pass: they are relative, and resolve against whatever
+    document the body ends up in. ``urlsplit`` is what decides the scheme, so
+    the tab/newline tricks a browser ignores when parsing one are ignored here
+    too."""
+    if not href:
+        return None
+    scheme = urlsplit(href).scheme
+    if scheme and scheme.lower() not in _SAFE_SCHEMES:
+        return None
+    return href
+
+
 def _link(href: str | None, text: str, *, bold: bool = False) -> str:
     """An escaped, described text link — never an icon as the only label. Plain
-    escaped text when there is no href."""
+    escaped text when there is no href, or none this may link to
+    (:func:`_safe_href`)."""
+    href = _safe_href(href)
     if not href:
         return _esc(text)
     weight = "600" if bold else "normal"
@@ -779,7 +807,12 @@ def _link(href: str | None, text: str, *, bold: bool = False) -> str:
 
 
 def _action_button(href: str, text: str) -> str:
-    """A large, email-safe tappable action (bordered pill, not an image)."""
+    """A large, email-safe tappable action (bordered pill, not an image).
+
+    Falls back to the plain label when the href is not one this may link to,
+    for the same reason :func:`_link` does."""
+    if not _safe_href(href):
+        return _esc(text)
     return (
         f'<a href="{_esc_attr(href)}" style="display:inline-block;'
         f"padding:9px 16px;margin:4px 8px 4px 0;border:1px solid {_C_LINK};"

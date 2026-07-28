@@ -34,7 +34,11 @@ LINK_SOURCES = [
 ]
 
 _URL_RE = re.compile(r"https?://[^\s<>\"'\)\]]+")
-_TRAILING_PUNCT = ".,;:"
+#: Stripped from the end of a match. A backtick is in here because a URL
+#: documented as Markdown inline code (`` `https://…` ``) ends in the closing
+#: backtick, which the pattern above happily swallows into the hostname — the
+#: link then "fails" against a host that was never written.
+_TRAILING_PUNCT = ".,;:`"
 
 # Fenced code blocks hold illustrative examples (elided SHAs, made-up PR
 # numbers), not links a reader can click — mkdocs renders them as plain text.
@@ -122,3 +126,22 @@ def _check(url: str) -> None:
 @pytest.mark.parametrize("url", sorted(ALL_LINKS), ids=lambda u: u)
 def test_link_resolves(url: str) -> None:
     _check(url)
+
+
+def test_extractor_strips_markdown_inline_code(tmp_path: Path) -> None:
+    """A URL written as inline code yields the URL, not the closing backtick.
+
+    The env-var table in docs/user-guide/features/dashboard.md documents
+    defaults that way, and a swallowed backtick turns every one of them into a
+    check against a host nobody wrote."""
+    doc = tmp_path / "doc.md"
+    doc.write_text(
+        "| `K4BENCH_DASHBOARD_URL` | `https://example.cern.ch` | the URL |\n"
+        "See <https://example.cern.ch/docs>, or (https://example.cern.ch/api).\n",
+        encoding="utf-8",
+    )
+    assert _extract_urls(doc) == {
+        "https://example.cern.ch",
+        "https://example.cern.ch/docs",
+        "https://example.cern.ch/api",
+    }
