@@ -118,6 +118,10 @@ def email_document(
 
     Every blame input is best-effort, exactly as in the mail: a missing or
     malformed sidecar costs that card its ranked candidates and nothing else.
+
+    Rendered without the mail's CERN/FCC sign-off: the page this is embedded in
+    ends in that same banner (see :mod:`ui_chrome`), and a mail read inside the
+    dashboard does not need to say goodbye twice.
     """
     historical = {
         first_night: parsed
@@ -127,6 +131,7 @@ def email_document(
     body = to_html(
         report,
         dashboard_url=dashboard_url,
+        footer=False,
         blame=_blame_report(blame_raw, night),
         historical_blame=historical,
     )

@@ -107,6 +107,17 @@ def test_document_targets_new_tabs_and_supplies_a_white_canvas():
     assert doc.startswith("<!doctype html>")
 
 
+def test_the_mails_sign_off_is_left_to_the_page():
+    # The dashboard's own chrome ends in the same CERN/FCC banner, so keeping
+    # the mail's would print it twice on one page.
+    doc = email_document(_report(), None, {}, DASH, NIGHT)
+    assert "For the benefit of the" not in doc
+    assert "jbeirer@cern.ch" not in doc
+    assert "⚛️" not in doc
+    # Only the sign-off goes — the report above it is untouched.
+    assert "Needs attention" in doc
+
+
 def test_document_embeds_the_mail_body_verbatim():
     report = _report()
     doc = email_document(report, None, {}, DASH, NIGHT)

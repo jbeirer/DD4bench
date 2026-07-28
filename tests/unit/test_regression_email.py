@@ -703,6 +703,27 @@ def test_malformed_historical_is_simply_absent():
     assert "AI-generated PR ranking" not in html
 
 
+# ── Footer ────────────────────────────────────────────────────────────────────
+
+def test_the_mail_signs_off_by_default():
+    html = to_html(_report(_group(_v(first_confirmed_run_id="2026-06-27"))))
+    assert "For the benefit of the" in html
+    assert "jbeirer@cern.ch" in html
+
+
+def test_an_embedding_can_render_the_body_without_the_sign_off():
+    # For a host page that already carries the same CERN/FCC banner — the
+    # dashboard's Nightly Report view. Nothing above the footer changes.
+    r = _report(_group(_v(first_confirmed_run_id="2026-06-27")))
+    bare = to_html(r, footer=False)
+    assert "For the benefit of the" not in bare
+    assert "jbeirer@cern.ch" not in bare
+    assert "Needs attention" in bare
+    assert "k4Bench nightly report" in bare
+    # The markdown rendering has no such host and keeps its own footer.
+    assert "For the benefit of the" in to_markdown(r)
+
+
 # ── Links ─────────────────────────────────────────────────────────────────────
 
 def test_scoped_links_present_only_when_inputs_exist():

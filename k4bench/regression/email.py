@@ -1486,8 +1486,15 @@ def to_html(
     actions_url: str | None = None,
     blame: BlameReport | None = None,
     historical_blame: dict[str, BlameReport] | None = None,
+    footer: bool = True,
 ) -> str:
-    """Self-contained HTML email body (inline styles only, no CSS/JS)."""
+    """Self-contained HTML email body (inline styles only, no CSS/JS).
+
+    *footer* draws the CERN/FCC sign-off. A standalone message needs it; an
+    embedding that already carries one does not — the dashboard's Nightly
+    Report view renders this body inside a page whose own chrome ends in the
+    very same banner (see ``ui_chrome``), so keeping it would print it twice.
+    """
     index = _BlameIndex(blame, historical_blame)
     attention = _needs_attention(report)
     if attention:
@@ -1515,7 +1522,7 @@ def to_html(
         _html_summary(report),
         attention_html,
         _html_detail(report, dashboard_url),
-        _html_footer(report),
+        *([_html_footer(report)] if footer else []),
         "</td></tr></table>",
         "</td></tr></table>",
     ]
