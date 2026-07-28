@@ -286,7 +286,7 @@ def main() -> None:
                 window_presets = list(WINDOW_PRESETS)
                 seed_query_param("sb_trend_preset", "range", window_presets)
                 if "sb_trend_preset" not in st.session_state:
-                    st.session_state["sb_trend_preset"] = "Last 7 days"
+                    st.session_state["sb_trend_preset"] = "Last 14 days"
                 preset = st.selectbox(
                     "Range", window_presets,
                     key="sb_trend_preset",
