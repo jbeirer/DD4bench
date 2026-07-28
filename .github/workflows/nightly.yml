@@ -2,8 +2,16 @@ name: Nightly Benchmark
 
 on:
   schedule:
-    - cron: '0 0 * * *'  # 01:00 CET (00:00 UTC) every night
+    # 03:00 UTC — Key4hep publishes the day's nightly stack to CVMFS at
+    # 00:40–00:58 UTC, so this starts well past the publication window.
+    - cron: '0 3 * * *'
   workflow_dispatch:
+    inputs:
+      release:
+        description: 'Key4hep release to benchmark, e.g. 2026-07-28 (empty: resolve automatically)'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -28,9 +36,32 @@ jobs:
           pip3 install --quiet 'pyyaml>=6.0,<6.1'
           echo "configs=$(python3 .github/scripts/list_benchmarks.py --grouped)" >> "$GITHUB_OUTPUT"
 
+  # ── Resolve the Key4hep release once for the whole night ──────────────────
+  # Every benchmark job below sources the release named here, so one night's 18
+  # jobs cannot straddle a publication boundary and end up filed under two
+  # different releases. Waiting for the day's stack happens in this job and
+  # nowhere else — the matrix jobs consume the answer and never sleep. Needs a
+  # CVMFS-mounted runner; the job itself only lists directories.
+  resolve-release:
+    runs-on: [self-hosted, fcc-ironic]
+    timeout-minutes: 150  # covers the ~2 h retry budget with margin
+    outputs:
+      release:  ${{ steps.resolve.outputs.release }}
+      is_today: ${{ steps.resolve.outputs.is_today }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Resolve Key4hep release
+        id: resolve
+        env:
+          RELEASE_REQUESTED: ${{ inputs.release }}
+        run: bash .github/scripts/resolve_release.sh
+
   # ── One reusable-workflow call per detector ───────────────────────────────
   benchmark:
-    needs: discover
+    needs: [discover, resolve-release]
     name: ${{ matrix.group.detector }}
     strategy:
       matrix:
@@ -40,15 +71,19 @@ jobs:
     with:
       detector:     ${{ matrix.group.detector }}
       samples_json: ${{ toJson(matrix.group.samples) }}
+      release:      ${{ needs.resolve-release.outputs.release }}
     secrets: inherit
 
   # ── Nightly regression report over the full EOS history ────────────────────
-  # `if: always()` so a crashed detector job still produces a FAILURE verdict
-  # (its missing upload is the signal) instead of the report vanishing. The job
+  # Runs through a failed fan-out, so a crashed detector job still produces a
+  # FAILURE verdict (its missing upload is the signal) instead of the report
+  # vanishing. A fan-out that never started is a different case: the report night
+  # is the newest run date found on EOS, so building a report for a night with no
+  # runs would re-send last night's verdicts as if they were tonight's. The job
   # body lives in the reusable regression-report.yml, which is also
   # workflow_dispatch-able for a manual, on-demand send.
   regression-report:
     needs: benchmark
-    if: always()
+    if: ${{ !cancelled() && needs.benchmark.result != 'skipped' }}
     uses: ./.github/workflows/regression-report.yml
     secrets: inherit

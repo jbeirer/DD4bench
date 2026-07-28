@@ -15,6 +15,11 @@ on:
         description: JSON-encoded list of per-sample records (output of list_benchmarks.py --grouped)
         required: true
         type: string
+      release:
+        description: Key4hep nightly release every job sources, e.g. "2026-07-28" (empty = latest)
+        required: false
+        type: string
+        default: ''
 
 env:
   CONTAINER_IMAGE: ghcr.io/key4hep/key4hep-images/alma9
@@ -77,6 +82,7 @@ jobs:
 
       - name: Benchmark ${{ matrix.sample }}
         env:
+          K4H_RELEASE_REQUESTED: ${{ inputs.release }}
           BENCHMARK_CONFIG: ${{ inputs.detector }}
           BENCHMARK_SAMPLE: ${{ matrix.sample }}
           XML_PATH:         ${{ matrix.xml }}
@@ -91,8 +97,17 @@ jobs:
           EXCLUDE_ONLY:     ${{ matrix.exclude_only }}
         run: |
           mkdir -p "$RUNNER_TEMP/dnf-cache"
+          # Bind-mount the job summary file so the containerised script can name
+          # the release it sourced on the run's summary page. The script only
+          # appends to it, which a single-file bind mount propagates back.
+          summary_mount=()
+          if [[ -f "$GITHUB_STEP_SUMMARY" ]]; then
+              summary_mount=(--volume "$GITHUB_STEP_SUMMARY":/tmp/step_summary:z
+                             -e GITHUB_STEP_SUMMARY=/tmp/step_summary)
+          fi
           docker pull "${{ env.CONTAINER_IMAGE }}"
           docker run --rm --init \
+            "${summary_mount[@]}" \
             --device /dev/fuse \
             --cap-add SYS_ADMIN \
             --volume /cvmfs:/cvmfs:shared \
@@ -102,6 +117,7 @@ jobs:
             --workdir /workspace \
             -e X509_USER_CERT=/tmp/eos-auth/usercert.pem \
             -e X509_USER_KEY=/tmp/eos-auth/userkey.pem \
+            -e K4H_RELEASE_REQUESTED \
             -e BENCHMARK_CONFIG -e BENCHMARK_SAMPLE \
             -e XML_PATH -e N_EVENTS -e DDSIM_ARGS -e INPUT_FILES -e STEERING_FILE \
             -e SWEEP -e SWEEP_DETECTORS -e VERBOSE -e INCLUDE_ONLY -e EXCLUDE_ONLY \
