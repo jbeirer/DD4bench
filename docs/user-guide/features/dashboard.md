@@ -72,8 +72,9 @@ two attribution views (`at_location` and `by_birth`) and adds:
 
 Plots a metric over time. The x-axis is anchored on the **Key4hep release date**
 (falling back to the run date), so you see regressions aligned with releases.
-A sidebar **look-back window** (`Last 7 days`, `30`, `90`, `6 months`, `All`, or
-a custom range) controls how much history is downloaded and shown. The window is
+A sidebar **look-back window** (`Last 7 days`, `14` — the default — `30`, `90`,
+`6 months`, `All`, or a custom range) controls how much history is downloaded
+and shown. The window is
 anchored on the *latest available* run, not today, so it always shows data even
 if the nightly hasn't run recently (see
 [`trend_window.resolve_window`](../../reference/api/analysis/index.md) — pure
