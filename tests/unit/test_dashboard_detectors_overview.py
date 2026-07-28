@@ -784,6 +784,32 @@ def test_log_range_pads_in_decades():
     assert ov._log_range(pd.Series([0.0, -1.0]), 0.1, 0.1) is None
 
 
+# ── last_run_nights ────────────────────────────────────────────────────────────
+
+def test_last_run_nights_ignores_the_reliability_flag():
+    # SiD's newest run (07-11) failed the host check. "Last ran" is a statement
+    # about the run, not about whether it can be plotted, so it must still be
+    # 07-11 — the landscape's as_of would say 07-10 here.
+    rel = pd.DataFrame({
+        "night":     ["2026-07-10", "2026-07-11", "2026-07-11"],
+        "run_night": ["2026-07-10", "2026-07-11", "2026-07-11"],
+        "detector":  ["SiD", "SiD", "CLD"],
+        "reliable":  [True, False, True],
+    })
+    assert ov.last_run_nights(rel) == {"SiD": "2026-07-11", "CLD": "2026-07-11"}
+
+
+def test_last_run_nights_takes_the_newest_run_of_the_newest_tag():
+    rel = pd.DataFrame({
+        "night":     ["2026-07-11", "2026-07-11", "2026-07-09"],
+        "run_night": ["2026-07-11", "2026-07-12", "2026-07-09"],
+        "detector":  ["SiD"] * 3,
+        "reliable":  [True] * 3,
+    })
+    assert ov.last_run_nights(rel) == {"SiD": "2026-07-11"}
+    assert ov.last_run_nights(rel.iloc[0:0]) == {}
+
+
 # ── _trend_notes ───────────────────────────────────────────────────────────────
 
 def _hist(rows: list[tuple[str, str, float]]) -> pd.DataFrame:

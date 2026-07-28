@@ -1230,6 +1230,27 @@ def _landscape_notes(
     return notes
 
 
+def last_run_nights(rel_hist: pd.DataFrame) -> dict[str, str]:
+    """``{detector: nightly tag of its most recent run}`` from the per-run
+    reliability history.
+
+    Deliberately blind to the reliability flag and to the exclusion toggle: this
+    answers "when did it last run", which the trend caption states as fact. The
+    landscape's ``as_of`` answers the different question "which run is this
+    point", and follows the newest *plottable* run — so an unreliable newest run
+    sends it back to an earlier night, and reusing it here would date a detector
+    to before a run it demonstrably made.
+    """
+    if rel_hist.empty:
+        return {}
+    return (
+        rel_hist.sort_values(["night", "run_night"])
+        .drop_duplicates("detector", keep="last")
+        .set_index("detector")["night"]
+        .to_dict()
+    )
+
+
 def _plotted_detectors(hist: pd.DataFrame, metrics: tuple[str, ...]) -> set[str]:
     """Detectors the trend chart can draw at least one line for — those with a
     value for one of the *metrics* on screen (see :func:`_history_figure`,
@@ -1247,7 +1268,7 @@ def _trend_notes(
     detectors: list[str],
     window_roster: list[str],
     excluded: list[str],
-    as_of: dict[str, str],
+    last_run: dict[str, str],
 ) -> list[str]:
     """The caption under the trend chart: every detector in the scope the chart
     has no line for, and why.
@@ -1265,8 +1286,11 @@ def _trend_notes(
     named as failed rather than dropped or called un-benchmarked. *window_rows*
     is the window's rows **before** the reliability filter, separating a
     detector the toggle dropped from one that produced nothing. *hist* is what
-    is plotted, and *as_of* names each detector's most recent run so one that
-    has fallen out of the window is placed rather than merely missed.
+    is plotted, and *last_run* names the night each detector really last ran, so
+    one that has fallen out of the window is placed rather than merely missed —
+    it must come from the unfiltered group history, not from the landscape's
+    ``as_of``, which follows the newest *plottable* run and would date a
+    detector to before an excluded run it demonstrably made.
 
     A detector retired past the engine's missing-run grace period is dropped
     from the reports altogether, so it reaches none of these sources and cannot
@@ -1306,7 +1330,8 @@ def _trend_notes(
         notes.append(
             "No run in the trend window: "
             + ", ".join(
-                f"{d} (last ran {as_of[d]})" if d in as_of else d for d in absent
+                f"{d} (last ran {last_run[d]})" if d in last_run else d
+                for d in absent
             )
             + "."
         )
@@ -1324,8 +1349,8 @@ def _render_reliability_filter(
     over the per-run ``reliable`` flag from the report *groups*.
 
     *rel_hist* has columns ``night, run_night, detector, reliable`` (see
-    :func:`report_reliability_frame` — built per-group precisely because an
-    unreliable night carries no metric verdict rows). Mirrors
+    :func:`report_reliability_frame` — built per-group precisely because the
+    flag belongs to the group and to no metric verdict). Mirrors
     ``tabs._reliability.render_reliability_filter`` (same wording, same
     on-by-default toggle); the shared helper keys on a global
     ``{run_id: verdict}`` map, which cannot express this tab's cross-detector
@@ -1449,8 +1474,9 @@ def render(
     snap_rows = history_rows(snap_frames, platform, sample, _BASELINE_LABEL)
 
     # ── Reliability input (built from the report *groups*, not the metric frame,
-    # so unreliable nights — which carry no verdict rows — still surface).
-    # Derived from the pre-filter frames, so it doesn't shift with the toggle.
+    # which carries the flag on no row of its own — and none at all for a night
+    # that produced nothing to record). Derived from the pre-filter frames, so
+    # it doesn't shift with the toggle.
     #
     # Spans every night the snapshot can read, not just the window: the
     # landscape plots the newest run it can find, which is outside the window
@@ -1479,6 +1505,13 @@ def render(
     # inside the plotted window — while ``scoped_detectors`` spans every fetched
     # night, which is the range the landscape's newest-run fallback reaches.
     #
+    # ``excluded`` asks a third question — who this sample/platform was never
+    # benchmarked with — and so counts *membership*, not runs: a detector that
+    # missed the night is carried as a placeholder group, which is proof the
+    # scope covers it. Measuring membership by runs instead would file it under
+    # "not benchmarked" whenever its last real run is out of reach, which is
+    # exactly the case a straggler fetch is there to rescue and can fail to.
+    #
     # Named before the reliability filter runs, so a detector dropped as
     # unreliable is never reported as "not benchmarked" instead.
     scoped_wide, _ = latest_snapshot(snap_rows)
@@ -1489,10 +1522,23 @@ def render(
             platform, sample,
         )["detector"]
     ))
+    scope_members = {
+        d
+        for n in snap_nights
+        for d in rel_frames[n].loc[
+            (rel_frames[n]["platform"] == platform)
+            & (rel_frames[n]["sample"] == sample),
+            "detector",
+        ].unique()
+    }
     excluded = sorted(
         {d for n in snap_nights for d in rel_frames[n]["detector"].unique()}
-        - set(scoped_detectors)
+        - scope_members
     )
+
+    # Read off the unfiltered group history, never the landscape's ``as_of``
+    # (see last_run_nights).
+    last_run = last_run_nights(rel_hist)
 
     # The window's nights plus the newest report — the Regression Status view's
     # input and its picker's options. Nights fetched only to complete the
@@ -1525,8 +1571,13 @@ def render(
 
     # One colour per detector family, dash/symbol per version — stable across
     # every panel.
+    # Every detector the scope knows about, including one carried only as a
+    # missing-run placeholder: now that ``excluded`` counts it as a member, this
+    # is the only roster left that can name it, and a detector nothing accounts
+    # for is the failure this whole caption exists to prevent.
     detectors_all = sorted(
-        set(scoped_detectors) | set(window_roster) | set(hist["detector"].unique())
+        set(scoped_detectors) | set(window_roster) | scope_members
+        | set(hist["detector"].unique())
     )
 
     # Default styling — one colour per detector family, no user-facing
@@ -1547,7 +1598,7 @@ def render(
     def _views(
         hist_rows, snap_rows, rel_hist, detectors_all, styles,
         latest_night, window_nights, status_frames, excluded, scoped_detectors,
-        window_roster, scoped_groups, reports, scope_empty,
+        window_roster, last_run, scoped_groups, reports, scope_empty,
     ):
         # The chosen view is part of the URL, so a copied link reopens the one
         # being read. Without it every Overview link lands on the default view,
@@ -1670,7 +1721,7 @@ def render(
             # returns without a chart to caption.
             notes = _trend_notes(
                 hist, hist_rows, time_metric, mem_metric,
-                detectors_all, window_roster, excluded, as_of,
+                detectors_all, window_roster, excluded, last_run,
             )
             fig = _history_figure(
                 hist_disp, time_metric, mem_metric, styles, detectors_all,
@@ -1712,5 +1763,6 @@ def render(
     _views(
         hist_rows, snap_rows, rel_hist, detectors_all, styles,
         latest_night, [n for n, _ in window_frames], status_frames, excluded,
-        scoped_detectors, window_roster, scoped_groups, mail_reports, scope_empty,
+        scoped_detectors, window_roster, last_run, scoped_groups, mail_reports,
+        scope_empty,
     )

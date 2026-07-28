@@ -626,6 +626,30 @@ def test_trends_explains_itself_when_there_is_nothing_to_draw():
         assert det in said
 
 
+def test_trends_caption_places_a_detector_known_only_by_a_placeholder():
+    # SiD missed 07-11 and is carried there as a missing-run placeholder whose
+    # last real run (07-10) has no report to fetch. The placeholder is proof the
+    # scope covers SiD, so it must not be filed under "not benchmarked" — the
+    # one thing it demonstrably is not — and must still be named.
+    dates = ["2026-07-11", "2026-07-09"]
+    reports = {
+        "2026-07-11": _report("2026-07-11",
+                              detectors=("CLD_o2_v08", "IDEA_o1_v03"),
+                              stale=("SiD", "2026-07-10")),
+        "2026-07-09": _report("2026-07-09", scale=1.1,
+                              detectors=("CLD_o2_v08", "IDEA_o1_v03")),
+    }
+    at = AppTest.from_function(
+        _app, args=(str(_DASHBOARD_DIR), dates, reports,
+                    (date(2026, 7, 9), date(2026, 7, 11))),
+        default_timeout=30,
+    ).run()
+    assert not at.exception, at.exception
+    captions = "\n".join(str(c.value) for c in at.caption)
+    assert "No run in the trend window: SiD." in captions
+    assert "Not benchmarked" not in captions
+
+
 def test_trends_caption_is_silent_when_every_detector_is_drawn():
     at = _run()
     captions = "\n".join(str(c.value) for c in at.caption)
