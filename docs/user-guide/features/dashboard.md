@@ -184,7 +184,10 @@ uploaded nothing is still reported as a **missing run** rather than passing as
 a straddling batch — once the report night names a CI run, only a detector
 naming that same run is kept, whatever the gap between the two dates. Nights
 recorded before that CI run existed fall back to accepting a single night's
-lag, and their note says that is what happened.
+lag, and their note says that is what happened. The Overview's charts follow
+each run by the date it actually ran, so a straddling job is still covered by
+the unreliable-run warning and toggle — it is one of tonight's runs, and the
+date it is stamped with should not decide whether the filter can see it.
 
 A `?report=YYYY-MM-DD` query parameter pins one report night directly and is
 authoritative when valid — this is the stable deep link the nightly email and

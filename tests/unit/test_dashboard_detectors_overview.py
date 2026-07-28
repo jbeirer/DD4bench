@@ -171,13 +171,14 @@ def test_reliability_frame_keeps_unjudged_unreliable_group():
     # … but present in the reliability frame.
     rf = ov.report_reliability_frame(rep)
     assert list(rf.columns) == [
-        "detector", "platform", "sample", "run_date", "k4h_release", "reliable",
+        "detector", "platform", "sample", "run_date", "k4h_release",
+        "missing_run", "reliable",
     ]
     assert set(rf["detector"]) == {"CLD", "SiD"}
     assert rf.loc[rf["detector"] == "CLD", "reliable"].eq(False).all()
 
 
-def test_reliability_history_scopes_and_drops_stale():
+def test_reliability_history_scopes_and_drops_missing_runs():
     rf1 = ov.report_reliability_frame(NightlyReport(generated_at="", groups=[
         _group("CLD", [], run_date="2026-01-12", reliable=False),
         # Wrong sample → out of scope.
@@ -185,19 +186,57 @@ def test_reliability_history_scopes_and_drops_stale():
     ]))
     rf2 = ov.report_reliability_frame(NightlyReport(generated_at="", groups=[
         _group("CLD", [], run_date="2026-01-13", reliable=True),
-        # run_date != the night it's listed under → stale, dropped.
-        _group("IDEA", [], run_date="2026-01-12", reliable=False),
+        # Carried forward for a run that never arrived — an absence, not a run,
+        # so it is dropped however its (old) night's flag reads.
+        _group("IDEA", [], run_date="2026-01-12", reliable=False,
+               job_failures=["no run uploaded for 2026-01-13 (latest is 2026-01-12)"]),
     ]))
     hist = ov.reliability_history(
         [("2026-01-12", rf1), ("2026-01-13", rf2)], "PLAT", "single_e"
     )
     assert list(hist.columns) == ["night", "run_night", "detector", "reliable"]
-    # CLD on both nights; SiD (other sample) and stale IDEA excluded.
+    # CLD on both nights; SiD (other sample) and the missing-run IDEA excluded.
     assert set(zip(hist["night"], hist["detector"])) == {
         ("2026-01-12", "CLD"), ("2026-01-13", "CLD"),
     }
     flagged = hist[hist["reliable"].eq(False)]
     assert list(zip(flagged["night"], flagged["detector"])) == [("2026-01-12", "CLD")]
+
+
+def test_reliability_history_keeps_a_cross_midnight_run_under_its_own_date():
+    # CLD's job started before midnight, so it is dated 01-12 inside the 01-13
+    # report and keeps its verdicts and its reliability. Dropping it for the
+    # date mismatch — the way a real missing run is dropped — would leave that
+    # contended run unfilterable while its values stayed in the history.
+    rf = ov.report_reliability_frame(NightlyReport(generated_at="", groups=[
+        _group("CLD", [], run_date="2026-01-12", k4h_release="key4hep-2026-01-13",
+               reliable=False,
+               notes=["run is dated 2026-01-12, this report 2026-01-13"]),
+        _group("SiD", [], run_date="2026-01-13", k4h_release="key4hep-2026-01-13",
+               reliable=True),
+    ]))
+    hist = ov.reliability_history([("2026-01-13", rf)], "PLAT", "single_e")
+    # Both runs are present, each keyed on the night it actually ran — which is
+    # how history_rows addresses them too.
+    assert set(zip(hist["run_night"], hist["detector"])) == {
+        ("2026-01-12", "CLD"), ("2026-01-13", "SiD"),
+    }
+    # …and they share the nightly tag, so the chart still shows one point.
+    assert set(hist["night"]) == {"2026-01-13"}
+    assert ov.unreliable_pairs(hist) == {("2026-01-12", "CLD")}
+
+
+def test_reliability_history_dedupes_a_run_reported_twice():
+    # A cross-midnight run appears in its own night's report and again in the
+    # next one; one run, one row.
+    group = _group("CLD", [], run_date="2026-01-12",
+                   k4h_release="key4hep-2026-01-12", reliable=False)
+    rf = ov.report_reliability_frame(NightlyReport(generated_at="", groups=[group]))
+    hist = ov.reliability_history(
+        [("2026-01-12", rf), ("2026-01-13", rf)], "PLAT", "single_e"
+    )
+    assert len(hist) == 1
+    assert ov.unreliable_pairs(hist) == {("2026-01-12", "CLD")}
 
 
 def test_reliability_history_keeps_same_tag_reruns_apart():
@@ -501,6 +540,18 @@ def test_stale_run_nights_names_each_missed_detectors_last_run():
         _group("CLD", [_verdict()], run_date="2026-01-13"),
     ])
     assert ov.stale_run_nights(fresh, "2026-01-13", "PLAT", "single_e") == []
+
+
+def test_stale_run_nights_ignores_a_cross_midnight_run():
+    # Dated a day earlier but carrying its verdicts, not a missing-run failure:
+    # this job started before midnight and ran for *this* report, so its
+    # measurements are already in hand and its date is nothing to chase.
+    report = NightlyReport(generated_at="", groups=[
+        _group("CLD", [_verdict()], run_date="2026-01-12",
+               k4h_release="key4hep-2026-01-13",
+               notes=["run is dated 2026-01-12, this report 2026-01-13"]),
+    ])
+    assert ov.stale_run_nights(report, "2026-01-13", "PLAT", "single_e") == []
 
 
 # ── _flag_trend_frames ─────────────────────────────────────────────────────────

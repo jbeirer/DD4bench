@@ -31,6 +31,7 @@ from k4bench.regression.engine import (
 )
 from k4bench.regression.history import history_tail, host_facts, release_points
 from k4bench.regression.models import (
+    MISSING_RUN_FAILURE,
     Direction,
     HostFact,
     MetricVerdict,
@@ -693,7 +694,7 @@ def _finalize_report(groups: list[RunGroupReport]) -> NightlyReport:
             g.notes = []
             g.reliable = None
             g.job_failures = [
-                f"no run uploaded for {report_night} (latest is {g.run_date})"
+                f"{MISSING_RUN_FAILURE} {report_night} (latest is {g.run_date})"
             ]
             kept.append(g)
         groups = kept

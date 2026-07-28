@@ -85,7 +85,7 @@ _BASELINE_FILL = "rgba(31,119,180,0.08)"
 
 _FRAME_COLUMNS = [
     "detector", "platform", "sample", "label", "metric", "value", "severity",
-    "k4h_release", "reliable",
+    "k4h_release", "run_date", "reliable",
 ]
 
 #: Trailing version tokens of a detector directory name (``_o1_v03``, ``_v02``)
@@ -157,6 +157,12 @@ def report_metrics_frame(report: NightlyReport) -> pd.DataFrame:
     (``returncode`` failures, ``cpu_efficiency``), and missing/non-finite
     values. ``reliable`` is the group's per-night host-reliability tri-state
     (``None`` on reports predating the field).
+
+    ``run_date`` is the night the group's job actually ran, which is not always
+    the night of the report carrying it: a batch that starts near midnight is
+    dated a day earlier and still reported as tonight's. Carrying it is what
+    lets the reliability filter address these rows at all — keyed on the report
+    instead, they would never match the group's own ``reliable`` verdict.
     """
     rows = [
         {
@@ -168,6 +174,7 @@ def report_metrics_frame(report: NightlyReport) -> pd.DataFrame:
             "value":       float(v.value),
             "severity":    v.severity.value,
             "k4h_release": g.k4h_release,
+            "run_date":    g.run_date,
             "reliable":    g.reliable,
         }
         for g in report.groups
@@ -187,9 +194,15 @@ def report_reliability_frame(report: NightlyReport) -> pd.DataFrame:
     unreliable night is deliberately *not judged*, so it has **zero** verdict
     rows and would vanish entirely from :func:`report_metrics_frame`. Extracting
     it per-group instead is what lets the unreliable-run filter see a failed
-    night at all (columns: ``detector, platform, sample, run_date, reliable``).
-    ``run_date`` lets callers keep only groups whose run actually happened that
-    night, dropping stale carried-forward groups.
+    night at all (columns: ``detector, platform, sample, run_date, k4h_release,
+    missing_run, reliable``).
+
+    ``run_date`` is the night the job actually ran — a group dated before the
+    report night is normal for a batch that crossed midnight, and its
+    reliability describes that run. ``missing_run`` is what separates those from
+    the carried-forward placeholders for a run that never arrived (see
+    :attr:`~k4bench.regression.models.RunGroupReport.missing_run`), which
+    callers drop so the warning counts real runs.
     """
     rows = [
         {
@@ -198,13 +211,17 @@ def report_reliability_frame(report: NightlyReport) -> pd.DataFrame:
             "sample":      g.sample,
             "run_date":    g.run_date,
             "k4h_release": g.k4h_release,
+            "missing_run": g.missing_run,
             "reliable":    g.reliable,
         }
         for g in report.groups
     ]
     return pd.DataFrame(
         rows,
-        columns=["detector", "platform", "sample", "run_date", "k4h_release", "reliable"],
+        columns=[
+            "detector", "platform", "sample", "run_date", "k4h_release",
+            "missing_run", "reliable",
+        ],
     )
 
 
@@ -311,7 +328,16 @@ def history_rows(
         if sub.empty:
             continue
         part = sub[_HIST_COLS].copy()
-        part["run_night"] = report_night
+        # The run's own date, not the report's: a batch that starts near
+        # midnight is dated a day earlier and still reported as tonight's, and
+        # keying these rows on the report would put them out of reach of the
+        # reliability filter, which knows that run by the date it ran. Falls
+        # back to the report night only for a frame built before the column
+        # existed.
+        part["run_night"] = (
+            sub["run_date"].fillna(report_night)
+            if "run_date" in sub.columns else report_night
+        )
         parts.append(part)
     if not parts:
         return pd.DataFrame(columns=["night", "run_night", *_HIST_COLS])
@@ -366,11 +392,20 @@ def reliability_history(
     ``night, run_night, detector, reliable``.
 
     Takes :func:`report_reliability_frame` outputs (one per report night) and
-    keeps only groups whose run actually happened that night
-    (``run_date == report_night``), dropping stale carried-forward groups so the
-    warning counts real runs. ``night`` is the **Key4hep nightly tag** date, as
-    in :func:`history_rows`, and ``run_night`` the report night — one row per
-    run, *not* collapsed to the tag.
+    keeps every group that describes a real run, dropping only the
+    carried-forward placeholders for a run that never arrived
+    (``missing_run``) so the warning counts runs rather than absences. ``night``
+    is the **Key4hep nightly tag** date, as in :func:`history_rows`, and
+    ``run_night`` the date the run itself carries — one row per run, *not*
+    collapsed to the tag.
+
+    Keying on the run's own date rather than the report's is what keeps this
+    frame addressing the same runs :func:`history_rows` does. A batch that
+    starts near midnight is dated a day earlier and still reported as tonight's,
+    so a report-night key would silently exclude those runs here while their
+    values stayed in the history — leaving a contended run plotted with the
+    exclusion on and nothing said about it. A run that appears in two reports
+    (its own night's and the next one's) lands on one key and dedupes.
 
     Reliability is a property of the run, so same-tag reruns must stay apart
     here: collapsing them would make one contended rerun condemn its tag's
@@ -378,16 +413,16 @@ def reliability_history(
     measurement it is dropping.
     """
     parts = []
-    for report_night, frame in night_frames:
+    for _report_night, frame in night_frames:
         sub = frame[
             (frame["platform"] == platform)
             & (frame["sample"] == sample)
-            & (frame["run_date"] == report_night)
+            & ~frame["missing_run"].fillna(False).astype(bool)
         ]
         if sub.empty:
             continue
         part = sub[["detector", "k4h_release", "reliable"]].copy()
-        part["run_night"] = report_night
+        part["run_night"] = sub["run_date"]
         parts.append(part)
     if not parts:
         return pd.DataFrame(columns=["night", "run_night", "detector", "reliable"])
@@ -395,7 +430,11 @@ def reliability_history(
     rel["night"] = [
         _tag_date(k, rn) for k, rn in zip(rel["k4h_release"], rel["run_night"])
     ]
-    return rel[["night", "run_night", "detector", "reliable"]].reset_index(drop=True)
+    return (
+        rel[["night", "run_night", "detector", "reliable"]]
+        .drop_duplicates()
+        .reset_index(drop=True)
+    )
 
 
 def drop_unreliable_runs(
@@ -1070,11 +1109,16 @@ def stale_run_nights(
     sidebar's trend window need not cover. Fetching those nights as well is
     what lets the landscape show such a detector at its own most recent run
     rather than at whatever older night the window happens to end on.
+
+    Selected on the missing-run marker, not on the dates: a group dated before
+    the report night is just as likely to be a job that started before midnight
+    and ran for this very report, and that one's measurements are already here
+    — chasing its date would only refetch a report we have the data from.
     """
     return sorted({
         g.run_date for g in report.groups
         if g.platform == platform and g.sample == sample
-        and g.run_date and g.run_date != report_night
+        and g.run_date and g.run_date != report_night and g.missing_run
     })
 
 

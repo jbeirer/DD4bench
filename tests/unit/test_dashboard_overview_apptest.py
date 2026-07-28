@@ -570,6 +570,60 @@ def test_landscape_reaches_a_run_between_the_window_and_the_latest_report():
     assert "Not benchmarked" not in captions
 
 
+def _report_cross_midnight(night: str, det: str, ran_on: str) -> dict:
+    """*night*'s report where *det*'s job started before midnight: dated
+    *ran_on*, but part of this batch, so it keeps its verdicts and its
+    reliability — here a contended host, whose raw values the report still
+    records (unjudged) for display."""
+    rep = _report(night, detectors=tuple(
+        d for d in ("CLD_o2_v08", "IDEA_o1_v03", "SiD") if d != det
+    ))
+    lagging = _report(ran_on, detectors=(det,), reliable=False)["groups"][0]
+    lagging["k4h_release"] = f"key4hep-{night}"
+    for v in lagging["verdicts"]:
+        v["severity"] = "UNKNOWN"
+        v["reason"] = "unreliable host — value recorded but not judged"
+    lagging["notes"] = [
+        f"run is dated {ran_on}, this report {night} — same CI run as tonight's "
+        "other jobs, and a job is dated when it starts, so this batch crossed "
+        "midnight"
+    ]
+    rep["groups"].append(lagging)
+    return rep
+
+
+def test_cross_midnight_unreliable_run_is_warned_and_excludable():
+    # SiD's job started before midnight: dated 07-10 inside the 07-11 report,
+    # same batch, contended host. Its raw values are kept for display, so the
+    # exclusion has to be able to reach them — keyed on the report night rather
+    # than the run's own date, it never could, and the run stayed on the
+    # landscape with the toggle on and nothing said about it.
+    reports = dict(REPORTS)
+    reports["2026-07-11"] = _report_cross_midnight("2026-07-11", "SiD", "2026-07-10")
+    at = AppTest.from_function(
+        _app, args=(str(_DASHBOARD_DIR), DATES, reports, _WINDOW),
+        default_timeout=30,
+    ).run()
+    assert not at.exception, at.exception
+
+    warnings = "\n".join(str(w.value) for w in at.warning)
+    assert "2026-07-11" in warnings          # the tag the reader sees on the axis
+    assert at.toggle(key="det_ov_exclude_unreliable").value is True
+
+    at.radio(key="det_ov_view_mode").set_value("Performance Landscape").run()
+    assert not at.exception, at.exception
+    captions = "\n".join(str(c.value) for c in at.caption)
+    # SiD falls back to its last reliable run rather than being plotted from
+    # the contended one.
+    assert "SiD (2026-07-09)" in captions
+
+    # Toggle off and the contended run is back, on the newest tag.
+    at.toggle(key="det_ov_exclude_unreliable").set_value(False).run()
+    assert not at.exception, at.exception
+    captions = "\n".join(str(c.value) for c in at.caption)
+    assert "Nightly tag: **2026-07-11**" in captions
+
+
 def test_unreliable_run_outside_the_window_is_still_warned_and_excludable():
     # The landscape reads the newest run it can find, which sits outside the
     # sidebar window whenever the range ends before the latest report. Scoping
