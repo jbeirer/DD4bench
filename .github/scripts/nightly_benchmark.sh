@@ -21,6 +21,12 @@
 #   X509_USER_CERT, X509_USER_KEY — EOS service certificate paths
 #   GITHUB_RUN_ID, GITHUB_SHA, GITHUB_REPOSITORY, GITHUB_SERVER_URL
 #
+# Optional env vars:
+#   K4H_RELEASE_REQUESTED — Key4hep nightly release to source, e.g. "2026-07-28"
+#                           (resolved once per night by
+#                           .github/scripts/resolve_release.sh). Empty: source
+#                           whatever `latest` points at when this job starts
+#
 # EOS layout written by this script:
 #   {EOS_ROOT}/{detector}/{platform}/key4hep-{release}/{sample}/{YYYY-MM-DD}/
 #     run_info.json
@@ -62,7 +68,11 @@ echo "::endgroup::"
 # ── 3. Key4hep nightly ────────────────────────────────────────────────────────
 echo "::group::3. Key4hep nightly"
 set +u
-source /cvmfs/sw-nightlies.hsf.org/key4hep/setup.sh
+if [[ -n "${K4H_RELEASE_REQUESTED:-}" ]]; then
+    source /cvmfs/sw-nightlies.hsf.org/key4hep/setup.sh -r "${K4H_RELEASE_REQUESTED}"
+else
+    source /cvmfs/sw-nightlies.hsf.org/key4hep/setup.sh
+fi
 set -u
 [[ -n "${KEY4HEP_STACK:-}" ]] || { echo "ERROR: KEY4HEP_STACK not set after sourcing Key4hep setup" >&2; exit 1; }
 K4H_RELEASE="$(grep -oP '\d{4}-\d{2}-\d{2}' <<< "${KEY4HEP_STACK}" | head -1 || true)"
@@ -70,10 +80,24 @@ K4H_RELEASE="$(grep -oP '\d{4}-\d{2}-\d{2}' <<< "${KEY4HEP_STACK}" | head -1 || 
 # Extract platform tag (path component right after the release date, e.g. x86_64-el9-gcc14-opt)
 K4H_PLATFORM="$(grep -oP '(?<=\d{4}-\d{2}-\d{2}\/)[^/:]+' <<< "${KEY4HEP_STACK}" | head -1 || true)"
 [[ -n "${K4H_PLATFORM}" ]] || { echo "WARNING: Could not extract platform from KEY4HEP_STACK; using 'unknown'" >&2; K4H_PLATFORM="unknown"; }
+# KEY4HEP_STACK is the single source of truth for the label and the EOS path, so
+# a pinned source that lands somewhere else would file results under a release
+# that never produced them. Mislabelled results outlive a red job.
+if [[ -n "${K4H_RELEASE_REQUESTED:-}" && "${K4H_RELEASE}" != "${K4H_RELEASE_REQUESTED}" ]]; then
+    echo "ERROR: requested Key4hep release ${K4H_RELEASE_REQUESTED} but sourced ${K4H_RELEASE} (${KEY4HEP_STACK})" >&2
+    exit 1
+fi
 echo "Release : key4hep-${K4H_RELEASE}"
 echo "Platform: ${K4H_PLATFORM}"
 echo "Stack   : ${KEY4HEP_STACK}"
 echo "::endgroup::"
+
+# Outside the log group: which release produced these numbers is the first thing
+# anyone reading a regression asks. Unset when the script runs outside Actions.
+if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+    echo "- \`${BENCHMARK_CONFIG}\` / \`${SAMPLE}\`: Key4hep \`${K4H_RELEASE}\` (\`${K4H_PLATFORM}\`)" \
+        >> "${GITHUB_STEP_SUMMARY}" || true
+fi
 
 # ── 4. Install k4bench ───────────────────────────────────────────────────────
 echo "::group::4. Install k4bench"

@@ -51,6 +51,7 @@ The instrumentation/physics split that makes this possible is described in the
 sequenceDiagram
     autonumber
     participant Cron as nightly (cron)
+    participant Gate as resolve-release job
     participant Job as benchmark job
     participant K as k4bench
     participant EOS as CERN EOS
@@ -59,6 +60,8 @@ sequenceDiagram
     participant Dash as dashboard
 
     Cron->>Job: expand .github/benchmarks/*.yml → matrix
+    Cron->>Gate: wait for today's Key4hep stack on CVMFS
+    Gate-->>Job: release every job of this night sources
     Job->>K: run (per detector/sample)
     K-->>Job: logs/<detector>/ (CSV + JSON + log)
     Job->>Job: write run_info.json + machine_info.json
@@ -71,6 +74,13 @@ sequenceDiagram
     Dash->>Dash: load via k4bench.analysis; render tabs
     Dash->>EOS: fetch _reports/{date}/report.json (Regressions tab)
 ```
+
+The `resolve-release` job (`.github/scripts/resolve_release.sh`) names one
+Key4hep release per night and the whole fan-out sources exactly that release, so
+samples of the same night can never be filed under two releases. When no stack is
+published for the day it falls back to the newest one and says so in the job
+summary; the night still runs, because a repeat measurement of a release is what
+`k4bench/regression/engine.py` uses to confirm a WATCH.
 
 The EOS directory layout is the integration contract between CI and the
 dashboard — see [File formats → EOS layout](../reference/file-formats.md#eos-layout).
