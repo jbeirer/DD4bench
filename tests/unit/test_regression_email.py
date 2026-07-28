@@ -737,6 +737,33 @@ def test_a_candidate_url_with_an_unexpected_scheme_is_not_linked():
         assert "key4hep/k4geo#1" in html
 
 
+def test_a_malformed_url_costs_its_link_and_not_the_report():
+    # ``urlsplit`` raises on a malformed netloc, and every href here is data
+    # read back from a report or a blame sidecar. A single corrupt string must
+    # not take down the render — the same to_html builds the nightly mail and
+    # the dashboard's Nightly Report view, and neither has a fallback.
+    v = _windowed(first_confirmed_run_id="2026-06-27")
+    for href in ("http://[", "https://[::1", "http://a]b"):
+        broken = _candidate(1, 80.0)
+        broken = CandidatePR(**{**broken.__dict__, "url": href})
+        html = to_html(_report(_group(v)), blame=_blame(broken))
+        assert "Needs attention" in html
+        assert "key4hep/k4geo#1" in html   # named, just not linked
+        assert f'href="{href}"' not in html
+
+    # The report-level action button takes the same route.
+    html = to_html(_report(_group(_v(first_confirmed_run_id="2026-06-27"))),
+                   actions_url="http://[")
+    assert "CI run" in html
+    assert 'href="http://["' not in html
+
+
+def test_a_well_formed_ipv6_url_still_links():
+    # The guard above must not swallow the addresses that parse — bracketed
+    # IPv6 is legal, and only the unterminated form raises.
+    assert email._safe_href("https://[::1]:8501/x") == "https://[::1]:8501/x"
+
+
 def test_an_unexpected_scheme_costs_the_ci_button_its_link_only():
     r = _report(_group(_v(first_confirmed_run_id="2026-06-27")))
     html = to_html(r, dashboard_url="https://dash.example/",
@@ -754,6 +781,7 @@ def test_ordinary_schemes_still_link():
     assert email._safe_href("/docs/report") == "/docs/report"
     assert email._safe_href(None) is None
     assert email._safe_href("vbscript:x") is None
+    assert email._safe_href("http://[") is None
 
 
 def test_dashboard_query_string_merges():

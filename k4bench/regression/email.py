@@ -781,11 +781,22 @@ def _safe_href(href: str | None) -> str | None:
     Scheme-less hrefs pass: they are relative, and resolve against whatever
     document the body ends up in. ``urlsplit`` is what decides the scheme, so
     the tab/newline tricks a browser ignores when parsing one are ignored here
-    too."""
+    too.
+
+    One it rejects outright rather than parses: ``urlsplit`` raises
+    ``ValueError`` on a malformed netloc (``http://[``). These hrefs are data —
+    a sidecar's candidate URL, a report's CI run — so a single corrupt string
+    must cost its own link and nothing more. Letting the error out would take
+    the whole report with it: the same ``to_html`` renders the nightly mail and
+    the dashboard's Nightly Report view, neither of which has anything to show
+    if it raises."""
     if not href:
         return None
-    scheme = urlsplit(href).scheme
-    if scheme and scheme.lower() not in _SAFE_SCHEMES:
+    try:
+        scheme = urlsplit(href).scheme.lower()
+    except ValueError:
+        return None
+    if scheme and scheme not in _SAFE_SCHEMES:
         return None
     return href
 
