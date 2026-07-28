@@ -721,8 +721,8 @@ def test_email_view_embeds_the_rendered_mail():
     # without one they would degrade to plain text and the report stops being
     # navigable.
     assert "https://dash.invalid?tab=Overview" in doc
-    captions = "\n".join(str(c.value) for c in at.caption)
-    assert "e-mailed to the Key4hep e-group for **2026-07-11**" in captions
+    # It opens on the newest night, which the mail names for itself.
+    assert "Report night <strong>11 Jul 2026</strong>" in doc
 
 
 def test_email_view_night_picker_offers_every_loaded_night_newest_first():

@@ -187,11 +187,3 @@ def render(
     # scrolling inside a guessed box.
     with st.container(border=True):
         st.iframe(document, height="content")
-    st.caption(
-        f"The report e-mailed to the Key4hep e-group for **{night}** — every "
-        "detector, platform and sample it covered, not just the sidebar's "
-        "scope. Rebuilt from that night's report and blame sidecar by the same "
-        "renderer the mail uses, rather than replayed from a stored copy, so "
-        "the layout is today's. Links open in a new tab. The mail's *CI run* "
-        "button is omitted: that workflow-run URL is not stored in the report."
-    )
