@@ -27,6 +27,7 @@ def _is_valid_df(df: "pd.DataFrame | None") -> bool:
 
 def _reset_widget_on_scope(
     key: str, scope: object, *, reset_unscoped: bool = False,
+    query_param: str | None = None,
 ) -> None:
     """Drop a keyed widget's value when its context-dependent default changes.
 
@@ -36,6 +37,14 @@ def _reset_widget_on_scope(
     widget. The first render preserves existing state by default so query-
     seeded/deep-linked values remain authoritative; ``reset_unscoped`` is for
     purely automatic controls such as palette sizing.
+
+    *query_param* drops that ``?param=`` alongside the stored value. A widget
+    that writes its selection back to the URL needs it: clearing session state
+    alone leaves the old value in the query string, from where
+    :func:`~ui_chrome.seed_query_param` seeds it straight back on the same run
+    — so the reset would silently do nothing whenever the stale value is also
+    valid in the new scope. The incoming deep link survives, since a first
+    render (no scope recorded yet) never resets.
     """
     scope_key = f"_{key}_scope"
     previous = st.session_state.get(scope_key)
@@ -45,6 +54,8 @@ def _reset_widget_on_scope(
         or (previous is None and reset_unscoped and key in st.session_state)
     ):
         st.session_state.pop(key, None)
+        if query_param is not None:
+            st.query_params.pop(query_param, None)
 
 
 # ── Colour helper ──────────────────────────────────────────────────────────────
