@@ -84,6 +84,9 @@ def _report(
     return to_json(NightlyReport(generated_at=f"{night}T06:00:00+00:00", groups=groups))
 
 
+#: The config every detector is compared on; a job failure names it.
+_BASELINE = "baseline_all"
+
 DATES = ["2026-07-11", "2026-07-10", "2026-07-09"]
 #: The middle night failed the host reliability check — exercises the
 #: exclude-unreliable warning/toggle.
@@ -550,6 +553,108 @@ def test_landscape_falls_back_to_a_detectors_last_run():
     captions = "\n".join(str(c.value) for c in at.caption)
     assert "Newest nightly tag: **2026-07-11**" in captions
     assert "SiD (2026-07-10)" in captions
+    assert "Not benchmarked" not in captions
+
+
+def test_trends_caption_places_a_detector_missing_from_the_window():
+    # SiD's only run (07-11) sits outside the trend window, so it has no line.
+    # Both figure views account for a detector they cannot draw, or
+    # "disappeared" is indistinguishable from "never existed".
+    reports = {
+        "2026-07-11": _report("2026-07-11"),
+        "2026-07-10": _report("2026-07-10", scale=1.05,
+                              detectors=("CLD_o2_v08", "IDEA_o1_v03")),
+        "2026-07-09": _report("2026-07-09", scale=1.1,
+                              detectors=("CLD_o2_v08", "IDEA_o1_v03")),
+    }
+    at = AppTest.from_function(
+        _app, args=(str(_DASHBOARD_DIR), DATES, reports,
+                    (date(2026, 7, 9), date(2026, 7, 10))),
+        default_timeout=30,
+    ).run()
+    assert not at.exception, at.exception
+    captions = "\n".join(str(c.value) for c in at.caption)
+    assert "No run in the trend window: SiD (last ran 2026-07-11)." in captions
+    # The detectors that are on the chart are named nowhere.
+    assert "CLD_o2_v08" not in captions
+
+
+def test_trends_caption_names_a_detector_whose_config_only_failed():
+    # SiD ran every night but its baseline config hard-failed, so the engine
+    # judged it on the return code alone and it carries no metric verdict. It
+    # reaches the caption only through the group roster — a metric-derived
+    # roster would drop it silently, or file it as un-benchmarked.
+    def _failed_only(night: str) -> dict:
+        report = copy.deepcopy(_report(night))
+        for g in report["groups"]:
+            if g["detector"] == "SiD":
+                g["verdicts"] = []
+                g["job_failures"] = [f"{_BASELINE} exited with code 1"]
+        return report
+
+    reports = {n: _failed_only(n) for n in DATES}
+    at = AppTest.from_function(
+        _app, args=(str(_DASHBOARD_DIR), DATES, reports, _WINDOW), default_timeout=30,
+    ).run()
+    assert not at.exception, at.exception
+    captions = "\n".join(str(c.value) for c in at.caption)
+    assert "Ran but produced no comparable metrics" in captions
+    assert "SiD" in captions
+    assert "Not benchmarked" not in captions
+    assert "No run in the trend window" not in captions
+
+
+def test_trends_explains_itself_when_there_is_nothing_to_draw():
+    # Every detector failed: no figure at all, which is exactly when a
+    # detector-by-detector account matters most.
+    def _all_failed(night: str) -> dict:
+        report = copy.deepcopy(_report(night))
+        for g in report["groups"]:
+            g["verdicts"] = []
+            g["job_failures"] = [f"{_BASELINE} exited with code 1"]
+        return report
+
+    reports = {n: _all_failed(n) for n in DATES}
+    at = AppTest.from_function(
+        _app, args=(str(_DASHBOARD_DIR), DATES, reports, _WINDOW), default_timeout=30,
+    ).run()
+    assert not at.exception, at.exception
+    assert not at.get("plotly_chart")
+    said = "\n".join(str(i.value) for i in at.info)
+    assert "Ran but produced no comparable metrics" in said
+    for det in ("CLD_o2_v08", "IDEA_o1_v03", "SiD"):
+        assert det in said
+
+
+def test_trends_caption_places_a_detector_known_only_by_a_placeholder():
+    # SiD missed 07-11 and is carried there as a missing-run placeholder whose
+    # last real run (07-10) has no report to fetch. The placeholder is proof the
+    # scope covers SiD, so it must not be filed under "not benchmarked" — the
+    # one thing it demonstrably is not — and must still be named.
+    dates = ["2026-07-11", "2026-07-09"]
+    reports = {
+        "2026-07-11": _report("2026-07-11",
+                              detectors=("CLD_o2_v08", "IDEA_o1_v03"),
+                              stale=("SiD", "2026-07-10")),
+        "2026-07-09": _report("2026-07-09", scale=1.1,
+                              detectors=("CLD_o2_v08", "IDEA_o1_v03")),
+    }
+    at = AppTest.from_function(
+        _app, args=(str(_DASHBOARD_DIR), dates, reports,
+                    (date(2026, 7, 9), date(2026, 7, 11))),
+        default_timeout=30,
+    ).run()
+    assert not at.exception, at.exception
+    captions = "\n".join(str(c.value) for c in at.caption)
+    assert "No run in the trend window: SiD." in captions
+    assert "Not benchmarked" not in captions
+
+
+def test_trends_caption_is_silent_when_every_detector_is_drawn():
+    at = _run()
+    captions = "\n".join(str(c.value) for c in at.caption)
+    assert "No run in the trend window" not in captions
+    assert "excluded as unreliable" not in captions
     assert "Not benchmarked" not in captions
 
 

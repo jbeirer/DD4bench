@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from remote_cache import (
     _cached_fetch_runs_windowed,
     _cached_list_detectors,
     _cached_list_platforms,
+    _cached_list_report_dates,
     _cached_list_run_dates,
     _cached_scan_stack_samples,
 )
@@ -31,13 +33,14 @@ from k4bench.results.reliability_evidence import run_reliability_map
 from sections import visible_sections
 from tabs import detectors_overview, event_memory, event_timing, impact, machine_info, region_timing, regressions, stack_changes, trends
 from tabs._reliability import render_sidebar_run_quality
-from trend_window import WINDOW_PRESETS, resolve_window
+from trend_window import WINDOW_PRESETS, resolve_window, window_domain
 from ui_chrome import (
     DOCS_URL,
     GITHUB_URL,
     _drop_stale_multiselect,
     _drop_stale_selection,
     _render_footer,
+    _render_scope_reset,
     _render_sidebar_footer,
     render_example_detector_badge,
     render_logs_tab,
@@ -45,6 +48,16 @@ from ui_chrome import (
     resource_link_card,
     seed_query_param,
 )
+
+
+def _to_dates(raw: Iterable[str]) -> list[date]:
+    """Parse ``YYYY-MM-DD`` directory names to sorted, unique dates, dropping
+    anything unparseable."""
+    return sorted({
+        d.date()
+        for d in (pd.to_datetime(dt, errors="coerce") for dt in raw)
+        if pd.notna(d)
+    })
 
 
 def main() -> None:
@@ -190,11 +203,14 @@ def main() -> None:
             if not platforms:
                 st.warning(f"No platforms found for detector '{detector}'.")
                 return
-            _drop_stale_selection("sb_platform", platforms)
+            dropped_platform = _drop_stale_selection("sb_platform", platforms)
             seed_query_param("sb_platform", "platform", platforms)
             platform = st.selectbox("Platform", platforms, key="sb_platform")
             if not platform:
                 return
+            _render_scope_reset(
+                dropped_platform, platform, f"isn't available for {detector}"
+            )
             st.query_params["platform"] = platform
 
             # Scan the release tree once; derive both the sample union and the
@@ -213,11 +229,16 @@ def main() -> None:
             if not samples:
                 st.warning(f"No samples found for '{detector} / {platform}'.")
                 return
-            _drop_stale_selection("sb_sample", samples)
+            dropped_sample = _drop_stale_selection("sb_sample", samples)
             seed_query_param("sb_sample", "sample", samples)
             sample = st.selectbox("Sample", samples, key="sb_sample")
             if not sample:
                 return
+            # The Overview tab is scoped by sample across all detectors, so this
+            # re-default silently changes which detectors it shows.
+            _render_scope_reset(
+                dropped_sample, sample, f"isn't benchmarked for {detector}"
+            )
             st.query_params["sample"] = sample
 
             # Stack — only releases that actually contain the chosen sample, newest
@@ -273,15 +294,26 @@ def main() -> None:
                 st.warning(f"Could not scan trend run dates: {err}")
                 stacks_dates = {}
 
-            all_dates = sorted({
-                d
-                for dates in stacks_dates.values()
-                for d in (pd.to_datetime(dt, errors="coerce") for dt in dates)
-                if pd.notna(d)
-            })
+            run_days = _to_dates(
+                dt for dates in stacks_dates.values() for dt in dates
+            )
+
+            # The nightly report nights — one cached directory listing, the same
+            # one the Overview tab reads. They are folded into the window's date
+            # domain so the preset anchors on a date every detector shares; see
+            # `trend_window.window_domain` for why the run dates alone are the
+            # wrong anchor.
+            try:
+                report_nights = _cached_list_report_dates(config.data_url)
+            except Exception as err:
+                st.warning(f"Could not list nightly reports: {err}")
+                report_nights = []
+
+            report_days = _to_dates(report_nights)
+            all_dates = window_domain(run_days, report_days)
             if all_dates:
-                lo_date = all_dates[0].date()
-                hi_date = all_dates[-1].date()
+                lo_date = all_dates[0]
+                hi_date = all_dates[-1]
                 st.header("Trend window")
                 window_presets = list(WINDOW_PRESETS)
                 seed_query_param("sb_trend_preset", "range", window_presets)
@@ -291,7 +323,9 @@ def main() -> None:
                     "Range", window_presets,
                     key="sb_trend_preset",
                     help="Limits the date range plotted in the Trends and "
-                         "Overview tabs. Smaller windows load faster.",
+                         "Overview tabs. Anchored on the newest nightly, so it "
+                         "covers the same dates whichever detector is "
+                         "selected. Smaller windows load faster.",
                 )
                 st.query_params["range"] = preset
                 custom_range: tuple[date, date] | None = None
@@ -311,8 +345,13 @@ def main() -> None:
                         st.info("Pick both a start and end date.")
 
                 if not custom_incomplete:
+                    # Presets count back from the newest report night, which
+                    # every detector shares — a run already uploaded ahead of
+                    # tonight's report must not pull the window's start forward
+                    # for the detector that uploaded it.
                     start, end = resolve_window(
-                        preset, [d.date() for d in all_dates], custom_range
+                        preset, all_dates, custom_range,
+                        anchor=report_days[-1] if report_days else None,
                     )
                     sidebar_window = (start, end)
                     windowed = {
@@ -327,10 +366,18 @@ def main() -> None:
                         (stk, tuple(sorted(ds))) for stk, ds in sorted(windowed.items()) if ds
                     )
                     n_runs = sum(len(ds) for _, ds in windowed_items)
-                    st.caption(
+                    caption = (
                         f"{start:%Y-%m-%d} → {end:%Y-%m-%d} · "
                         f"{n_runs} run(s) across {len(windowed_items)} release(s)"
                     )
+                    # The window spans every detector, so one that stopped being
+                    # benchmarked can have nothing in it. Naming its last run
+                    # turns an empty Run Trends tab into a range to widen to.
+                    if not n_runs and run_days:
+                        caption += (
+                            f" · {detector} last ran {run_days[-1]:%Y-%m-%d}"
+                        )
+                    st.caption(caption)
                     try:
                         run_dirs = _cached_fetch_runs_windowed(
                             config.data_url, detector, platform, sample,

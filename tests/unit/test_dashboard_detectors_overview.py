@@ -784,6 +784,106 @@ def test_log_range_pads_in_decades():
     assert ov._log_range(pd.Series([0.0, -1.0]), 0.1, 0.1) is None
 
 
+# ── last_run_nights ────────────────────────────────────────────────────────────
+
+def test_last_run_nights_ignores_the_reliability_flag():
+    # SiD's newest run (07-11) failed the host check. "Last ran" is a statement
+    # about the run, not about whether it can be plotted, so it must still be
+    # 07-11 — the landscape's as_of would say 07-10 here.
+    rel = pd.DataFrame({
+        "night":     ["2026-07-10", "2026-07-11", "2026-07-11"],
+        "run_night": ["2026-07-10", "2026-07-11", "2026-07-11"],
+        "detector":  ["SiD", "SiD", "CLD"],
+        "reliable":  [True, False, True],
+    })
+    assert ov.last_run_nights(rel) == {"SiD": "2026-07-11", "CLD": "2026-07-11"}
+
+
+def test_last_run_nights_takes_the_newest_run_of_the_newest_tag():
+    rel = pd.DataFrame({
+        "night":     ["2026-07-11", "2026-07-11", "2026-07-09"],
+        "run_night": ["2026-07-11", "2026-07-12", "2026-07-09"],
+        "detector":  ["SiD"] * 3,
+        "reliable":  [True] * 3,
+    })
+    assert ov.last_run_nights(rel) == {"SiD": "2026-07-11"}
+    assert ov.last_run_nights(rel.iloc[0:0]) == {}
+
+
+# ── _trend_notes ───────────────────────────────────────────────────────────────
+
+def _hist(rows: list[tuple[str, str, float]]) -> pd.DataFrame:
+    return pd.DataFrame(
+        [{"detector": d, "metric": m, "value": v, "night": "2026-01-12"}
+         for d, m, v in rows],
+        columns=["detector", "metric", "value", "night"],
+    )
+
+
+def test_trend_notes_silent_when_every_detector_is_drawn():
+    hist = _hist([("CLD", "wall_time_s", 1.0), ("IDEA", "wall_time_s", 2.0)])
+    assert ov._trend_notes(
+        hist, hist, "wall_time_s", "peak_rss_mb",
+        ["CLD", "IDEA"], ["CLD", "IDEA"], [], {},
+    ) == []
+
+
+def test_trend_notes_separates_why_each_detector_is_absent():
+    # SiD ran in the window but every run was excluded by the reliability
+    # toggle; IDEA is in the window with other metrics only; ALLEGRO has no run
+    # in the window at all and is placed by its last run.
+    window = _hist([
+        ("CLD", "wall_time_s", 1.0),
+        ("SiD", "wall_time_s", 3.0),
+        ("IDEA", "mean_time_s", 2.0),
+    ])
+    hist = _hist([("CLD", "wall_time_s", 1.0), ("IDEA", "mean_time_s", 2.0)])
+    notes = ov._trend_notes(
+        hist, window, "wall_time_s", "peak_rss_mb",
+        ["CLD", "IDEA", "SiD", "ALLEGRO"], ["CLD", "IDEA", "SiD"], ["SiD_o2"],
+        {"ALLEGRO": "2026-01-02"},
+    )
+    joined = " ".join(notes)
+    assert "excluded as unreliable: SiD." in joined
+    assert "No value for the selected metrics: IDEA." in joined
+    assert "No run in the trend window: ALLEGRO (last ran 2026-01-02)." in joined
+    assert "Not benchmarked with this sample/platform: SiD_o2." in joined
+    # CLD is on the chart, so it is named nowhere.
+    assert "CLD" not in joined
+
+
+def test_trend_notes_names_an_unplaceable_detector_without_a_date():
+    notes = ov._trend_notes(
+        _hist([]), _hist([]), "wall_time_s", "peak_rss_mb", ["CLD"], [], [], {},
+    )
+    assert notes == ["No run in the trend window: CLD."]
+
+
+def test_trend_notes_names_a_detector_that_ran_but_produced_no_metrics():
+    # A hard-failed config is judged on its return code and carries no metric
+    # verdict, so it reaches _trend_notes only through the group roster. It must
+    # not be reported as absent from the window, nor as un-benchmarked.
+    notes = ov._trend_notes(
+        _hist([("CLD", "wall_time_s", 1.0)]),
+        _hist([("CLD", "wall_time_s", 1.0)]),
+        "wall_time_s", "peak_rss_mb",
+        ["CLD"], ["CLD", "SiD"], [], {"SiD": "2026-01-11"},
+    )
+    assert notes == [
+        "Ran but produced no comparable metrics (see Regression Status): SiD."
+    ]
+
+
+def test_trend_notes_prefers_the_unreliable_reason_over_the_failure_one():
+    # SiD is in the roster *and* has pre-filter values the toggle dropped —
+    # the run happened and was measured, so "excluded" is the true reason.
+    notes = ov._trend_notes(
+        _hist([]), _hist([("SiD", "wall_time_s", 3.0)]),
+        "wall_time_s", "peak_rss_mb", ["SiD"], ["SiD"], [], {},
+    )
+    assert notes == ["Every run in the window excluded as unreliable: SiD."]
+
+
 # ── Shared contracts ───────────────────────────────────────────────────────────
 
 def test_baseline_label_matches_benchmark():
