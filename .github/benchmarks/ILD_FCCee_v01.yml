@@ -43,11 +43,13 @@
 
 xml: FCCee/ILD_FCCee/compact/ILD_FCCee_v01/ILD_FCCee_v01.xml
 verbose: false
+
+timeout: 600  # 10 hours — a job past this is stuck, not merely slow
 sweep: true
 
 samples:
   - name: single_e-_10GeV
-    n_events: 500
+    n_events: 1000
     ddsim_args: >-
       --enableGun
       --gun.particle e-

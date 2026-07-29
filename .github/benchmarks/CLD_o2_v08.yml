@@ -45,11 +45,13 @@ xml: FCCee/CLD/compact/CLD_o2_v08/CLD_o2_v08.xml
 steering_file: $CLDCONFIG/share/CLDConfig/cld_steer.py
 
 verbose: false
+
+timeout: 600  # 10 hours — a job past this is stuck, not merely slow
 sweep: true
 
 samples:
   - name: single_e-_10GeV
-    n_events: 500
+    n_events: 1300
     ddsim_args: >-
       --enableGun
       --gun.particle e-

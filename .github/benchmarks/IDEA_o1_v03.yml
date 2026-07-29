@@ -40,29 +40,29 @@ steering_file: $FCCCONFIG/FullSim/IDEA/IDEA_o1_v03/SteeringFile_IDEA_o1_v03.py
 
 verbose: true
 
-timeout: 180  # 3 hours
+timeout: 600  # 10 hours — a job past this is stuck, not merely slow
 
-# Partial sweep — full sweep is currently too long for nightly CI. 
+# Partial sweep — full sweep is currently too long for nightly CI. Each config
+# costs ~1 h at the event counts below, so the list holds the four subdetectors
+# with the largest share of per-event time or of peak RSS: those are the ones a
+# drop-out run can resolve above the regression engine's effect floor. Memory is
+# the binding reason to sweep at all — region timing already localises a *time*
+# step from baseline_all, but it carries no memory information.
 sweep_detectors:
   - DRcalo
   - DCH_v2
-  - Muon-System
-  - Preshower
-  - VertexBarrel
-  - VertexDisks
-  - SiWrB
   - SiWrD
+  - Muon-System
 
 samples:
   - name: single_e-_10GeV
-    n_events: 100
+    n_events: 1200
     ddsim_args: >-
       --enableGun
       --gun.particle e-
       --gun.distribution uniform
       --gun.energy 10*GeV
 
-# NOTE: reduced to 1 event for nightly CI, as very long simulation times have been observed for IDEA_o1_v03 with the p8_ee_Zbb_ecm91 sample
   - name: p8_ee_Zbb_ecm91
-    n_events: 1
+    n_events: 100
     input_files: root://eospublic.cern.ch//eos/experiment/fcc/ee/generation/hepmc/p8_ee_Zbb_ecm91/events_noVtxSmear.hepmc
