@@ -11,7 +11,7 @@
 # K4BENCH_PR_COMMENT_TOKEN secret exists; without it every run is a dry run.
 
 # Ranker likelihood (0-100) a pull request must reach before it is commented on.
-min_score: 80
+min_score: 70
 
 # Hard cap on comments per night. More than this means something is wrong with
 # the attribution, not that a night really implicated that many pull requests.
