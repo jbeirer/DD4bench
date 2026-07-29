@@ -39,21 +39,21 @@ steering_file: $FCCCONFIG/FullSim/IDEA/IDEA_o2_v01/SteeringFile_IDEA_o2_v01.py
 
 verbose: false
 
-# Partial sweep — full sweep is currently too long for nightly CI. 
+timeout: 600  # 10 hours — a job past this is stuck, not merely slow
+
+# Partial sweep — full sweep is currently too long for nightly CI. The DR tube
+# geometries cost ~27 min of construction per config before the first event is
+# simulated, so every entry here adds over an hour to the job irrespective of
+# n_events; the list is kept short for that reason alone.
 sweep_detectors:
   - DRBarrelTubes
   - DREndcapTubes
   - DCH_v2
   - SCEPCal_MainLayer
-  - Muon-System
-  - VertexBarrel
-  - VertexDisks
-  - SiWrB
-  - SiWrD
 
 samples:
   - name: single_e-_10GeV
-    n_events: 100
+    n_events: 600
     ddsim_args: >-
       --enableGun
       --gun.particle e-
