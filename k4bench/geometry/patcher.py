@@ -122,8 +122,7 @@ def build_patch(index: GeometryIndex, remove: AbstractSet[str]) -> PatchResult:
         plugin_names.update(orphan_names)
 
     unresolved = attempt.generated.unresolved
-    _report_diagnostics(attempt.removed_plugins, collateral, unresolved)
-    return PatchResult(
+    result = PatchResult(
         top_path=attempt.top_path,
         directory=attempt.directory,
         subfile_map=attempt.subfile_map,
@@ -133,6 +132,12 @@ def build_patch(index: GeometryIndex, remove: AbstractSet[str]) -> PatchResult:
         removed_plugins=tuple(attempt.removed_plugins),
         unresolved_refs=unresolved,
     )
+    try:
+        _report_diagnostics(attempt.removed_plugins, collateral, unresolved)
+    except BaseException:
+        result.cleanup()
+        raise
+    return result
 
 
 @dataclass

@@ -6,6 +6,7 @@ All tests use the minimal_geometry fixture — no ddsim, no DD4hep runtime.
 from __future__ import annotations
 
 import tempfile
+import warnings
 from pathlib import Path
 from xml.dom import minidom
 
@@ -882,6 +883,27 @@ def test_unresolved_refs_are_reported_once_per_distinct_value(tmp_path):
         assert len(caught) == 1
     finally:
         result.cleanup()
+
+
+def test_diagnostic_warning_as_error_cleans_up_patch_directory(
+    tmp_path,
+    isolated_tmpdir,
+):
+    top = tmp_path / "top.xml"
+    top.write_text(
+        "<lccdd>"
+        '<include ref="${K4GEO}/shared.xml"/>'
+        '<detector name="Drop"/>'
+        "</lccdd>"
+    )
+    index = GeometryIndex.load(top, strict=True)
+
+    before = set(_get_tmp_directories(isolated_tmpdir))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(UserWarning, match="detectors behind it"):
+            build_patch(index, {"Drop"})
+    assert set(_get_tmp_directories(isolated_tmpdir)) == before
 
 
 @pytest.mark.parametrize(
