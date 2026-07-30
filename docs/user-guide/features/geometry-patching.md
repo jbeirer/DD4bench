@@ -109,9 +109,11 @@ Finally a patched top-level file is written whose `<include>` refs point at the
 temp sub-files. This is the path handed to `ddsim` via `--compactFile`.
 
 One case skips steps 5–6 entirely: a detector declared in the top-level compact
-itself. There is no include to redirect, so the document the node was removed
-from *is* the patched top level and it is written directly — single removal then
-produces a `_top_` file and no sub-files at all.
+itself, where nothing else needs patching. There is no include to redirect, so
+the document the node was removed from *is* the patched top level and it is
+written directly — single removal then produces a `_top_` file and no sub-files
+at all. If another file holds a plugin naming that detector, though, that file
+does need a patched copy, and the normal path applies.
 
 ## Inputs
 
@@ -132,10 +134,11 @@ Temporary XML files in the system temp directory, all prefixed with
 
 A single removal therefore writes one `_top_` file plus one `_sub_` file per file
 that has to change: the detector's owning file, and every file that can reach it
-through an `<include>`. That is the include depth for a simple chain, but more
-when the owner is reachable through several branches — each distinct ancestor
-needs its own redirected copy. Zero `_sub_` files when the detector is declared
-in the top level itself.
+through an `<include>`, plus any file patched only to drop a plugin naming it.
+That is the include depth for a simple chain, but more when the owner is
+reachable through several branches — each distinct ancestor needs its own
+redirected copy. Zero `_sub_` files when the detector is declared in the top
+level itself and no other file has to change.
 
 ## The context managers (use these)
 

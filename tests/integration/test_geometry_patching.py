@@ -307,19 +307,25 @@ def test_include_only_keeping_a_handful_of_detectors(top):
         )
 
 
-def test_temp_files_do_not_accumulate_across_a_sweep():
+def test_temp_files_do_not_accumulate_across_a_sweep(tmp_path, monkeypatch):
     """A whole sweep must leave the temp directory as it found it.
 
     The nightly patches every detector in turn inside one job, so a leak here is
     a leak per detector per night on a shared runner.
+
+    Run against a private temp directory: comparing the shared one before and
+    after is a race, since any concurrent k4Bench process could add or remove a
+    ``_k4bench_tmp_*`` file mid-assertion.
     """
     paths = _geometry_paths()
     if not paths:  # pragma: no cover — guarded by the module-level skipif
         pytest.skip("no geometries available")
     _, top = paths[0]
-    tmp_dir = Path(tempfile.gettempdir())
-    before = set(tmp_dir.glob(f"{_TMP_PREFIX}*"))
+    private = tmp_path / "tmp"
+    private.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(private))
+
     for name in _detector_names(top):
         with patched_geometry(top, name):
             pass
-    assert set(tmp_dir.glob(f"{_TMP_PREFIX}*")) == before
+    assert list(private.glob(f"{_TMP_PREFIX}*")) == []

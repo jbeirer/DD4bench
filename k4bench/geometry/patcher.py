@@ -123,10 +123,12 @@ def build_patched_xml(
     -------
     tuple[Path, list[Path]]
         ``(top_tmp_path, sub_tmp_paths)`` — the caller is responsible for
-        deleting all of them.  ``sub_tmp_paths`` is empty when the detector was
-        declared in the top-level compact itself, and holds one entry per file
-        on the redirect chain otherwise.  Prefer :func:`patched_geometry` to
-        handle cleanup automatically.
+        deleting all of them.  ``sub_tmp_paths`` holds one entry per file that
+        had to change: the detector's owning file, any file holding a plugin
+        that named it, and every file that reaches one of those through an
+        ``<include>``.  It is empty only when the detector was declared in the
+        top-level compact *and* nothing else needed patching.  Prefer
+        :func:`patched_geometry` to handle cleanup automatically.
 
     Raises
     ------
@@ -299,13 +301,22 @@ def _patched_tree(
                 needs_copy.add(f)
                 changed = True
 
+    sub_tmp_map: dict[Path, Path] = {}
     written: list[Path] = []
     try:
         # Allocate every path up front: retargeting a parent needs its child's
         # temp path, and with a shared or diamond include graph there is no
         # write order that guarantees children come first.
-        sub_tmp_map = {f: _reserve_tmp_xml(tmp_prefix) for f in sorted(needs_copy)}
-        written = list(sub_tmp_map.values())
+        #
+        # Recorded one at a time rather than by a comprehension: a comprehension
+        # binds nothing until it finishes, so a reservation failing part-way
+        # through (a full or unwritable temp dir, no free descriptors) would
+        # leave the files already created with nobody holding their paths.
+        for original in sorted(needs_copy):
+            tmp = _reserve_tmp_xml(tmp_prefix)
+            sub_tmp_map[original] = tmp
+            written.append(tmp)
+
         for original, tmp in sub_tmp_map.items():
             doc = modified.get(original)
             if doc is None:
@@ -315,8 +326,8 @@ def _patched_tree(
             _write_doc(doc, tmp)
     except BaseException:
         # Own the cleanup rather than handing the caller a partial list: a raise
-        # part-way through would otherwise leave the files written so far with
-        # nobody holding their paths.
+        # part-way through would otherwise leave the files reserved or written so
+        # far with nobody holding their paths.
         for tmp in written:
             tmp.unlink(missing_ok=True)
         raise
