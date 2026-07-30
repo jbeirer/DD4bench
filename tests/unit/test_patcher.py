@@ -16,6 +16,7 @@ from k4bench.geometry.patcher import (
     _TMP_PREFIX,
     build_patched_xml,
     patched_geometry,
+    patched_geometry_keep_only,
 )
 from k4bench.geometry.scanner import get_detector_names, resolve_includes
 
@@ -42,6 +43,22 @@ def _detector_names_in_doc(path: Path) -> list[str]:
 
 def _get_tmp_files(directory: Path) -> list[Path]:
     return list(directory.glob(f"{_TMP_PREFIX}*"))
+
+
+@pytest.fixture
+def isolated_tmpdir(tmp_path, monkeypatch):
+    """Point the patcher's temp writes at a private directory.
+
+    The cleanup assertions compare the set of ``_k4bench_tmp_*`` files before and
+    after. Against the shared system temp dir that is a race: a concurrent test
+    process — or any k4Bench run on the same machine — can add or remove one
+    mid-assertion. Redirecting ``tempfile``'s default gives each test its own
+    directory, so "nothing was left behind" means exactly that.
+    """
+    private = tmp_path / "tmp"
+    private.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(private))
+    return private
 
 
 # ---------------------------------------------------------------------------
@@ -214,14 +231,17 @@ class TestNestedIncludeChain:
         top, subs = build_patched_xml(nested_geometry, "DeepTracker")
         try:
             assert len(subs) == 2  # patched leaf + redirected intermediate
-            assert not any("group.xml" in r for r in _include_refs(top))
-            assert str(subs[1]) in _include_refs(top)
-            assert str(subs[0]) in _include_refs(subs[1])
+            # The chain is connected — both patched copies are reachable from the
+            # top — and no original on it is still reached. Asserted on
+            # reachability rather than on `subs` order, which is not a contract.
+            reached = set(resolve_includes(top))
+            assert set(subs) <= reached
+            assert not any(f.name in ("group.xml", "leaf.xml") for f in reached)
         finally:
             _cleanup(top, subs)
 
-    def test_chain_tmp_files_cleaned_up(self, nested_geometry):
-        tmp_dir = Path(tempfile.gettempdir())
+    def test_chain_tmp_files_cleaned_up(self, nested_geometry, isolated_tmpdir):
+        tmp_dir = isolated_tmpdir
         before = set(_get_tmp_files(tmp_dir))
         with patched_geometry(nested_geometry, "DeepCalo"):
             pass
@@ -363,12 +383,120 @@ class TestTopLevelDetector:
         finally:
             _cleanup(top, subs)
 
-    def test_context_manager_cleans_up(self, inline_geometry):
-        tmp_dir = Path(tempfile.gettempdir())
+    def test_context_manager_cleans_up(self, inline_geometry, isolated_tmpdir):
+        tmp_dir = isolated_tmpdir
         before = set(_get_tmp_files(tmp_dir))
         with patched_geometry(inline_geometry, "InlineCalo") as tmp:
             assert get_detector_names(tmp) == ["InlineTracker"]
         assert set(_get_tmp_files(tmp_dir)) == before
+
+
+class TestKeepOnlyNestedModifiedFiles:
+    """Keep-only where a modified parent includes a modified child.
+
+    Every file that loses a detector gets a patched copy, and every file on the
+    path to one has to point at that copy. When a file is *both* — it lost a
+    detector and includes a file that lost one — writing it as soon as it is
+    patched leaves it pointing at the original child, and the child's removals
+    are silently absent from the geometry.
+
+    INCLUDE_ONLY hits this on any real geometry (keeping a handful of detectors
+    modifies many nested files at once), as does EXCLUDE_ONLY with detectors
+    spread across nested files.
+    """
+
+    @pytest.fixture
+    def geometry(self, tmp_path):
+        (tmp_path / "top.xml").write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<lccdd>\n  <include ref="group.xml"/>\n</lccdd>\n'
+        )
+        (tmp_path / "group.xml").write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            "<lccdd>\n"
+            '  <include ref="leaf.xml"/>\n'
+            "  <detectors>\n"
+            '    <detector id="1" name="GroupDrop" type="T"/>\n'
+            "  </detectors>\n</lccdd>\n"
+        )
+        (tmp_path / "leaf.xml").write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            "<lccdd>\n  <detectors>\n"
+            '    <detector id="2" name="LeafDrop" type="T"/>\n'
+            '    <detector id="3" name="Keep" type="T"/>\n'
+            "  </detectors>\n</lccdd>\n"
+        )
+        return tmp_path / "top.xml"
+
+    def test_removals_in_both_files_take_effect(self, geometry):
+        with patched_geometry_keep_only(geometry, {"Keep"}) as tmp:
+            assert get_detector_names(tmp) == ["Keep"]
+
+    def test_keeping_a_detector_from_each_file_works_too(self, geometry):
+        with patched_geometry_keep_only(geometry, {"GroupDrop", "Keep"}) as tmp:
+            assert sorted(get_detector_names(tmp)) == ["GroupDrop", "Keep"]
+
+    def test_exclude_of_detectors_across_nested_files(self, geometry):
+        # The EXCLUDE_ONLY shape: keep everything except two names that live in
+        # a parent and its child.
+        keep = {"Keep"}
+        with patched_geometry_keep_only(geometry, keep) as tmp:
+            assert "GroupDrop" not in get_detector_names(tmp)
+            assert "LeafDrop" not in get_detector_names(tmp)
+
+
+class TestCrossFileOrphanedPlugins:
+    """A ``<plugin>`` naming a removed detector need not share its file.
+
+    The patcher promises to drop plugins naming removed detectors; a plugin left
+    pointing at an absent detector is a ddsim error at start-up, and the file it
+    sits in may be neither the detector's owner nor the top level.
+    """
+
+    @pytest.fixture
+    def geometry(self, tmp_path):
+        (tmp_path / "top.xml").write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<lccdd>\n  <include ref="group.xml"/>\n</lccdd>\n'
+        )
+        (tmp_path / "group.xml").write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            "<lccdd>\n"
+            '  <include ref="leaf.xml"/>\n'
+            '  <plugin name="DD4hep_ReadoutSetup">\n'
+            '    <argument value="Target"/>\n'
+            "  </plugin>\n"
+            '  <plugin name="DD4hep_Other">\n'
+            '    <argument value="Keep"/>\n'
+            "  </plugin>\n</lccdd>\n"
+        )
+        (tmp_path / "leaf.xml").write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            "<lccdd>\n  <detectors>\n"
+            '    <detector id="1" name="Target" type="T"/>\n'
+            '    <detector id="2" name="Keep" type="T"/>\n'
+            "  </detectors>\n</lccdd>\n"
+        )
+        return tmp_path / "top.xml"
+
+    def _plugin_args(self, top: Path) -> list[str]:
+        out = []
+        for f in resolve_includes(top):
+            doc = minidom.parse(str(f))
+            for plugin in doc.getElementsByTagName("plugin"):
+                out += [
+                    a.getAttribute("value")
+                    for a in plugin.getElementsByTagName("argument")
+                ]
+        return sorted(out)
+
+    def test_single_removal_drops_a_plugin_in_another_file(self, geometry):
+        with patched_geometry(geometry, "Target") as tmp:
+            assert self._plugin_args(tmp) == ["Keep"]
+
+    def test_keep_only_drops_a_plugin_in_another_file(self, geometry):
+        with patched_geometry_keep_only(geometry, {"Keep"}) as tmp:
+            assert self._plugin_args(tmp) == ["Keep"]
 
 
 class TestFilesystemRefElements:
@@ -428,16 +556,16 @@ class TestPatchedGeometryContextManager:
         with patched_geometry(MINIMAL_XML, "EcalBarrel") as tmp:
             assert tmp.exists()
 
-    def test_tmp_files_cleaned_up_on_exit(self):
-        tmp_dir = Path(tempfile.gettempdir())
+    def test_tmp_files_cleaned_up_on_exit(self, isolated_tmpdir):
+        tmp_dir = isolated_tmpdir
         before = set(_get_tmp_files(tmp_dir))
         with patched_geometry(MINIMAL_XML, "EcalBarrel"):
             pass
         after = set(_get_tmp_files(tmp_dir))
         assert after == before
 
-    def test_tmp_files_cleaned_up_on_exception(self):
-        tmp_dir = Path(tempfile.gettempdir())
+    def test_tmp_files_cleaned_up_on_exception(self, isolated_tmpdir):
+        tmp_dir = isolated_tmpdir
         before = set(_get_tmp_files(tmp_dir))
         with pytest.raises(RuntimeError):
             with patched_geometry(MINIMAL_XML, "EcalBarrel"):

@@ -103,12 +103,19 @@ def _token(node: minidom.Element) -> str:
     return f"<{node.tagName} {' '.join(sorted(attrs))}>"
 
 
-def _expand(path: Path, *, skip: str | None = None, depth: int = 0) -> list[str]:
+def _expand(
+    path: Path, *, drop: frozenset[str] | set[str] = frozenset(), depth: int = 0
+) -> list[str]:
     """The whole geometry as a flat token list, inlining includes in order.
 
-    *skip* omits that detector's entire subtree — its nested includes with it,
-    which is what a correct removal produces, since a module file reachable only
-    through the removed detector goes with it — and any plugin naming it.
+    *drop* omits each named detector's entire subtree — its nested includes with
+    it, which is what a correct removal produces, since a module file reachable
+    only through the removed detector goes with it — and any plugin naming one of
+    them. One name expresses a removal sweep; the complement of a keep set
+    expresses INCLUDE_ONLY / EXCLUDE_ONLY.
+
+    An unnamed ``<detector>`` is never dropped, matching the patcher: it filters
+    on the ``name`` attribute and leaves elements without one alone.
     """
     if depth > 64:  # pragma: no cover — guards a pathological include cycle
         return ["<!-- recursion limit -->"]
@@ -123,11 +130,12 @@ def _expand(path: Path, *, skip: str | None = None, depth: int = 0) -> list[str]
             if child.nodeType != child.ELEMENT_NODE:
                 continue
             tag = child.tagName.lower()
-            if skip is not None:
-                if tag == "detector" and child.getAttribute("name") == skip:
+            if drop:
+                name = child.getAttribute("name")
+                if tag == "detector" and name and name in drop:
                     continue
                 if tag == "plugin" and any(
-                    a.getAttribute("value") == skip
+                    a.getAttribute("value") in drop
                     for a in child.getElementsByTagName("argument")
                 ):
                     continue
@@ -138,7 +146,7 @@ def _expand(path: Path, *, skip: str | None = None, depth: int = 0) -> list[str]
                     target = target if target.is_absolute() else base / target
                     if target.exists():
                         out.extend(_expand(
-                            target.resolve(), skip=skip, depth=depth + 1
+                            target.resolve(), drop=drop, depth=depth + 1
                         ))
                         continue
                 out.append(_token(child))
@@ -222,6 +230,25 @@ def _geometry_paths() -> list[tuple[str, Path]]:
     return found
 
 
+def test_every_nightly_geometry_was_found():
+    """Fail loudly when an expected geometry is missing.
+
+    Every other test here is parametrized over whatever :func:`_geometry_paths`
+    discovered, so a k4geo reorganisation would empty the parameter set and leave
+    the suite green while testing nothing. This is the check that cannot be
+    silently skipped: with $K4GEO set, every nightly geometry must be there.
+    """
+    missing = [
+        label for label, rel in _GEOMETRIES.items()
+        if not (Path(K4GEO) / rel).exists()
+    ]
+    assert not missing, (
+        f"benchmarked geometries not found under $K4GEO={K4GEO}: {missing} — "
+        "either k4geo moved them (update _GEOMETRIES, and .github/benchmarks/) "
+        "or this environment is incomplete"
+    )
+
+
 @pytest.mark.parametrize(
     "top",
     [pytest.param(path, id=label) for label, path in _geometry_paths()],
@@ -238,7 +265,7 @@ def test_every_detector_patches_correctly(top, patch):
 
     wrong: list[str] = []
     for name in names:
-        expected = _expand(top, skip=name)
+        expected = _expand(top, drop={name})
         with patch(top, name) as patched_top:
             if dangling := _dangling_refs(patched_top):
                 wrong.append(f"{name}: dangling refs {dangling[:2]}")
@@ -251,6 +278,33 @@ def test_every_detector_patches_correctly(top, patch):
         f"{top.name}: {len(wrong)}/{len(names)} detectors patched incorrectly:\n  "
         + "\n  ".join(wrong[:10])
     )
+
+
+@pytest.mark.parametrize(
+    "top",
+    [pytest.param(path, id=label) for label, path in _geometry_paths()],
+)
+def test_include_only_keeping_a_handful_of_detectors(top):
+    """The real INCLUDE_ONLY shape: keep a few detectors, drop everything else.
+
+    This is the case the one-detector removal above cannot reach. Keeping a small
+    subset removes detectors from *many* files at once, so files that are both
+    modified themselves and on the include path to another modified file are
+    routine — the shape that silently dropped the nested file's removals.
+
+    Detectors are picked spread across the encounter order so they land in
+    different branches of the include tree rather than all in one file.
+    """
+    names = _detector_names(top)
+    keep = {names[0], names[len(names) // 2], names[-1]}
+    expected = _expand(top, drop=set(names) - keep)
+
+    with patched_geometry_keep_only(top, keep) as patched_top:
+        assert not _dangling_refs(patched_top), "patched geometry has dangling refs"
+        assert set(_detector_names(patched_top)) == keep
+        assert _expand(patched_top) == expected, (
+            "kept geometry differs from baseline-minus-the-dropped-detectors"
+        )
 
 
 def test_temp_files_do_not_accumulate_across_a_sweep():
