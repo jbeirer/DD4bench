@@ -11,9 +11,9 @@ No simulation is involved: this checks the produced XML only, so it is cheap
 enough to run over a few hundred detectors.
 
 The oracle is an independent expansion of the geometry. ``_expand`` recursively
-inlines every resolvable ``<include>`` in document order and emits a canonical
-token per node, so include structure and the patcher's path absolutization are
-normalised away. Removing detector *D* is correct exactly when
+inlines every resolvable DD4hep document reference in document order and emits
+a canonical token per node, so graph structure and the patcher's path
+absolutization are normalised away. Removing detector *D* is correct exactly when
 
     _expand(patched)  ==  _expand(baseline, skipping D)
 
@@ -116,7 +116,7 @@ def _token(node: minidom.Element) -> str:
 def _expand(
     path: Path, *, drop: frozenset[str] | set[str] = frozenset(), depth: int = 0
 ) -> list[str]:
-    """The whole geometry as a flat token list, inlining includes in order.
+    """The whole geometry as a flat token list, inlining documents in order.
 
     *drop* omits each named detector's entire subtree — its nested includes with
     it, which is what a correct removal produces, since a module file reachable
@@ -149,7 +149,12 @@ def _expand(
                     for a in child.getElementsByTagName("argument")
                 ):
                     continue
-            if tag == "include":
+            is_document_ref = tag == "include" or (
+                tag == "file"
+                and node.nodeType == node.ELEMENT_NODE
+                and node.tagName.lower() == "includes"
+            )
+            if is_document_ref:
                 ref = child.getAttribute("ref")
                 if ref and "$" not in ref:
                     target = Path(os.path.expandvars(ref))

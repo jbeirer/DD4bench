@@ -21,7 +21,8 @@ from k4bench.geometry.patcher import (
     patched_geometry,
     patched_geometry_keep_only,
 )
-from k4bench.geometry.index import GeometryIndex, _resolve_local_ref
+from k4bench.geometry.index import GeometryIndex
+from k4bench.geometry.references import resolve_local_ref
 from k4bench.geometry.scanner import get_detector_names, resolve_includes
 
 # ---------------------------------------------------------------------------
@@ -211,6 +212,47 @@ class TestIncludeRedirect:
             # materials.xml and calorimeter include should still be present
             assert any("materials" in r for r in refs)
             assert any("calorimeter" in r for r in refs)
+        finally:
+            result.cleanup()
+
+
+class TestIncludesFileDocument:
+    @pytest.fixture
+    def geometry(self, tmp_path):
+        top = tmp_path / "top.xml"
+        child = tmp_path / "subdetectors.xml"
+        top.write_text(
+            "<lccdd><includes>"
+            '<file ref="subdetectors.xml"/>'
+            "</includes></lccdd>"
+        )
+        child.write_text(
+            "<lccdd><detectors>"
+            '<detector name="BehindFile"/>'
+            '<detector name="Keep"/>'
+            "</detectors></lccdd>"
+        )
+        return top
+
+    def test_detector_is_discovered_and_removed(self, geometry):
+        assert get_detector_names(geometry) == ["BehindFile", "Keep"]
+        with patched_geometry(geometry, "BehindFile") as patched_top:
+            assert get_detector_names(patched_top) == ["Keep"]
+
+    def test_file_reference_is_retargeted_to_the_generated_child(self, geometry):
+        result = build_patch(
+            GeometryIndex.load(geometry, strict=True),
+            {"BehindFile"},
+        )
+        try:
+            doc = minidom.parse(str(result.top_path))
+            refs = [
+                node.getAttribute("ref")
+                for node in doc.getElementsByTagName("file")
+            ]
+            generated = next(iter(result.subfile_map.values()))
+            assert refs == [str(generated)]
+            assert generated in set(resolve_includes(result.top_path))
         finally:
             result.cleanup()
 
@@ -772,7 +814,12 @@ def test_collateral_detector_is_recorded(tmp_path, capsys):
     top = tmp_path / "top.xml"
     detectors = tmp_path / "detectors.xml"
     module = tmp_path / "module.xml"
-    top.write_text('<lccdd><include ref="detectors.xml"/></lccdd>')
+    top.write_text(
+        "<lccdd>"
+        '<include ref="detectors.xml"/>'
+        '<plugin name="NestedSetup"><argument value="Nested"/></plugin>'
+        "</lccdd>"
+    )
     detectors.write_text(
         "<lccdd><detector name=\"Outer\">"
         '<include ref="module.xml"/>'
@@ -784,9 +831,37 @@ def test_collateral_detector_is_recorded(tmp_path, capsys):
     result = build_patch(index, {"Outer"})
     try:
         assert result.collateral_detectors == frozenset({"Nested"})
+        assert [
+            (plugin.plugin_type, plugin.matched_value)
+            for plugin in result.removed_plugins
+        ] == [("NestedSetup", "Nested")]
+        generated = GeometryIndex.load(result.top_path, strict=True)
+        assert "Nested" not in generated.plugin_values
         assert "collateral detector removals: Nested" in capsys.readouterr().out
     finally:
         result.cleanup()
+
+
+@pytest.mark.parametrize("tag", ["gdmlFile", "file"])
+def test_patch_rejects_missing_local_asset_ref(
+    tag,
+    tmp_path,
+    isolated_tmpdir,
+):
+    top = tmp_path / "top.xml"
+    top.write_text(
+        f'<lccdd><{tag} ref="missing.xml"/><detector name="Drop"/></lccdd>'
+    )
+    index = GeometryIndex.load(top, strict=True)
+    assert index.is_complete
+
+    before = set(_get_tmp_directories(isolated_tmpdir))
+    with (
+        pytest.warns(UserWarning, match="Could not absolutize"),
+        pytest.raises(PatchValidationError, match="missing filesystem"),
+    ):
+        build_patch(index, {"Drop"})
+    assert set(_get_tmp_directories(isolated_tmpdir)) == before
 
 
 def test_unresolved_refs_are_reported_once_per_distinct_value(tmp_path):
@@ -819,7 +894,7 @@ def test_unresolved_refs_are_reported_once_per_distinct_value(tmp_path):
     ],
 )
 def test_resolve_local_ref(tmp_path, ref, expected):
-    resolved = _resolve_local_ref(ref, tmp_path)
+    resolved = resolve_local_ref(ref, tmp_path)
     if expected is None:
         assert resolved is None
     else:
@@ -828,7 +903,7 @@ def test_resolve_local_ref(tmp_path, ref, expected):
 
 def test_resolve_local_ref_preserves_absolute_path(tmp_path):
     absolute = (tmp_path / "child.xml").resolve()
-    assert _resolve_local_ref(str(absolute), tmp_path / "elsewhere") == absolute
+    assert resolve_local_ref(str(absolute), tmp_path / "elsewhere") == absolute
 
 
 def test_patched_context_yields_result_and_cleans_up(isolated_tmpdir):

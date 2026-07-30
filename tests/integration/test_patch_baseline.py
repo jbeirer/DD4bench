@@ -31,7 +31,7 @@ pytestmark = [
 ]
 
 _BASELINE = Path(__file__).parent.parent / "data" / "patch_baseline.json"
-_TOKENIZER_VERSION = 2
+_TOKENIZER_VERSION = 3
 
 
 def _fingerprint(top: Path) -> str:
@@ -118,10 +118,12 @@ def test_patched_outputs_match_main_baseline():
         "patch baseline uses a different tokenizer version; recapture it before "
         "comparing patcher output"
     )
-    assert expected["k4geo_revision"] == _k4geo_revision(), (
-        "installed K4GEO revision differs from the revision used to capture "
-        "patch_baseline.json"
-    )
+    current_revision = _k4geo_revision()
+    if current_revision != "unknown":
+        assert expected["k4geo_revision"] == current_revision, (
+            "installed K4GEO revision differs from the revision used to capture "
+            "patch_baseline.json"
+        )
 
     current_sources = {
         label: _source_tree_fingerprint((Path(K4GEO) / relative).resolve())

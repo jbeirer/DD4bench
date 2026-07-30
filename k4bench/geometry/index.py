@@ -13,22 +13,11 @@ from xml.dom import minidom
 from xml.parsers.expat import ExpatError
 
 from k4bench.geometry.errors import GeometryParseError
-
-# DD4hep element types whose ref= attribute is always a filesystem path,
-# spelled exactly as DD4hep declares them in XML/UnicodeValues.h.
-_FILESYSTEM_REF_ELEMENTS = frozenset({"include", "gdmlFile", "file"})
-
-
-def _resolve_local_ref(ref: str, base: Path) -> Path | None:
-    """Return where a local filesystem ref points, or ``None`` if unresolved.
-
-    An empty ref or one carrying ``$`` is deliberately left to ddsim.  Checking
-    the raw value makes indexing deterministic regardless of the environment.
-    """
-    if not ref or "$" in ref:
-        return None
-    path = Path(ref)
-    return (path if path.is_absolute() else base / path).resolve()
+from k4bench.geometry.references import (
+    FILESYSTEM_REF_ELEMENTS,
+    is_geometry_document_ref,
+    resolve_local_ref,
+)
 
 
 @dataclass(frozen=True)
@@ -43,7 +32,7 @@ class FilesystemRef:
 
 @dataclass(frozen=True)
 class GeometryIndex:
-    """Geometry structure derived in one traversal of the include tree."""
+    """Geometry structure derived in one traversal of the document graph."""
 
     top: Path
     files: tuple[Path, ...]
@@ -113,10 +102,10 @@ class GeometryIndex:
             refs: list[FilesystemRef] = []
             targets: list[Path] = []
             for node in doc.getElementsByTagName("*"):
-                if node.tagName not in _FILESYSTEM_REF_ELEMENTS:
+                if node.tagName not in FILESYSTEM_REF_ELEMENTS:
                     continue
                 ref = node.getAttribute("ref")
-                resolved = _resolve_local_ref(ref, path.parent)
+                resolved = resolve_local_ref(ref, path.parent)
                 refs.append(
                     FilesystemRef(
                         tag=node.tagName,
@@ -125,7 +114,7 @@ class GeometryIndex:
                         resolved=resolved,
                     )
                 )
-                if node.tagName == "include" and resolved is not None:
+                if is_geometry_document_ref(node) and resolved is not None:
                     if not resolved.exists():
                         fail(
                             resolved,

@@ -130,7 +130,11 @@ class TestFullMode:
         with patch("k4bench.benchmark.ddsim.run_ddsim", side_effect=_mock_run) as run:
             results = run_sweep(_make_config(tmp_path, mode=SweepMode.FULL))
 
-        assert [result.label for result in results] == ["baseline_all"]
+        assert [result.label for result in results] == [
+            "baseline_all",
+            "patch_setup",
+        ]
+        assert not results[-1].succeeded
         assert run.call_count == 1
 
 
@@ -310,7 +314,7 @@ class TestFailureHandling:
 
         assert len(results) == 5
 
-    def test_unexpected_exception_skips_run_continues(self, tmp_path):
+    def test_unexpected_exception_records_failure_and_continues(self, tmp_path):
         def side_effect(**kw):
             if kw["label"] == "without_EcalBarrel":
                 raise RuntimeError("unexpected crash")
@@ -320,8 +324,10 @@ class TestFailureHandling:
             results = run_sweep(_make_config(tmp_path, mode=SweepMode.FULL))
 
         labels = {r.label for r in results}
-        assert "without_EcalBarrel" not in labels
-        assert len(results) == 4
+        assert "without_EcalBarrel" in labels
+        assert len(results) == 5
+        failed = next(r for r in results if r.label == "without_EcalBarrel")
+        assert not failed.succeeded
 
 
 # ---------------------------------------------------------------------------

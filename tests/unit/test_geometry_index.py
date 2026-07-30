@@ -85,6 +85,42 @@ def test_all_dd4hep_filesystem_ref_tags_are_indexed(diamond):
     assert tags == {"include", "gdmlFile", "file"}
 
 
+def test_includes_file_document_is_traversed(tmp_path):
+    top = tmp_path / "top.xml"
+    child = tmp_path / "subdetectors.xml"
+    top.write_text(
+        '<lccdd><includes><file ref="subdetectors.xml"/></includes></lccdd>'
+    )
+    child.write_text(
+        "<lccdd>"
+        '<detector name="BehindFile"/>'
+        '<plugin name="Setup"><argument value="BehindFile"/></plugin>'
+        "</lccdd>"
+    )
+
+    index = GeometryIndex.load(top, strict=True)
+
+    assert index.files == (top.resolve(), child.resolve())
+    assert index.includes[top.resolve()] == (child.resolve(),)
+    assert index.parents[child.resolve()] == (top.resolve(),)
+    assert index.detector_names == ("BehindFile",)
+    assert index.plugin_values["BehindFile"] == (child.resolve(),)
+
+
+def test_missing_includes_file_is_a_strict_parse_error(tmp_path):
+    top = tmp_path / "top.xml"
+    missing = tmp_path / "missing.xml"
+    top.write_text(
+        '<lccdd><includes><file ref="missing.xml"/></includes></lccdd>'
+    )
+
+    with pytest.raises(GeometryParseError) as caught:
+        GeometryIndex.load(top, strict=True)
+
+    assert caught.value.path == missing.resolve()
+    assert caught.value.chain == (top.resolve(), missing.resolve())
+
+
 def test_each_file_is_parsed_once_even_when_shared(diamond, monkeypatch):
     actual_parse = index_module.minidom.parse
     parsed: list[Path] = []

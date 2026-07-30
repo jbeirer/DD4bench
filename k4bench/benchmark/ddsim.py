@@ -207,6 +207,7 @@ def _run_removal_sweep(config: BenchmarkConfig) -> list[RunResult]:
         index = GeometryIndex.load(config.xml_path, strict=True)
     except Exception:
         print(f"  ERROR preparing geometry patches:\n{traceback.format_exc()}")
+        results.append(_failed_run("patch_setup", config))
         return results
 
     for i, name in enumerate(detectors_to_remove, start=2):
@@ -223,11 +224,18 @@ def _run_removal_sweep(config: BenchmarkConfig) -> list[RunResult]:
                     )
                 )
         except DetectorNotFoundError as exc:
-            print(f"  SKIP {label}: {exc}\n")
+            print(f"  ERROR in {label}: {exc}\n")
+            results.append(_failed_run(label, config))
         except Exception:
             print(f"  ERROR in {label}:\n{traceback.format_exc()}")
+            results.append(_failed_run(label, config))
 
     return results
+
+
+def _failed_run(label: str, config: BenchmarkConfig) -> RunResult:
+    """Represent an internal sweep failure in the persisted result set."""
+    return RunResult(label=label, returncode=1, n_events=config.n_events)
 
 
 def _run_include_only_sweep(config: BenchmarkConfig) -> list[RunResult]:

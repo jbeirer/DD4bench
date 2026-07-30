@@ -7,22 +7,23 @@ without ever touching the original XML. It lives in
 
 ## Purpose
 
-DD4hep geometries are split across many XML files linked by
-`<include ref="..."/>` tags, and they usually live on a **read-only CVMFS
-mount**. To benchmark "the geometry minus detector X" you need a modified
-geometry — but you cannot edit the originals, and naïvely copying just one file
-breaks the include graph. The patcher solves this by producing a self-consistent
-set of *temporary* XML files with the requested detectors removed, and handing
-`ddsim` a patched top-level file that transparently points at them.
+DD4hep geometries are split across many XML files linked by document references
+such as `<include ref="..."/>` and `<includes><file
+ref="..."/></includes>`, and they usually live on a **read-only CVMFS mount**.
+To benchmark "the geometry minus detector X" you need a modified geometry — but
+you cannot edit the originals, and naïvely copying just one file breaks the
+document graph. The patcher solves this by producing a self-consistent set of
+*temporary* XML files with the requested detectors removed, and handing `ddsim`
+a patched top-level file that transparently points at them.
 
 ## How it works
 
 ### Step 1 — Index the geometry once
 
-[`GeometryIndex`](../../reference/api/geometry/index.md) walks `<include
-ref="...">` recursively from the top-level XML. In one traversal it records
-reachable files, forward and reverse include edges, detector declarations,
-plugin argument values, and every DD4hep filesystem reference.
+[`GeometryIndex`](../../reference/api/geometry/index.md) walks DD4hep document
+references recursively from the top-level XML. In one traversal it records
+reachable files, forward and reverse graph edges, detector declarations, plugin
+argument values, and every DD4hep filesystem reference.
 
 ```mermaid
 flowchart TD
@@ -52,8 +53,10 @@ so the patcher deletes any `<plugin>` whose argument values name a removed
 detector.
 
 The sweep is over **every** reachable file, against the **complete** set of
-removed names — a plugin and the detector it names need not share a file. A file
-that loses only a plugin this way gets a patched copy like any other.
+removed names — a plugin and the detector it names need not share a file. After
+each patch attempt, the generated tree is checked for plugins naming detectors
+that disappeared collaterally; any such files are patched in a subsequent pass.
+A file that loses only a plugin this way gets a patched copy like any other.
 
 !!! warning "Plugin removal is heuristic"
     This relies on the DD4hep convention that detector identity is encoded in

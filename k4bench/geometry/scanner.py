@@ -10,9 +10,10 @@ from k4bench.geometry.index import GeometryIndex
 def get_detector_names(xml_path: Path) -> list[str]:
     """Return the names of all ``<detector>`` elements in the geometry.
 
-    Recursively follows ``<include ref="..."/>`` tags starting from
-    *xml_path*, collecting every ``<detector name="...">`` attribute
-    found across all reachable files.  Order is encounter order;
+    Recursively follows DD4hep document references starting from *xml_path*,
+    including both ``<include ref="..."/>`` and ``<includes><file
+    ref="..."/></includes>``, collecting every ``<detector name="...">``
+    attribute found across all reachable files. Order is encounter order;
     duplicates are suppressed.
 
     Parameters
@@ -31,9 +32,9 @@ def get_detector_names(xml_path: Path) -> list[str]:
 def resolve_includes(xml_path: Path) -> list[Path]:
     """Return all XML files reachable from *xml_path* via includes.
 
-    Follows ``<include ref="..."/>`` tags recursively.  The returned
-    list is in encounter order and contains no duplicates.  *xml_path*
-    itself is always the first element.
+    Follows DD4hep document references recursively. The returned list is in
+    encounter order and contains no duplicates. *xml_path* itself is always
+    the first element.
 
     Includes whose ``ref`` attribute contains an unresolved environment
     variable (e.g. ``${DD4hepINSTALL}/...``) are skipped silently —

@@ -9,8 +9,10 @@ from pathlib import Path
 
 import pytest
 
+import k4bench.benchmark.ddsim as ddsim_module
 from k4bench.benchmark.ddsim import SweepMode
 from k4bench.cli import _build_config, _build_parser, main
+from k4bench.results.model import RunResult
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -229,3 +231,35 @@ class TestListDetectorsMain:
         rc = main(["--xml", str(xml), "--list-detectors"])
         assert rc == 1
         assert "No subdetectors found" in capsys.readouterr().err
+
+
+def test_strict_index_failure_makes_full_sweep_exit_nonzero(
+    tmp_path,
+    monkeypatch,
+):
+    class BrokenIndex:
+        @classmethod
+        def load(cls, path, *, strict):
+            raise RuntimeError("strict indexing failed")
+
+    def successful_baseline(**kwargs):
+        return RunResult(
+            label=kwargs["label"],
+            returncode=0,
+            n_events=2,
+        )
+
+    monkeypatch.setattr(ddsim_module, "GeometryIndex", BrokenIndex)
+    monkeypatch.setattr(ddsim_module, "run_ddsim", successful_baseline)
+
+    rc = main(
+        [
+            "--xml",
+            str(MINIMAL_XML),
+            "--sweep",
+            "--output-dir",
+            str(tmp_path / "results"),
+        ]
+    )
+
+    assert rc == 1

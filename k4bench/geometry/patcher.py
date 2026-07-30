@@ -6,6 +6,7 @@ import contextlib
 import shutil
 import tempfile
 import warnings
+from collections import deque
 from collections.abc import Generator
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,11 +19,10 @@ from k4bench.geometry.errors import (
     GeometryParseError,
     PatchValidationError,
 )
-from k4bench.geometry.index import (
-    _FILESYSTEM_REF_ELEMENTS,
-    FilesystemRef,
-    GeometryIndex,
-    _resolve_local_ref,
+from k4bench.geometry.index import FilesystemRef, GeometryIndex
+from k4bench.geometry.references import (
+    FILESYSTEM_REF_ELEMENTS,
+    resolve_local_ref,
 )
 
 _PATCH_DIR_PREFIX = "_k4bench_patch_"
@@ -80,7 +80,80 @@ def build_patch(index: GeometryIndex, remove: AbstractSet[str]) -> PatchResult:
                 stacklevel=2,
             )
 
-    targets = index.files_declaring(removed) | index.files_with_plugins_for(removed)
+    detector_targets = index.files_declaring(removed)
+    plugin_targets: set[Path] = set()
+    plugin_names = set(removed)
+
+    while True:
+        attempt = _write_patch_attempt(
+            index,
+            removed=removed,
+            detector_targets=detector_targets,
+            plugin_targets=plugin_targets,
+            plugin_names=plugin_names,
+        )
+        present = frozenset(attempt.generated.detector_names)
+        collateral = frozenset(index.detector_names) - removed - present
+        orphan_names = set(removed) | set(collateral)
+        orphan_files = attempt.generated.files_with_plugins_for(orphan_names)
+        if not orphan_files:
+            break
+
+        generated_to_original = {
+            attempt.top_path: index.top,
+            **{
+                generated: original
+                for original, generated in attempt.subfile_map.items()
+            },
+        }
+        additional_targets = {
+            generated_to_original.get(path, path)
+            for path in orphan_files
+        } - plugin_targets
+        if not additional_targets:
+            shutil.rmtree(attempt.directory, ignore_errors=True)
+            raise PatchValidationError(
+                "Generated geometry still contains plugin(s) naming removed "
+                f"detector(s): {', '.join(sorted(orphan_names))}"
+            )
+
+        shutil.rmtree(attempt.directory, ignore_errors=True)
+        plugin_targets.update(additional_targets)
+        plugin_names.update(orphan_names)
+
+    unresolved = attempt.generated.unresolved
+    _report_diagnostics(attempt.removed_plugins, collateral, unresolved)
+    return PatchResult(
+        top_path=attempt.top_path,
+        directory=attempt.directory,
+        subfile_map=attempt.subfile_map,
+        removed_detectors=removed,
+        collateral_detectors=collateral,
+        present_detectors=present,
+        removed_plugins=tuple(attempt.removed_plugins),
+        unresolved_refs=unresolved,
+    )
+
+
+@dataclass
+class _PatchAttempt:
+    directory: Path
+    top_path: Path
+    subfile_map: dict[Path, Path]
+    removed_plugins: list[RemovedPlugin]
+    generated: GeometryIndex
+
+
+def _write_patch_attempt(
+    index: GeometryIndex,
+    *,
+    removed: frozenset[str],
+    detector_targets: set[Path],
+    plugin_targets: set[Path],
+    plugin_names: AbstractSet[str],
+) -> _PatchAttempt:
+    """Write one patch attempt for the current reachable plugin targets."""
+    targets = detector_targets | plugin_targets
     to_copy = index.ancestors(targets) - {index.top}
     directory = Path(tempfile.mkdtemp(prefix=_PATCH_DIR_PREFIX))
     subfile_map = {
@@ -100,7 +173,20 @@ def build_patch(index: GeometryIndex, remove: AbstractSet[str]) -> PatchResult:
             )
             doc = _parse_document(original, index)
             if original in targets:
-                removed_plugins.extend(_apply_removals(doc, original, removed))
+                removed_plugins.extend(
+                    _apply_removals(
+                        doc,
+                        original,
+                        removed_detectors=(
+                            removed if original in detector_targets else frozenset()
+                        ),
+                        removed_plugin_names=(
+                            plugin_names
+                            if original in plugin_targets
+                            else frozenset()
+                        ),
+                    )
+                )
             _rewrite_refs(doc, original.parent, subfile_map)
             _write_doc(doc, destination)
 
@@ -110,20 +196,12 @@ def build_patch(index: GeometryIndex, remove: AbstractSet[str]) -> PatchResult:
             removed=removed,
             subfile_map=subfile_map,
         )
-        present = frozenset(generated.detector_names)
-        collateral = frozenset(index.detector_names) - removed - present
-        unresolved = generated.unresolved
-
-        _report_diagnostics(removed_plugins, collateral, unresolved)
-        return PatchResult(
-            top_path=top_path,
+        return _PatchAttempt(
             directory=directory,
+            top_path=top_path,
             subfile_map=subfile_map,
-            removed_detectors=removed,
-            collateral_detectors=collateral,
-            present_detectors=present,
-            removed_plugins=tuple(removed_plugins),
-            unresolved_refs=unresolved,
+            removed_plugins=removed_plugins,
+            generated=generated,
         )
     except BaseException:
         shutil.rmtree(directory, ignore_errors=True)
@@ -184,10 +262,10 @@ def _include_chain(index: GeometryIndex, target: Path) -> tuple[Path, ...]:
     if target == index.top:
         return (index.top,)
 
-    pending: list[tuple[Path, tuple[Path, ...]]] = [(target, (target,))]
+    pending = deque([(target, (target,))])
     seen = {target}
     while pending:
-        child, reverse_chain = pending.pop(0)
+        child, reverse_chain = pending.popleft()
         for parent in index.parents.get(child, ()):
             chain = (*reverse_chain, parent)
             if parent == index.top:
@@ -201,11 +279,13 @@ def _include_chain(index: GeometryIndex, target: Path) -> tuple[Path, ...]:
 def _apply_removals(
     doc: minidom.Document,
     file: Path,
-    removed: AbstractSet[str],
+    *,
+    removed_detectors: AbstractSet[str],
+    removed_plugin_names: AbstractSet[str],
 ) -> list[RemovedPlugin]:
     """Remove matching detector declarations and plugin elements from *doc*."""
     for detector in list(doc.getElementsByTagName("detector")):
-        if detector.getAttribute("name") in removed:
+        if detector.getAttribute("name") in removed_detectors:
             detector.parentNode.removeChild(detector)
 
     records: list[RemovedPlugin] = []
@@ -214,7 +294,7 @@ def _apply_removals(
             dict.fromkeys(
                 argument.getAttribute("value")
                 for argument in plugin.getElementsByTagName("argument")
-                if argument.getAttribute("value") in removed
+                if argument.getAttribute("value") in removed_plugin_names
             )
         )
         if not matched:
@@ -240,10 +320,10 @@ def _rewrite_refs(
     """Retarget generated files and absolutize other relative filesystem refs."""
     warned: set[str] = set()
     for node in doc.getElementsByTagName("*"):
-        if node.tagName not in _FILESYSTEM_REF_ELEMENTS:
+        if node.tagName not in FILESYSTEM_REF_ELEMENTS:
             continue
         ref = node.getAttribute("ref")
-        resolved = _resolve_local_ref(ref, base_dir)
+        resolved = resolve_local_ref(ref, base_dir)
         if resolved is None:
             continue
         if resolved in subfile_map:

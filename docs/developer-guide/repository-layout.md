@@ -13,6 +13,7 @@ k4Bench/
 │   ├── geometry/
 │   │   ├── errors.py         #   geometry exception hierarchy
 │   │   ├── index.py          #   immutable include/detector/plugin structure
+│   │   ├── references.py     #   shared DD4hep filesystem/document-ref rules
 │   │   ├── scanner.py        #   lenient discovery façade
 │   │   └── patcher.py        #   one validated detector-removal engine
 │   ├── runner/
