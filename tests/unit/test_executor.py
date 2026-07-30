@@ -161,6 +161,36 @@ class TestBuildCommandPluginAvailability:
         assert cmd.count("k4BenchRegionTrackingAction") == 1
         assert cmd.count("k4BenchRegionEventAction") == 1
 
+    def test_timing_action_not_duplicated_when_supplied_with_an_equals_sign(self):
+        # argparse accepts --flag=value as readily as --flag value, so a caller
+        # spelling it that way has registered the action just as surely.
+        # Injecting a second copy would run the same DDG4 action twice.
+        cmd = self._cmd(
+            plugin_available=True,
+            extra_args=["--action.event=k4BenchTimingAction"],
+        )
+        assert cmd.count("k4BenchTimingAction") == 1
+
+    def test_region_actions_not_duplicated_when_supplied_with_an_equals_sign(self):
+        cmd = self._cmd(
+            plugin_available=True,
+            extra_args=[
+                "--action.step=k4BenchRegionTimingAction",
+                "--action.track=k4BenchRegionTrackingAction",
+                "--action.event=k4BenchRegionEventAction",
+            ],
+        )
+        assert cmd.count("k4BenchRegionTimingAction") == 1
+        assert cmd.count("k4BenchRegionTrackingAction") == 1
+        assert cmd.count("k4BenchRegionEventAction") == 1
+
+    def test_equals_form_of_a_non_action_flag_does_not_suppress_injection(self):
+        cmd = self._cmd(
+            plugin_available=True,
+            extra_args=["--somearg=k4BenchRegionTimingAction"],
+        )
+        assert cmd.count("k4BenchRegionTimingAction") == 2
+
     def test_action_name_in_non_action_flag_does_not_suppress_injection(self):
         # Action name appearing after a non --action.* flag must not count
         # as the action being registered (old substring match would suppress it).

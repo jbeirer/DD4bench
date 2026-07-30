@@ -55,6 +55,10 @@ DD4hep `<plugin>` elements often reference a detector by name in an
 so the patcher deletes any `<plugin>` whose argument values name a removed
 detector.
 
+The sweep is over **every** reachable file, against the **complete** set of
+removed names — a plugin and the detector it names need not share a file. A file
+that loses only a plugin this way gets a patched copy like any other.
+
 !!! warning "Plugin removal is heuristic"
     This relies on the DD4hep convention that detector identity is encoded in
     argument `value` attributes. Plugins that reference detectors *differently*
@@ -74,20 +78,42 @@ with `$` or already-absolute paths are skipped.
 
 ### Step 5 — Redirect includes (the fixpoint)
 
-This is the subtle part. In keep-only mode, a file may be patched while another,
-*unmodified* file still `<include>`s the original. The patcher iterates to a
-fixpoint: any file whose include points at a now-patched file gets its own
-redirected temp copy, until no more redirects are needed. This handles nested
-chains like `top → A → B` where only `B` was patched — `A` must be rewritten to
-reference `B`'s temp copy so ddsim sees the patched subtree.
+This is the subtle part, and it applies to **both** modes. A patched file is only
+reached by ddsim if **every** file on the path from the top level down to it
+references the patched copy.
 
-A guard aborts with a clear error if the loop doesn't converge (a cycle in the
-include graph).
+```mermaid
+flowchart LR
+    TOP["top.xml"] --> A["A.xml"] --> B["B.xml<br/>(owns the detector)"]
+    TOP2["top_tmp"] --> A2["A_tmp<br/>(redirected)"] --> B2["B_tmp<br/>(detector removed)"]
+```
+
+Rewriting the top level's own includes covers `top → owner` and nothing deeper:
+for `top → A → B` with only `B` patched, no include in `top` resolves to `B`, so
+`A` needs a redirected copy too even though nothing was removed from it. Skipping
+that does not fail loudly — the patched copy is simply never referenced, ddsim
+loads the original subtree, and the run silently keeps the detector it was
+supposed to drop.
+
+So the patcher first walks the include graph to find every file that needs a
+copy: the ones that changed, plus every file that can reach one. Only then are
+temp paths handed out and the documents written. The two phases are what make a
+file that is *both* correct — one that lost a detector **and** includes another
+file that lost one (`top → group → leaf`). Writing such a parent as soon as it
+was patched would leave it pointing at the original child, and the child's
+removals would be missing from the geometry.
 
 ### Step 6 — Write the patched top-level XML
 
 Finally a patched top-level file is written whose `<include>` refs point at the
 temp sub-files. This is the path handed to `ddsim` via `--compactFile`.
+
+One case skips steps 5–6 entirely: a detector declared in the top-level compact
+itself, where nothing else needs patching. There is no include to redirect, so
+the document the node was removed from *is* the patched top level and it is
+written directly — single removal then produces a `_top_` file and no sub-files
+at all. If another file holds a plugin naming that detector, though, that file
+does need a patched copy, and the normal path applies.
 
 ## Inputs
 
@@ -101,10 +127,18 @@ Temporary XML files in the system temp directory, all prefixed with
 
 | Prefix | Written by | Contents |
 | --- | --- | --- |
-| `_k4bench_tmp_no_<det>_sub_` | single removal | the owning file with the detector gone |
+| `_k4bench_tmp_no_<det>_sub_` | single removal | the owning file with the detector gone, plus a redirected copy of every file on the include path down to it |
 | `_k4bench_tmp_no_<det>_top_` | single removal | patched top-level |
 | `_k4bench_tmp_keep_only_sub_` | keep-only | each patched/redirected sub-file |
 | `_k4bench_tmp_keep_only_top_` | keep-only | patched top-level |
+
+A single removal therefore writes one `_top_` file plus one `_sub_` file per file
+that has to change: the detector's owning file, and every file that can reach it
+through an `<include>`, plus any file patched only to drop a plugin naming it.
+That is the include depth for a simple chain, but more when the owner is
+reachable through several branches — each distinct ancestor needs its own
+redirected copy. Zero `_sub_` files when the detector is declared in the top
+level itself and no other file has to change.
 
 ## The context managers (use these)
 
@@ -132,7 +166,6 @@ On exit (normal or exceptional) all temp files are unlinked.
 | --- | --- | --- |
 | `DetectorNotFoundError` | the name isn't a `<detector name>` in any reachable file | check spelling; list names with `get_detector_names` |
 | `Could not absolutize ref '...'` warning | a relative ref points at a missing file | usually benign (e.g. a generated file); verify the geometry is complete |
-| `Include-graph fixpoint loop did not converge` | a cycle in the include graph | the geometry has circular includes — not a k4Bench bug |
 | ddsim fails only for one swept detector | an orphaned plugin survived removal | inspect that detector's `<plugin>` definitions (see the warning above) |
 
 ## See also

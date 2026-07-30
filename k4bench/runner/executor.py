@@ -213,9 +213,18 @@ def run_ddsim(
 
 
 def _has_action(args: list[str], action_name: str) -> bool:
-    """Return True if action_name is the value of an --action.* flag in args."""
-    for flag, value in zip(args, args[1:]):
-        if flag.startswith("--action.") and value == action_name:
+    """Return True if action_name is the value of an --action.* flag in args.
+
+    Both spellings argparse accepts count — ``--action.event Foo`` and
+    ``--action.event=Foo``. Reading only the separate-argument form would let
+    the caller's own ``--action.event=k4BenchTimingAction`` go unseen and the
+    same action be injected a second time, registering it twice in DDG4.
+    """
+    for arg, following in zip(args, [*args[1:], None]):
+        if not arg.startswith("--action."):
+            continue
+        _, sep, inline = arg.partition("=")
+        if (inline if sep else following) == action_name:
             return True
     return False
 

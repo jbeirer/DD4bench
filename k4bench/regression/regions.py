@@ -31,6 +31,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 
 from k4bench.analysis.loader import load_region_timing
 from k4bench.analysis.trend import EXPECTED_LOAD_ERRORS, parse_run_dir
@@ -116,7 +117,15 @@ def _dirs_by_release(run_dirs: Sequence[str]) -> dict[str, list[Path]]:
         if not run_dir.is_dir():
             continue
         meta = parse_run_dir(run_dir)
-        key = release_key(meta.get("k4h_release_date") or meta.get("run_date"), run_dir.name)
+        # `pd.NaT` is *truthy*, so an `or` here would keep the missing release
+        # date instead of falling back to the run date — the same fallback
+        # `x_date` makes for the frame the engine walked. Test for absence
+        # explicitly, or a run predating release-date capture keys on something
+        # the verdict's window never names, and its regions read as unmeasured.
+        release_date = meta.get("k4h_release_date")
+        if release_date is None or pd.isna(release_date):
+            release_date = meta.get("run_date")
+        key = release_key(release_date, run_dir.name)
         grouped.setdefault(key, []).append(run_dir)
     return grouped
 
