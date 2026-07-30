@@ -11,8 +11,10 @@ k4Bench/
 │   ├── benchmark/
 │   │   └── ddsim.py          #   orchestrator: BenchmarkConfig, SweepMode, run_sweep + strategies
 │   ├── geometry/
-│   │   ├── scanner.py        #   resolve_includes, get_detector_names
-│   │   └── patcher.py        #   patched_geometry(_keep_only), DetectorNotFoundError
+│   │   ├── errors.py         #   geometry exception hierarchy
+│   │   ├── index.py          #   immutable include/detector/plugin structure
+│   │   ├── scanner.py        #   lenient discovery façade
+│   │   └── patcher.py        #   one validated detector-removal engine
 │   ├── runner/
 │   │   ├── executor.py       #   run_ddsim: time -v wrap, plugin wiring, process control
 │   │   └── parser.py         #   parse_time_output
@@ -75,7 +77,7 @@ k4Bench/
   `benchmark/ddsim.py` (`run_sweep`).
 - **"Where does a number come from?"** → `runner/parser.py` parses it,
   `results/model.py` stores it, `results/reporter.py` prints/saves it.
-- **"Where is the geometry magic?"** → `geometry/patcher.py` (+ `scanner.py`).
+- **"Where is the geometry magic?"** → `geometry/index.py` + `geometry/patcher.py`.
 - **"Where does ddsim actually get run?"** → `runner/executor.py`.
 - **"Where do per-event/-detector numbers come from?"** → `plugin/*.cpp`, wired
   by `k4bench/plugin/runtime.py`.

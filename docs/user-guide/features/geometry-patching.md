@@ -3,7 +3,7 @@
 Geometry patching is the trick that lets k4Bench add or remove detectors
 without ever touching the original XML. It lives in
 [`k4bench.geometry.patcher`](../../reference/api/geometry/patcher.md) and
-[`k4bench.geometry.scanner`](../../reference/api/geometry/scanner.md).
+[`k4bench.geometry.index`](../../reference/api/geometry/index.md).
 
 ## Purpose
 
@@ -17,11 +17,12 @@ set of *temporary* XML files with the requested detectors removed, and handing
 
 ## How it works
 
-### Step 1 — Resolve the include tree
+### Step 1 — Index the geometry once
 
-[`resolve_includes`](../../reference/api/geometry/scanner.md) walks
-`<include ref="...">` recursively from the top-level XML, returning every
-reachable file in encounter order (deduplicated, top-level first).
+[`GeometryIndex`](../../reference/api/geometry/index.md) walks `<include
+ref="...">` recursively from the top-level XML. In one traversal it records
+reachable files, forward and reverse include edges, detector declarations,
+plugin argument values, and every DD4hep filesystem reference.
 
 ```mermaid
 flowchart TD
@@ -31,22 +32,17 @@ flowchart TD
     A --> AA["ECal_materials.xml"]
 ```
 
-Two refs are skipped on purpose:
+Discovery uses a lenient index so listing detectors can still return useful
+results from a partly broken tree. Patching uses a strict index and refuses to
+write a geometry if any locally resolvable reachable file cannot be read.
+Refs containing `$` (for example `${DD4hepINSTALL}/...`) remain unresolved on
+purpose because ddsim applies its own search path.
 
-- Refs containing `$` (e.g. `${DD4hepINSTALL}/...`) — `ddsim` resolves those at
-  runtime via its own search path, so k4Bench leaves them alone.
-- Refs to files that don't exist on disk — warned and skipped.
+### Step 2 — Apply one removal transform
 
-[`get_detector_names`](../../reference/api/geometry/scanner.md) then collects
-every `<detector name="...">` across the tree.
-
-### Step 2 — Remove the detector node(s)
-
-For **single removal** (`FULL` sweep), the patcher finds the one file that owns
-the `<detector>` element, removes that node, and remembers the owning file.
-
-For **keep-only / exclude** modes, it parses every reachable file and removes
-all `<detector>` elements whose `name` is not in the keep set.
+All modes reduce to a set of detector names to remove. The same engine removes
+every declaration of those names. A single-removal run passes one name;
+keep-only passes the complement of the requested keep set.
 
 ### Step 3 — Remove orphaned plugins
 
@@ -66,7 +62,14 @@ that loses only a plugin this way gets a patched copy like any other.
     potentially causing a ddsim error. If a sweep run fails only for one
     detector with a plugin-related message, this is the first thing to check.
 
-### Step 4 — Absolutize file references
+### Step 4 — Find and allocate the replacement graph
+
+The index's reverse edges identify every ancestor of a modified file with a
+plain breadth-first traversal. Each replacement is allocated a deterministic
+`NNN_<original-name>` path inside one private patch directory before anything
+is written, so diamonds and modified-parent/modified-child shapes are safe.
+
+### Step 5 — Rewrite filesystem references
 
 Because the patched files land in a temp directory (not next to the originals),
 all *relative* file references must become absolute or ddsim can't find them.
@@ -76,7 +79,10 @@ whose `ref` is guaranteed to be a filesystem path. Other elements (e.g.
 `<detector ref="...">`, where `ref` is a logical name) are left untouched. Refs
 with `$` or already-absolute paths are skipped.
 
-### Step 5 — Redirect includes (the fixpoint)
+Generated replacements are retargeted in the same walk that absolutizes
+remaining relative refs.
+
+### Step 6 — Validate before ddsim
 
 This is the subtle part, and it applies to **both** modes. A patched file is only
 reached by ddsim if **every** file on the path from the top level down to it
@@ -95,25 +101,12 @@ that does not fail loudly — the patched copy is simply never referenced, ddsim
 loads the original subtree, and the run silently keeps the detector it was
 supposed to drop.
 
-So the patcher first walks the include graph to find every file that needs a
-copy: the ones that changed, plus every file that can reach one. Only then are
-temp paths handed out and the documents written. The two phases are what make a
-file that is *both* correct — one that lost a detector **and** includes another
-file that lost one (`top → group → leaf`). Writing such a parent as soon as it
-was patched would leave it pointing at the original child, and the child's
-removals would be missing from the geometry.
-
-### Step 6 — Write the patched top-level XML
-
-Finally a patched top-level file is written whose `<include>` refs point at the
-temp sub-files. This is the path handed to `ddsim` via `--compactFile`.
-
-One case skips steps 5–6 entirely: a detector declared in the top-level compact
-itself, where nothing else needs patching. There is no include to redirect, so
-the document the node was removed from *is* the patched top level and it is
-written directly — single removal then produces a `_top_` file and no sub-files
-at all. If another file holds a plugin naming that detector, though, that file
-does need a patched copy, and the normal path applies.
+Before returning, the patcher reindexes the generated tree strictly. It rejects
+missing filesystem targets, removed detectors that remain, unexpected detector
+names, generated subfiles that are unreachable, and original files that should
+have been replaced but remain reachable. Detectors that disappear because they
+were reachable only inside a removed detector are recorded as collateral
+removals.
 
 ## Inputs
 
@@ -122,23 +115,10 @@ does need a patched copy, and the normal path applies.
 
 ## Outputs
 
-Temporary XML files in the system temp directory, all prefixed with
-**`_k4bench_tmp_`** for easy identification and cleanup:
-
-| Prefix | Written by | Contents |
-| --- | --- | --- |
-| `_k4bench_tmp_no_<det>_sub_` | single removal | the owning file with the detector gone, plus a redirected copy of every file on the include path down to it |
-| `_k4bench_tmp_no_<det>_top_` | single removal | patched top-level |
-| `_k4bench_tmp_keep_only_sub_` | keep-only | each patched/redirected sub-file |
-| `_k4bench_tmp_keep_only_top_` | keep-only | patched top-level |
-
-A single removal therefore writes one `_top_` file plus one `_sub_` file per file
-that has to change: the detector's owning file, and every file that can reach it
-through an `<include>`, plus any file patched only to drop a plugin naming it.
-That is the include depth for a simple chain, but more when the owner is
-reachable through several branches — each distinct ancestor needs its own
-redirected copy. Zero `_sub_` files when the detector is declared in the top
-level itself and no other file has to change.
+Each patch owns one system-temp directory prefixed
+**`_k4bench_patch_`**. It contains the generated top level and deterministic
+`NNN_<original-name>` replacement files. Removing the directory cleans up the
+whole patch atomically from the caller's perspective.
 
 ## The context managers (use these)
 
@@ -158,14 +138,16 @@ with patched_geometry_keep_only(Path("ALLEGRO_o1_v03.xml"), {"Vertex", "DriftCha
     ...
 ```
 
-On exit (normal or exceptional) all temp files are unlinked.
+On exit (normal or exceptional) the complete patch directory is removed.
 
 ## Failure modes
 
 | Symptom | Cause | What to do |
 | --- | --- | --- |
 | `DetectorNotFoundError` | the name isn't a `<detector name>` in any reachable file | check spelling; list names with `get_detector_names` |
-| `Could not absolutize ref '...'` warning | a relative ref points at a missing file | usually benign (e.g. a generated file); verify the geometry is complete |
+| `GeometryParseError` | a locally reachable file is missing or malformed | repair the include tree before patching |
+| `PatchValidationError` | the generated include graph, refs, or detector set is inconsistent | do not run ddsim; report the patcher failure |
+| `Could not absolutize ref '...'` warning | a relative ref points at a missing file | verify the geometry is complete |
 | ddsim fails only for one swept detector | an orphaned plugin survived removal | inspect that detector's `<plugin>` definitions (see the warning above) |
 
 ## See also

@@ -26,7 +26,7 @@ sequenceDiagram
         E->>DD: /usr/bin/time -v ddsim …
         DD-->>E: stdout → log; optional plugin JSON
         E-->>B: RunResult
-        B->>G: temp files cleaned up
+        B->>G: patch directory cleaned up
     end
     B-->>CLI: list[RunResult]
     CLI->>R: print summary + write CSV
@@ -40,7 +40,8 @@ Key points along the path:
 - Run-level metrics are scraped from the `/usr/bin/time -v` block in the log;
   optional per-event / per-detector JSON is written directly by the
   [timing plugins](../user-guide/features/timing-plugins.md).
-- Patched geometries live in temp files only for the duration of their run.
+- Each patched geometry lives in one private temp directory only for the
+  duration of its run.
 
 The instrumentation/physics split that makes this possible is described in the
 [architecture overview](overview.md#guiding-principle-separate-instrumentation-from-physics).

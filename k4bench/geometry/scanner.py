@@ -1,24 +1,10 @@
-"""Scan a DD4hep compact geometry and extract subdetector names.
-
-DD4hep geometries are split across many XML files linked by
-``<include ref="..."/>`` tags.  This module resolves the full include
-tree and collects every ``<detector name="...">`` element, in
-encounter order, deduplicating across files.
-
-"""
+"""Public discovery façade over :class:`~k4bench.geometry.index.GeometryIndex`."""
 
 from __future__ import annotations
 
-import os
-import warnings
 from pathlib import Path
-from xml.dom import minidom
-from xml.parsers.expat import ExpatError
 
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
+from k4bench.geometry.index import GeometryIndex
 
 
 def get_detector_names(xml_path: Path) -> list[str]:
@@ -39,23 +25,10 @@ def get_detector_names(xml_path: Path) -> list[str]:
     list[str]
         Detector names in the order they are first encountered.
     """
-    all_files = resolve_includes(xml_path)
-    names: list[str] = []
-    seen: set[str] = set()
-
-    for f in all_files:
-        for name in _detector_names_in_file(f):
-            if name not in seen:
-                names.append(name)
-                seen.add(name)
-
-    return names
+    return list(GeometryIndex.load(xml_path, strict=False).detector_names)
 
 
-def resolve_includes(
-    xml_path: Path,
-    _visited: set[Path] | None = None,
-) -> list[Path]:
+def resolve_includes(xml_path: Path) -> list[Path]:
     """Return all XML files reachable from *xml_path* via includes.
 
     Follows ``<include ref="..."/>`` tags recursively.  The returned
@@ -76,44 +49,7 @@ def resolve_includes(
     list[Path]
         Resolved, deduplicated paths in encounter order.
     """
-    if _visited is None:
-        _visited = set()
-
-    xml_path = xml_path.resolve()
-
-    if xml_path in _visited:
-        return []
-    _visited.add(xml_path)
-
-    collected: list[Path] = [xml_path]
-
-    try:
-        doc = minidom.parse(str(xml_path))
-    except (ExpatError, OSError) as exc:
-        warnings.warn(f"Could not parse {xml_path}: {exc}", stacklevel=2)
-        return collected
-
-    for node in doc.getElementsByTagName("include"):
-        ref = node.getAttribute("ref")
-        if not ref:
-            continue
-
-        # Skip refs that contain env vars (e.g. "${DD4hepINSTALL}/...") —
-        # ddsim resolves these itself via its own search path.  Check the
-        # original ref before expansion so this works regardless of whether
-        # the variable happens to be set in the current environment.
-        if "$" in ref:
-            continue
-
-        candidate = (xml_path.parent / os.path.expandvars(ref)).resolve()
-
-        if not candidate.exists():
-            warnings.warn(f"Included file not found: {candidate}", stacklevel=2)
-            continue
-
-        collected.extend(resolve_includes(candidate, _visited))
-
-    return collected
+    return list(GeometryIndex.load(xml_path, strict=False).files)
 
 
 # ---------------------------------------------------------------------------
@@ -123,13 +59,10 @@ def resolve_includes(
 
 def _detector_names_in_file(xml_path: Path) -> list[str]:
     """Return ``<detector name="...">`` values found directly in *xml_path*."""
-    try:
-        doc = minidom.parse(str(xml_path))
-    except (ExpatError, OSError):
-        return []
-
-    return [
-        node.getAttribute("name")
-        for node in doc.getElementsByTagName("detector")
-        if node.getAttribute("name")
-    ]
+    index = GeometryIndex.load(xml_path, strict=False)
+    direct = {
+        name
+        for name, declaring_files in index.detectors.items()
+        if xml_path.resolve() in declaring_files
+    }
+    return [name for name in index.detector_names if name in direct]

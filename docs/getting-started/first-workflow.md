@@ -68,13 +68,13 @@ Found 14 subdetectors, running 14:
          Log:    baseline_all.log
 
 [2/15] without_Vertex
-         XML: /tmp/_k4bench_tmp_no_Vertex_top_xxxx.xml
+         XML: /tmp/_k4bench_patch_xxxx/top_ALLEGRO_o1_v03.xml
          Status: ok  |  Wall: 79.8s  |  RSS: 2061 MB  |  Output: 9.04 MB  |  6.265 ev/s
          Log:    without_Vertex.log
 ...
 ```
 
-The patched geometry lives in a temp file (note the `_k4bench_tmp_` prefix);
+The patched geometry lives in a temp directory (note the `_k4bench_patch_` prefix);
 the original on CVMFS is never modified. How that patching works is described
 in [Geometry patching](../user-guide/features/geometry-patching.md).
 

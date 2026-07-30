@@ -34,7 +34,7 @@ from xml.dom import minidom
 import pytest
 
 from k4bench.geometry.patcher import (
-    _TMP_PREFIX,
+    _PATCH_DIR_PREFIX,
     patched_geometry,
     patched_geometry_keep_only,
 )
@@ -66,6 +66,11 @@ pytestmark = [
 _FS_REF_TAGS = frozenset({"include", "gdmlfile", "file"})
 
 
+def _is_generated_path(path: Path) -> bool:
+    """Return whether *path* belongs to a patcher temp directory."""
+    return any(part.startswith(_PATCH_DIR_PREFIX) for part in path.parts)
+
+
 @lru_cache(maxsize=None)
 def _parse_original(path: Path) -> minidom.Document:
     """Parse one *immutable* geometry file, memoized.
@@ -84,21 +89,26 @@ def _parse(path: Path) -> minidom.Document:
     A temp file's name is unique to the run that created it and is deleted
     straight after, so caching those would grow without bound and never hit.
     """
-    if path.name.startswith(_TMP_PREFIX):
+    if _is_generated_path(path):
         return minidom.parse(str(path))
     return _parse_original(path)
 
 
 def _token(node: minidom.Element) -> str:
     """Canonical token for one element, with filesystem refs reduced to their
-    basename so absolutization and temp-file names are not content changes."""
+    basename so absolutization is not a content change.
+
+    Generated refs use a constant token so changing the patcher's private temp
+    layout cannot invalidate the semantic baseline.
+    """
     is_ref = node.tagName.lower() in _FS_REF_TAGS
     attrs = []
     for i in range(node.attributes.length):
         attr = node.attributes.item(i)
         value = attr.value
         if is_ref and attr.name == "ref" and "$" not in value:
-            value = Path(value).name
+            path = Path(value)
+            value = "<generated>" if _is_generated_path(path) else path.name
         attrs.append(f"{attr.name}={value}")
     return f"<{node.tagName} {' '.join(sorted(attrs))}>"
 
@@ -315,7 +325,7 @@ def test_temp_files_do_not_accumulate_across_a_sweep(tmp_path, monkeypatch):
 
     Run against a private temp directory: comparing the shared one before and
     after is a race, since any concurrent k4Bench process could add or remove a
-    ``_k4bench_tmp_*`` file mid-assertion.
+    patch directory mid-assertion.
     """
     paths = _geometry_paths()
     if not paths:  # pragma: no cover — guarded by the module-level skipif
@@ -328,4 +338,4 @@ def test_temp_files_do_not_accumulate_across_a_sweep(tmp_path, monkeypatch):
     for name in _detector_names(top):
         with patched_geometry(top, name):
             pass
-    assert list(private.glob(f"{_TMP_PREFIX}*")) == []
+    assert list(private.glob(f"{_PATCH_DIR_PREFIX}*")) == []

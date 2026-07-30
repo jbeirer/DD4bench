@@ -33,6 +33,7 @@ flowchart TD
 
     subgraph geometry["Geometry"]
         SCAN["geometry.scanner<br/>resolve_includes · get_detector_names"]
+        INDEX["geometry.index<br/>GeometryIndex"]
         PATCH["geometry.patcher<br/>patched_geometry(_keep_only)"]
     end
 
@@ -60,7 +61,8 @@ flowchart TD
     CLI --> BENCH
     BENCH --> SCAN
     BENCH --> PATCH
-    PATCH --> SCAN
+    SCAN --> INDEX
+    PATCH --> INDEX
     BENCH --> EXEC
     EXEC --> PRT
     PRT --> EV & RG
@@ -80,7 +82,7 @@ flowchart TD
 | --- | --- | --- |
 | **Entry** | `cli.py` | Parse args → `BenchmarkConfig`; orchestrate output (table, CSV, pickle); exit code |
 | **Orchestration** | `benchmark.ddsim` | Choose a sweep strategy; loop over configurations; collect `RunResult`s |
-| **Geometry** | `geometry.scanner`, `geometry.patcher` | Discover detectors; produce patched temp XML non-destructively |
+| **Geometry** | `geometry.index`, `geometry.scanner`, `geometry.patcher` | Index and discover detectors; produce validated patched XML non-destructively |
 | **Execution** | `runner.executor`, `runner.parser`, `plugin.runtime` | Run `ddsim` under `time -v`; load plugins; scrape metrics |
 | **Native** | `plugin/*.cpp` | In-process per-event & per-detector instrumentation |
 | **Results** | `results.model`, `results.reporter` | Typed metrics; human + machine output |

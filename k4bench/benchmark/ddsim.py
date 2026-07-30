@@ -35,11 +35,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
-from k4bench.geometry.patcher import (
-    DetectorNotFoundError,
-    patched_geometry,
-    patched_geometry_keep_only,
-)
+from k4bench.geometry.index import GeometryIndex
+from k4bench.geometry.patcher import DetectorNotFoundError, patched
 from k4bench.geometry.scanner import get_detector_names
 from k4bench.results.model import RunResult
 from k4bench.runner.executor import run_ddsim
@@ -206,17 +203,23 @@ def _run_removal_sweep(config: BenchmarkConfig) -> list[RunResult]:
         _timed_run(xml_path=config.xml_path, label=BASELINE_LABEL, config=config)
     )
 
+    try:
+        index = GeometryIndex.load(config.xml_path, strict=True)
+    except Exception:
+        print(f"  ERROR preparing geometry patches:\n{traceback.format_exc()}")
+        return results
+
     for i, name in enumerate(detectors_to_remove, start=2):
         label = f"without_{name}"
         try:
-            with patched_geometry(config.xml_path, name) as tmp_xml:
-                _print_run_header(i, total, label, tmp_xml)
+            with patched(index, {name}) as result:
+                _print_run_header(i, total, label, result.top_path)
                 results.append(
                     _timed_run(
-                        xml_path=tmp_xml,
+                        xml_path=result.top_path,
                         label=label,
                         config=config,
-                        present_detectors=set(get_detector_names(tmp_xml)),
+                        present_detectors=set(result.present_detectors),
                     )
                 )
         except DetectorNotFoundError as exc:
@@ -283,14 +286,16 @@ def _run_exclude_only_sweep(config: BenchmarkConfig) -> list[RunResult]:
 
 def _run_keep_only(config: BenchmarkConfig, keep: set[str], label: str) -> list[RunResult]:
     """Execute a single patched run with *keep* as the active detector set."""
-    with patched_geometry_keep_only(config.xml_path, keep) as tmp_xml:
-        _print_run_header(1, 1, label, tmp_xml)
+    index = GeometryIndex.load(config.xml_path, strict=True)
+    remove = set(index.detector_names) - keep
+    with patched(index, remove) as result:
+        _print_run_header(1, 1, label, result.top_path)
         return [
             _timed_run(
-                xml_path=tmp_xml,
+                xml_path=result.top_path,
                 label=label,
                 config=config,
-                present_detectors=set(get_detector_names(tmp_xml)),
+                present_detectors=set(result.present_detectors),
             )
         ]
 

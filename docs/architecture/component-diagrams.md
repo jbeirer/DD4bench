@@ -54,9 +54,11 @@ flowchart TD
     cli --> reporter[results.reporter]
     ddsim --> scanner[geometry.scanner]
     ddsim --> patcher[geometry.patcher]
+    ddsim --> index[geometry.index]
     ddsim --> executor[runner.executor]
     ddsim --> model[results.model]
-    patcher --> scanner
+    scanner --> index
+    patcher --> index
     executor --> runtime[plugin.runtime]
     executor --> parser[runner.parser]
     executor --> model
