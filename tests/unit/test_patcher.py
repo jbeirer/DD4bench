@@ -843,6 +843,109 @@ def test_collateral_detector_is_recorded(tmp_path, capsys):
         result.cleanup()
 
 
+def _write_nested_geometry(tmp_path: Path, *, extra_edge: str = "") -> Path:
+    """Top → detectors.xml, whose ``Outer`` detector nests module.xml."""
+    top = tmp_path / "top.xml"
+    top.write_text(f'<lccdd><include ref="detectors.xml"/>{extra_edge}</lccdd>')
+    (tmp_path / "detectors.xml").write_text(
+        '<lccdd><detector name="Outer">'
+        '<include ref="module.xml"/>'
+        "</detector></lccdd>"
+    )
+    (tmp_path / "module.xml").write_text('<lccdd><detector name="Nested"/></lccdd>')
+    return top
+
+
+def test_removing_a_parent_and_its_nested_detector_together(tmp_path):
+    """The nested file's replacement is dropped, not rejected as unreachable."""
+    top = _write_nested_geometry(tmp_path)
+    index = GeometryIndex.load(top, strict=True)
+
+    result = build_patch(index, {"Outer", "Nested"})
+    try:
+        assert result.present_detectors == frozenset()
+        assert result.collateral_detectors == frozenset()
+        # module.xml lost its only document edge, so no replacement is written.
+        assert set(result.subfile_map) == {tmp_path / "detectors.xml"}
+        generated = GeometryIndex.load(result.top_path, strict=True)
+        assert generated.detector_names == ()
+        assert tmp_path / "module.xml" not in generated.files
+    finally:
+        result.cleanup()
+
+
+def test_removing_only_the_nested_detector_keeps_the_parent_reachable(tmp_path):
+    top = _write_nested_geometry(tmp_path)
+    index = GeometryIndex.load(top, strict=True)
+
+    result = build_patch(index, {"Nested"})
+    try:
+        assert result.present_detectors == frozenset({"Outer"})
+        assert set(result.subfile_map) == {
+            tmp_path / "detectors.xml",
+            tmp_path / "module.xml",
+        }
+    finally:
+        result.cleanup()
+
+
+def test_a_nested_file_reachable_elsewhere_is_still_patched(tmp_path):
+    """Only edges the removal actually severed may drop a replacement."""
+    top = _write_nested_geometry(tmp_path, extra_edge='<include ref="module.xml"/>')
+    index = GeometryIndex.load(top, strict=True)
+
+    result = build_patch(index, {"Outer", "Nested"})
+    try:
+        assert set(result.subfile_map) == {
+            tmp_path / "detectors.xml",
+            tmp_path / "module.xml",
+        }
+        generated = GeometryIndex.load(result.top_path, strict=True)
+        assert generated.detector_names == ()
+        assert len(generated.files) == 3
+    finally:
+        result.cleanup()
+
+
+def test_duplicate_edge_outside_a_removed_detector_keeps_the_replacement(tmp_path):
+    """One surviving parent→child ref is enough to keep the child reachable."""
+    top = tmp_path / "top.xml"
+    top.write_text('<lccdd><include ref="detectors.xml"/></lccdd>')
+    (tmp_path / "detectors.xml").write_text(
+        '<lccdd><detector name="Outer"><include ref="module.xml"/></detector>'
+        '<include ref="module.xml"/></lccdd>'
+    )
+    (tmp_path / "module.xml").write_text('<lccdd><detector name="Nested"/></lccdd>')
+    index = GeometryIndex.load(top, strict=True)
+
+    result = build_patch(index, {"Outer", "Nested"})
+    try:
+        assert tmp_path / "module.xml" in result.subfile_map
+        generated = GeometryIndex.load(result.top_path, strict=True)
+        assert generated.detector_names == ()
+    finally:
+        result.cleanup()
+
+
+def test_dropped_replacements_leave_no_files_behind(tmp_path, isolated_tmpdir):
+    top = _write_nested_geometry(tmp_path)
+    index = GeometryIndex.load(top, strict=True)
+
+    with patched(index, {"Outer", "Nested"}) as result:
+        assert sorted(path.name for path in result.directory.iterdir()) == [
+            "000_detectors.xml",
+            "top_top.xml",
+        ]
+    assert _get_tmp_directories(isolated_tmpdir) == []
+
+
+def test_keep_only_can_drop_a_parent_and_its_nested_detector(tmp_path):
+    """The whole-sweep entry point exercises the same multi-removal path."""
+    top = _write_nested_geometry(tmp_path)
+    with patched_geometry_keep_only(top, set()) as patched_top:
+        assert _detector_names_in_doc(patched_top) == []
+
+
 @pytest.mark.parametrize("tag", ["gdmlFile", "file"])
 def test_patch_rejects_missing_local_asset_ref(
     tag,

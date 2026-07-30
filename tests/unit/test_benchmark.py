@@ -329,6 +329,37 @@ class TestFailureHandling:
         failed = next(r for r in results if r.label == "without_EcalBarrel")
         assert not failed.succeeded
 
+    @pytest.mark.parametrize(
+        ("mode", "label"),
+        [
+            (SweepMode.INCLUDE_ONLY, "only_Keep"),
+            (SweepMode.EXCLUDE_ONLY, "without_Keep"),
+        ],
+    )
+    def test_geometry_failure_is_a_failed_run(self, mode, label, tmp_path):
+        """Single-run modes report patch failures instead of raising."""
+        geometry = tmp_path / "top.xml"
+        geometry.write_text(
+            '<lccdd><detector name="Keep"/><include ref="broken.xml"/></lccdd>'
+        )
+        (tmp_path / "broken.xml").write_text("<lccdd><unclosed>")
+        config = _make_config(
+            tmp_path,
+            xml_path=geometry,
+            mode=mode,
+            detector_names=["Keep"],
+        )
+
+        with (
+            pytest.warns(UserWarning, match="Could not parse"),
+            patch("k4bench.benchmark.ddsim.run_ddsim", side_effect=_mock_run) as run,
+        ):
+            results = run_sweep(config)
+
+        assert [result.label for result in results] == [label]
+        assert not results[0].succeeded
+        assert run.call_count == 0
+
 
 # ---------------------------------------------------------------------------
 # Steering-file reconciliation

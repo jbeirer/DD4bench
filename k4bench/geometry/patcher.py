@@ -22,6 +22,7 @@ from k4bench.geometry.errors import (
 from k4bench.geometry.index import FilesystemRef, GeometryIndex
 from k4bench.geometry.references import (
     FILESYSTEM_REF_ELEMENTS,
+    is_geometry_document_ref,
     resolve_local_ref,
 )
 
@@ -159,39 +160,55 @@ def _write_patch_attempt(
 ) -> _PatchAttempt:
     """Write one patch attempt for the current reachable plugin targets."""
     targets = detector_targets | plugin_targets
-    to_copy = index.ancestors(targets) - {index.top}
+    replaced = index.ancestors(targets) - {index.top}
     directory = Path(tempfile.mkdtemp(prefix=_PATCH_DIR_PREFIX))
-    subfile_map = {
-        original: directory / f"{number:03d}_{original.name}"
-        for number, original in enumerate(sorted(to_copy))
-    }
     top_path = directory / f"top_{index.top.name}"
     removed_plugins: list[RemovedPlugin] = []
 
     try:
-        files_to_write = to_copy | {index.top}
+        documents: dict[Path, minidom.Document] = {}
+        severed: set[tuple[Path, Path]] = set()
         for original in index.files:
-            if original not in files_to_write:
+            if original != index.top and original not in replaced:
+                continue
+            doc = _parse_document(original, index)
+            if original in targets:
+                removals = _apply_removals(
+                    doc,
+                    original,
+                    removed_detectors=(
+                        removed if original in detector_targets else frozenset()
+                    ),
+                    removed_plugin_names=(
+                        plugin_names if original in plugin_targets else frozenset()
+                    ),
+                )
+                removed_plugins.extend(removals.plugins)
+                severed.update(
+                    (original, child) for child in removals.severed_includes
+                )
+            documents[original] = doc
+
+        # A removed <detector> can carry the only <include> that reached a
+        # subtree, so which files the patch still needs is only known once the
+        # removals have been applied.
+        reachable = _reachable_after(index, severed)
+        subfile_map = {
+            original: directory / f"{number:03d}_{original.name}"
+            for number, original in enumerate(sorted(replaced & reachable))
+        }
+        removed_plugins = [
+            plugin
+            for plugin in removed_plugins
+            if plugin.file == index.top or plugin.file in subfile_map
+        ]
+
+        for original, doc in documents.items():
+            if original != index.top and original not in subfile_map:
                 continue
             destination = (
                 top_path if original == index.top else subfile_map[original]
             )
-            doc = _parse_document(original, index)
-            if original in targets:
-                removed_plugins.extend(
-                    _apply_removals(
-                        doc,
-                        original,
-                        removed_detectors=(
-                            removed if original in detector_targets else frozenset()
-                        ),
-                        removed_plugin_names=(
-                            plugin_names
-                            if original in plugin_targets
-                            else frozenset()
-                        ),
-                    )
-                )
             _rewrite_refs(doc, original.parent, subfile_map)
             _write_doc(doc, destination)
 
@@ -200,6 +217,7 @@ def _write_patch_attempt(
             original=index,
             removed=removed,
             subfile_map=subfile_map,
+            replaced_originals=replaced,
         )
         return _PatchAttempt(
             directory=directory,
@@ -281,14 +299,36 @@ def _include_chain(index: GeometryIndex, target: Path) -> tuple[Path, ...]:
     return (index.top, target)
 
 
+@dataclass(frozen=True)
+class _Removals:
+    """What one document lost: plugin records and severed document edges."""
+
+    plugins: list[RemovedPlugin]
+    severed_includes: frozenset[Path]
+
+
+def _document_edges(doc: minidom.Document, base_dir: Path) -> set[Path]:
+    """Return the files *doc* currently reaches through document references."""
+    return {
+        resolved
+        for node in doc.getElementsByTagName("*")
+        if node.tagName in FILESYSTEM_REF_ELEMENTS
+        and is_geometry_document_ref(node)
+        and (resolved := resolve_local_ref(node.getAttribute("ref"), base_dir))
+        is not None
+    }
+
+
 def _apply_removals(
     doc: minidom.Document,
     file: Path,
     *,
     removed_detectors: AbstractSet[str],
     removed_plugin_names: AbstractSet[str],
-) -> list[RemovedPlugin]:
+) -> _Removals:
     """Remove matching detector declarations and plugin elements from *doc*."""
+    edges_before = _document_edges(doc, file.parent)
+
     for detector in list(doc.getElementsByTagName("detector")):
         if detector.getAttribute("name") in removed_detectors:
             detector.parentNode.removeChild(detector)
@@ -314,7 +354,13 @@ def _apply_removals(
             for value in matched
         )
         plugin.parentNode.removeChild(plugin)
-    return records
+
+    return _Removals(
+        plugins=records,
+        severed_includes=frozenset(
+            edges_before - _document_edges(doc, file.parent)
+        ),
+    )
 
 
 def _rewrite_refs(
@@ -345,12 +391,30 @@ def _rewrite_refs(
                 )
 
 
+def _reachable_after(
+    index: GeometryIndex,
+    severed: AbstractSet[tuple[Path, Path]],
+) -> set[Path]:
+    """Return the files still reachable once *severed* include edges are gone."""
+    reachable = {index.top}
+    pending = deque([index.top])
+    while pending:
+        parent = pending.popleft()
+        for child in index.includes.get(parent, ()):
+            if (parent, child) in severed or child in reachable:
+                continue
+            reachable.add(child)
+            pending.append(child)
+    return reachable
+
+
 def _validate(
     top: Path,
     *,
     original: GeometryIndex,
     removed: AbstractSet[str],
     subfile_map: dict[Path, Path],
+    replaced_originals: AbstractSet[Path] | None = None,
 ) -> GeometryIndex:
     """Reindex and validate a generated patch before it reaches ddsim."""
     try:
@@ -382,7 +446,10 @@ def _validate(
             + ", ".join(str(path) for path in sorted(unreachable_generated))
         )
 
-    originals_still_reached = set(subfile_map) & reachable
+    # Files whose replacement was dropped as unreachable are checked too: if
+    # one is still reached, the edge was not severed and the drop was wrong.
+    replaced = set(subfile_map if replaced_originals is None else replaced_originals)
+    originals_still_reached = replaced & reachable
     if originals_still_reached:
         raise PatchValidationError(
             "Original file(s) that required replacement remain reachable: "

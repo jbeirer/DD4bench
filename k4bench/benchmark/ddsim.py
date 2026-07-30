@@ -36,7 +36,8 @@ from enum import Enum
 from pathlib import Path
 
 from k4bench.geometry.index import GeometryIndex
-from k4bench.geometry.patcher import DetectorNotFoundError, patched
+from k4bench.geometry.errors import DetectorNotFoundError, GeometryError
+from k4bench.geometry.patcher import build_patch, patched
 from k4bench.geometry.scanner import get_detector_names
 from k4bench.results.model import RunResult
 from k4bench.runner.executor import run_ddsim
@@ -294,18 +295,27 @@ def _run_exclude_only_sweep(config: BenchmarkConfig) -> list[RunResult]:
 
 def _run_keep_only(config: BenchmarkConfig, keep: set[str], label: str) -> list[RunResult]:
     """Execute a single patched run with *keep* as the active detector set."""
-    index = GeometryIndex.load(config.xml_path, strict=True)
-    remove = set(index.detector_names) - keep
-    with patched(index, remove) as result:
-        _print_run_header(1, 1, label, result.top_path)
+    try:
+        index = GeometryIndex.load(config.xml_path, strict=True)
+        remove = set(index.detector_names) - keep
+        patch = build_patch(index, remove)
+    except GeometryError:
+        # Same contract as FULL: a failed run so the CLI still reports and exits 1.
+        print(f"  ERROR preparing geometry patch for {label}:\n{traceback.format_exc()}")
+        return [_failed_run(label, config)]
+
+    try:
+        _print_run_header(1, 1, label, patch.top_path)
         return [
             _timed_run(
-                xml_path=result.top_path,
+                xml_path=patch.top_path,
                 label=label,
                 config=config,
-                present_detectors=set(result.present_detectors),
+                present_detectors=set(patch.present_detectors),
             )
         ]
+    finally:
+        patch.cleanup()
 
 
 # ---------------------------------------------------------------------------

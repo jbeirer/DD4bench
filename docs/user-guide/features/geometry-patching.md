@@ -72,6 +72,14 @@ plain breadth-first traversal. Each replacement is allocated a deterministic
 `NNN_<original-name>` path inside one private patch directory before anything
 is written, so diamonds and modified-parent/modified-child shapes are safe.
 
+Allocation happens after the removals, because a removed `<detector>` can carry
+the only document reference that reached a subtree. Removing `Outer` and the
+`Nested` detector inside its `<include>` in the same patch leaves the nested
+file with no surviving edge, so it gets no replacement at all. Reachability is
+recomputed over the whole graph, so a file the removal merely *un-nested* — one
+still reached through another branch — keeps its replacement and its own
+removals.
+
 ### Step 5 — Rewrite filesystem references
 
 Because the patched files land in a temp directory (not next to the originals),
@@ -107,9 +115,10 @@ supposed to drop.
 Before returning, the patcher reindexes the generated tree strictly. It rejects
 missing filesystem targets, removed detectors that remain, unexpected detector
 names, generated subfiles that are unreachable, and original files that should
-have been replaced but remain reachable. Detectors that disappear because they
-were reachable only inside a removed detector are recorded as collateral
-removals.
+have been replaced but remain reachable — including those whose replacement was
+deliberately skipped, since one still being reached means the edge survived and
+skipping it was wrong. Detectors that disappear because they were reachable only
+inside a removed detector are recorded as collateral removals.
 
 ## Inputs
 
