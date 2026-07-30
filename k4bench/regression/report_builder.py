@@ -23,6 +23,7 @@ from k4bench.analysis.trend import (
     build_event_timing_trend,
     build_machine_info_trend,
     build_results_trend,
+    parse_run_dir,
 )
 from k4bench.regression.engine import (
     BASELINE_WINDOW_RUNS,
@@ -300,21 +301,33 @@ def _failed_config_verdicts(
     return verdicts
 
 
-def _missing_config_failures(results_df: pd.DataFrame, run_id: str) -> list[str]:
-    """Configs present in most of the window but absent from tonight's run —
-    a config that crashed before writing any results leaves no CSV at all, so
-    a returncode check alone would miss it."""
+def _missing_config_failures(
+    results_df: pd.DataFrame,
+    run_id: str,
+    configured_labels: list[str] | None = None,
+) -> list[str]:
+    """Configured result labels absent from tonight's run.
+
+    New runs record the exact labels planned from their expanded benchmark
+    configuration and resolved geometry.  Legacy runs lack that metadata, so
+    they retain the historical-majority inference: a config that crashed
+    before writing any results leaves no CSV at all, and a returncode check
+    alone would miss it.
+    """
     if "label" not in results_df.columns:
         return []
-    n_runs = results_df["run_id"].nunique()
-    if n_runs < 2:
-        return []
     tonight_labels = set(results_df.loc[results_df["run_id"] == run_id, "label"])
-    counts = (
-        results_df[results_df["run_id"] != run_id]
-        .groupby("label")["run_id"].nunique()
-    )
-    expected = set(counts[counts > (n_runs - 1) / 2].index)
+    if configured_labels is not None:
+        expected = set(configured_labels)
+    else:
+        n_runs = results_df["run_id"].nunique()
+        if n_runs < 2:
+            return []
+        counts = (
+            results_df[results_df["run_id"] != run_id]
+            .groupby("label")["run_id"].nunique()
+        )
+        expected = set(counts[counts > (n_runs - 1) / 2].index)
     return [
         f"config '{label}' produced no results tonight"
         for label in sorted(expected - tonight_labels)
@@ -366,6 +379,7 @@ def _group_report_from_frames(
     reliability: dict[str, bool | None],
     tonight: str,
     hosts: dict[str, HostFact] | None = None,
+    configured_labels: list[str] | None = None,
 ) -> RunGroupReport | None:
     """Build one triple's report for *tonight* from already-parsed trend
     frames (already windowed to whatever trailing span "tonight" should be
@@ -439,7 +453,9 @@ def _group_report_from_frames(
             detector=detector, platform=platform, sample=sample,
             results_df=results_df, run_id=tonight, run_date=tonight,
         ))
-        group.job_failures.extend(_missing_config_failures(results_df, tonight))
+        group.job_failures.extend(
+            _missing_config_failures(results_df, tonight, configured_labels)
+        )
 
     return group
 
@@ -497,6 +513,8 @@ def group_report_from_run_dirs(
     oldest → newest; each directory's name is its nightly date)."""
     if not run_dirs:
         return None
+    tonight_dir = max(run_dirs, key=lambda d: Path(d).name)
+    configured_labels = parse_run_dir(Path(tonight_dir))["configured_labels"]
     results_df = build_results_trend(run_dirs)
     event_df = build_event_timing_trend(run_dirs)
     machine_df = build_machine_info_trend(run_dirs)
@@ -507,6 +525,7 @@ def group_report_from_run_dirs(
         results_df=results_df, event_df=event_df,
         reliability=reliability, tonight=tonight,
         hosts=host_facts(machine_df),
+        configured_labels=configured_labels,
     )
     return None if group is None else _with_region_deltas(group, run_dirs)
 

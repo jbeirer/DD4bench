@@ -56,11 +56,16 @@ def test_build_results_trend_empty():
 
 def test_parse_run_dir_reads_run_info(tmp_path):
     r1 = _make_run(tmp_path, "2026-05-20", "key4hep-2026-05-20", 5.0)
+    info_path = r1 / "run_info.json"
+    info = json.loads(info_path.read_text())
+    info["configured_labels"] = ["baseline_all", "without_ECal"]
+    info_path.write_text(json.dumps(info))
     meta = trend.parse_run_dir(r1)
     assert meta["platform"] == "PLAT"
     assert meta["sample"] == "single_e"
     # Release date is inferred from the release name when absent.
     assert str(meta["k4h_release_date"].date()) == "2026-05-20"
+    assert meta["configured_labels"] == ["baseline_all", "without_ECal"]
 
 
 def test_parse_run_dir_reads_stack_packages(tmp_path):
@@ -82,3 +87,12 @@ def test_parse_run_dir_defaults_stack_packages_to_empty(tmp_path):
     r1 = _make_run(tmp_path, "2026-05-20", "key4hep-2026-05-20", 5.0)
     assert trend.parse_run_dir(r1)["k4h_packages"] == {}
     assert trend.parse_run_dir(tmp_path / "does-not-exist")["k4h_packages"] == {}
+
+
+def test_parse_run_dir_treats_an_empty_config_roster_as_legacy_metadata(tmp_path):
+    r1 = _make_run(tmp_path, "2026-05-20", "key4hep-2026-05-20", 5.0)
+    info_path = r1 / "run_info.json"
+    info = json.loads(info_path.read_text())
+    info["configured_labels"] = []
+    info_path.write_text(json.dumps(info))
+    assert trend.parse_run_dir(r1)["configured_labels"] is None

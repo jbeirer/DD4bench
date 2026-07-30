@@ -52,6 +52,7 @@ def parse_run_dir(run_dir: Path) -> dict:
             "n_events":         None,
             "status":           None,
             "failed_configs":   [],
+            "configured_labels": None,
             "machine_consistent": None,
         }
 
@@ -85,6 +86,16 @@ def parse_run_dir(run_dir: Path) -> dict:
                 "n_events":         info.get("n_events"),
                 "status":           info.get("status"),
                 "failed_configs":   info.get("failed_configs") or [],
+                # Exact result labels planned by the expanded benchmark config.
+                # Absent on legacy runs; ``None`` tells the regression report to
+                # retain its historical-inference fallback.
+                "configured_labels": (
+                    info["configured_labels"]
+                    if isinstance(info.get("configured_labels"), list)
+                    and bool(info["configured_labels"])
+                    and all(isinstance(label, str) for label in info["configured_labels"])
+                    else None
+                ),
                 "machine_consistent": info.get("machine_consistent"),
             }
         except (OSError, json.JSONDecodeError, TypeError, ValueError):

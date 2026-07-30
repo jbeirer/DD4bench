@@ -12,7 +12,12 @@ from unittest.mock import patch
 import pytest
 
 import k4bench.benchmark.ddsim as ddsim_module
-from k4bench.benchmark.ddsim import BenchmarkConfig, SweepMode, run_sweep
+from k4bench.benchmark.ddsim import (
+    BenchmarkConfig,
+    SweepMode,
+    planned_config_labels,
+    run_sweep,
+)
 from k4bench.geometry.index import GeometryIndex
 from k4bench.results.model import RunResult
 
@@ -75,6 +80,36 @@ class TestBenchmarkConfigValidation:
     def test_full_mode_needs_no_extra_fields(self, tmp_path):
         config = _make_config(tmp_path, mode=SweepMode.FULL)
         assert config.mode == SweepMode.FULL
+
+
+class TestPlannedConfigLabels:
+    def test_full_sweep_uses_every_geometry_detector(self):
+        assert set(planned_config_labels(MINIMAL_XML, SweepMode.FULL)) == {
+            "baseline_all",
+            *(f"without_{name}" for name in ALL_DETECTORS),
+        }
+
+    def test_partial_sweep_uses_only_configured_detectors(self):
+        assert planned_config_labels(
+            MINIMAL_XML,
+            SweepMode.FULL,
+            ["HcalBarrel", "NonExistent"],
+        ) == ["baseline_all", "without_HcalBarrel"]
+
+    def test_single_run_modes_use_their_actual_labels(self):
+        assert planned_config_labels(MINIMAL_XML, SweepMode.BASELINE) == [
+            "baseline_all"
+        ]
+        assert planned_config_labels(
+            MINIMAL_XML,
+            SweepMode.INCLUDE_ONLY,
+            ["EcalBarrel", "HcalBarrel"],
+        ) == ["only_EcalBarrel_HcalBarrel"]
+        assert planned_config_labels(
+            MINIMAL_XML,
+            SweepMode.EXCLUDE_ONLY,
+            ["InnerTracker", "OuterTracker"],
+        ) == ["without_InnerTracker_OuterTracker"]
 
 # ---------------------------------------------------------------------------
 # FULL mode

@@ -34,6 +34,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from typing import Iterable
 
 from k4bench.geometry.index import GeometryIndex
 from k4bench.geometry.errors import DetectorNotFoundError, GeometryError
@@ -176,6 +177,43 @@ def _make_detector_label(prefix: str, names: set[str]) -> str:
         return prefix + "_".join(sorted_names)
     digest = hashlib.sha1("_".join(sorted_names).encode()).hexdigest()[:8]
     return f"{prefix}{len(sorted_names)}_detectors_{digest}"
+
+
+def planned_config_labels(
+    xml_path: Path,
+    mode: SweepMode,
+    detector_names: Iterable[str] = (),
+) -> list[str]:
+    """Return the result labels a configured benchmark intends to produce.
+
+    This is the configuration-side roster, resolved against the same geometry
+    the benchmark will load.  It is recorded in ``run_info.json`` by the
+    nightly runner so report assembly can distinguish a missing active config
+    from a config deliberately removed from the benchmark definition.
+    """
+    requested = set(detector_names)
+    if mode is SweepMode.BASELINE or (mode is SweepMode.EXCLUDE_ONLY and not requested):
+        return [BASELINE_LABEL]
+
+    available = get_detector_names(xml_path)
+    available_set = set(available)
+
+    if mode is SweepMode.FULL:
+        selected = available if not requested else [name for name in available if name in requested]
+        if requested and not selected:
+            raise ValueError(
+                f"No valid detectors to sweep — all of {sorted(requested)} are unknown"
+            )
+        return [BASELINE_LABEL, *(f"without_{name}" for name in selected)]
+
+    selected = requested & available_set
+    if not selected:
+        action = "keep" if mode is SweepMode.INCLUDE_ONLY else "exclude"
+        raise ValueError(
+            f"No valid detectors to {action} — all of {sorted(requested)} are unknown"
+        )
+    prefix = "only_" if mode is SweepMode.INCLUDE_ONLY else "without_"
+    return [_make_detector_label(prefix, selected)]
 
 
 # ---------------------------------------------------------------------------
