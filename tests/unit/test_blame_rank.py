@@ -396,7 +396,9 @@ def test_non_numeric_likelihood_rejects_the_row():
         {"repo": "key4hep/k4geo", "pr": 10, "likelihood": "very high", "reason": "x"},
         {"repo": "AIDASoft/DD4hep", "pr": 20, "likelihood": 5, "reason": "low"},
     )
-    result = _ranker([_completion(body), _completion(body)]).rank(_request()).rankings
+    result = _ranker([
+        _completion(body) for _ in range(rank_mod._MAX_RESPONSE_ATTEMPTS)
+    ]).rank(_request()).rankings
     assert ("key4hep/k4geo", 10) not in result
     assert result[("AIDASoft/DD4hep", 20)].score == 5.0
 
@@ -424,7 +426,9 @@ def test_missing_and_non_finite_likelihoods_reject_the_row():
         {"repo": "key4hep/k4geo", "pr": 10, "reason": "no likelihood at all"},
         {"repo": "AIDASoft/DD4hep", "pr": 20, "likelihood": float("nan"), "reason": "nan"},
     )
-    result = _ranker([_completion(body), _completion(body)]).rank(_request()).rankings
+    result = _ranker([
+        _completion(body) for _ in range(rank_mod._MAX_RESPONSE_ATTEMPTS)
+    ]).rank(_request()).rankings
     assert result == {}
 
 
@@ -432,8 +436,8 @@ def test_missing_and_non_finite_likelihoods_reject_the_row():
 
 def test_malformed_json_yields_empty_and_warns(caplog):
     result = _ranker([
-        _completion("I cannot help with that."),
-        _completion("I cannot help with that."),
+        _completion("I cannot help with that.")
+        for _ in range(rank_mod._MAX_RESPONSE_ATTEMPTS)
     ]).rank(_request()).rankings
     assert result == {}
     assert "no usable ranking (0/2 candidates" in caplog.text
@@ -442,8 +446,8 @@ def test_malformed_json_yields_empty_and_warns(caplog):
 
 def test_missing_rankings_key_yields_empty():
     result = _ranker([
-        _completion('{"something_else": 1}'),
-        _completion('{"something_else": 1}'),
+        _completion('{"something_else": 1}')
+        for _ in range(rank_mod._MAX_RESPONSE_ATTEMPTS)
     ]).rank(_request()).rankings
     assert result == {}
 
@@ -459,6 +463,28 @@ def test_partial_response_is_completed_by_one_followup_call():
     result = ranker.rank(_request()).rankings
     assert set(result) == {("key4hep/k4geo", 10), ("AIDASoft/DD4hep", 20)}
     assert len(_calls(ranker)) == 2
+
+
+def test_partial_response_gets_the_full_context_retry_budget():
+    first = _rankings_json(
+        {"repo": "key4hep/k4geo", "pr": 10, "likelihood": 70, "reason": "high"}
+    )
+    final = _rankings_json(
+        {"repo": "AIDASoft/DD4hep", "pr": 20, "likelihood": 5, "reason": "low"}
+    )
+    ranker = _ranker([
+        *[
+            _completion(first)
+            for _ in range(rank_mod._MAX_RESPONSE_ATTEMPTS - 1)
+        ],
+        _completion(final),
+    ])
+    result = ranker.rank(_request()).rankings
+
+    assert set(result) == {("key4hep/k4geo", 10), ("AIDASoft/DD4hep", 20)}
+    assert len(_calls(ranker)) == rank_mod._MAX_RESPONSE_ATTEMPTS
+    prompts = [call.json["messages"][1]["content"] for call in _calls(ranker)]
+    assert len(set(prompts)) == 1
 
 
 def test_http_error_yields_empty_after_retry():

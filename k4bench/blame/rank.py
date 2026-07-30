@@ -347,7 +347,10 @@ _OUTPUT_TOKENS_PER_CANDIDATE = 512
 #: once per call, not once per candidate, so it scales with nothing.
 _OUTPUT_TOKENS_ASSESSMENT = 256
 
-_MAX_RESPONSE_ATTEMPTS = 2
+# Keep trying within a fixed bound when a model omits rows. Each retry
+# deliberately receives the complete request again: the candidates are
+# comparative context, not independent questions.
+_MAX_RESPONSE_ATTEMPTS = 10
 
 
 @dataclass
@@ -367,9 +370,8 @@ class OpenAICompatRanker:
         """Score every candidate, retrieving historical evidence at most once.
 
         With no historical index on the request — the default, and the whole of
-        production until ``K4BENCH_LLM_HISTORICAL_DIFFS`` is set — this is
-        exactly what it always was: one prompt, one parse, one bounded retry for
-        the rows a reply ran out of room for.
+        production until ``K4BENCH_LLM_HISTORICAL_DIFFS`` is set — this is one
+        prompt, one parse, and bounded retries for rows a reply omitted.
 
         With an index, the first call may come back asking for the code behind
         an older boundary instead of answering. That is the *only* thing it can
@@ -472,14 +474,14 @@ class OpenAICompatRanker:
         prior: tuple[str, str] | None = None,
         evidence: HistoricalEvidence | None = None,
     ) -> RankResult:
-        """The ranking call and its bounded completion retry.
+        """The ranking call and its bounded completion retries.
 
         *prior* is a reply already in hand from the offer call — reused rather
         than re-asked, so a window where the model wanted no history costs one
-        call. *evidence* is the retrieved analogues; the completion retry carries
-        the same ones and, like this round, no index — so "one retrieval round"
-        holds structurally rather than by a counter nobody could forget to
-        increment.
+        call. *evidence* is the retrieved analogues; every completion retry
+        carries the same ones and, like this round, no index — so "one retrieval
+        round" holds structurally rather than by a counter nobody could forget
+        to increment.
         """
         expected = {(c.repo, c.number) for c in request.candidates}
         combined: dict[tuple[str, int], Ranking] = {}
@@ -541,6 +543,11 @@ class OpenAICompatRanker:
                 )
 
             retrying = response_attempt + 1 < _MAX_RESPONSE_ATTEMPTS
+            retry_note = (
+                f"; retrying (response attempt "
+                f"{response_attempt + 2}/{_MAX_RESPONSE_ATTEMPTS})"
+                if retrying else ""
+            )
             _log.warning(
                 "rank: LLM returned %s ranking (%d/%d candidates; "
                 "finish_reason=%s); missing: %s; response prefix=%r%s",
@@ -548,7 +555,7 @@ class OpenAICompatRanker:
                 len(combined), len(expected), finish_reason,
                 ", ".join(f"{repo}#{number}" for repo, number in sorted(missing)),
                 content[:500],
-                "; retrying once" if retrying else "",
+                retry_note,
             )
         return RankResult(
             rankings=combined, assessment=assessment, historical=historical,
