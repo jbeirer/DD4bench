@@ -138,6 +138,48 @@ def test_another_configurations_regions_are_never_read(tmp_path):
     )
 
 
+def _write_undated_run(
+    root: Path, dir_name: str, run_date: str, per_region: dict[str, float],
+) -> str:
+    """A run that recorded no Key4hep release date, in a directory whose name is
+    not simply that run's date."""
+    run_dir = root / dir_name
+    run_dir.mkdir(parents=True)
+    (run_dir / "run_info.json").write_text(json.dumps({
+        "date": run_date, "platform": "x86_64-almalinux9-gcc14.2.0-opt",
+        "sample": "single_e",
+    }))
+    (run_dir / "baseline_regions.json").write_text(json.dumps({
+        "event_numbers": [0, 1, 2],
+        "event_wall_seconds": [9.9, 1.0, 1.0],
+        "event_region_sum_seconds": [9.9, 1.0, 1.0],
+        "event_unaccounted_seconds": [0.0, 0.0, 0.0],
+        "indexed_top_level_detectors": sorted(per_region),
+        "at_location_seconds": [
+            {region: 99.0 for region in per_region},
+            dict(per_region),
+            dict(per_region),
+        ],
+        "by_birth_seconds": [dict(per_region) for _ in range(3)],
+    }))
+    return str(run_dir)
+
+
+def test_a_release_with_no_date_falls_back_to_the_run_date(tmp_path):
+    # The engine keys such a run on its run date (``x_date`` is the release date
+    # with a run-date fallback), so this must key it the same way — a window's
+    # ends are named by the verdict, and a run grouped under a key the verdict
+    # never names reads as a release that recorded no regions at all.
+    dirs = [
+        _write_undated_run(tmp_path, "2026-07-14-rerun", "2026-07-14", {"HCAL": 1.0}),
+        _write_undated_run(tmp_path, "2026-07-18-rerun", "2026-07-18", {"HCAL": 4.0}),
+    ]
+    deltas = region_deltas(
+        dirs, label="baseline", base_release="2026-07-14", onset_release="2026-07-18",
+    )
+    assert [(d.region, d.base, d.onset) for d in deltas] == [("HCAL", 1.0, 4.0)]
+
+
 def test_the_list_is_bounded_by_the_largest_movements(tmp_path):
     many = {f"REGION_{i}": float(i) for i in range(MAX_REGIONS + 4)}
     moved = {region: value * 2 for region, value in many.items()}

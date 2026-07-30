@@ -143,6 +143,10 @@ If you pass `--action.event SomeAction` in `--ddsim-args`, the executor detects
 it and does **not** inject the corresponding k4Bench action — your configuration
 wins. This lets you combine k4Bench with custom DDG4 actions or steering files.
 
+Either spelling is detected — `--action.event SomeAction` and
+`--action.event=SomeAction` — so the form you write never decides whether the
+action ends up registered twice.
+
 ## Failure modes
 
 | Symptom | Likely cause | Fix |

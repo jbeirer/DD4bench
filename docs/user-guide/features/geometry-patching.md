@@ -74,12 +74,25 @@ with `$` or already-absolute paths are skipped.
 
 ### Step 5 — Redirect includes (the fixpoint)
 
-This is the subtle part. In keep-only mode, a file may be patched while another,
-*unmodified* file still `<include>`s the original. The patcher iterates to a
-fixpoint: any file whose include points at a now-patched file gets its own
-redirected temp copy, until no more redirects are needed. This handles nested
-chains like `top → A → B` where only `B` was patched — `A` must be rewritten to
-reference `B`'s temp copy so ddsim sees the patched subtree.
+This is the subtle part, and it applies to **both** modes. A file may be patched
+while another, *unmodified* file still `<include>`s the original. The patcher
+iterates to a fixpoint: any file whose include points at a now-patched file gets
+its own redirected temp copy, which makes that copy a redirect target in turn,
+until no more redirects are needed.
+
+```mermaid
+flowchart LR
+    TOP["top.xml"] --> A["A.xml"] --> B["B.xml<br/>(owns the detector)"]
+    TOP2["top_tmp"] --> A2["A_tmp<br/>(redirected)"] --> B2["B_tmp<br/>(detector removed)"]
+```
+
+A patched file is only reached by ddsim if **every** file on the path from the
+top level down to it references the patched copy. Rewriting the top level's own
+includes covers `top → owner` and nothing deeper: for `top → A → B` with only
+`B` patched, no include in `top` resolves to `B`, so `A` must be rewritten too.
+Skipping this does not fail loudly — the patched copy is simply never
+referenced, ddsim loads the original subtree, and the run silently keeps the
+detector it was supposed to drop.
 
 A guard aborts with a clear error if the loop doesn't converge (a cycle in the
 include graph).
@@ -88,6 +101,11 @@ include graph).
 
 Finally a patched top-level file is written whose `<include>` refs point at the
 temp sub-files. This is the path handed to `ddsim` via `--compactFile`.
+
+One case skips steps 5–6 entirely: a detector declared in the top-level compact
+itself. There is no include to redirect, so the document the node was removed
+from *is* the patched top level and it is written directly — single removal then
+produces a `_top_` file and no sub-files at all.
 
 ## Inputs
 
@@ -101,10 +119,14 @@ Temporary XML files in the system temp directory, all prefixed with
 
 | Prefix | Written by | Contents |
 | --- | --- | --- |
-| `_k4bench_tmp_no_<det>_sub_` | single removal | the owning file with the detector gone |
+| `_k4bench_tmp_no_<det>_sub_` | single removal | the owning file with the detector gone, plus a redirected copy of every file on the include path down to it |
 | `_k4bench_tmp_no_<det>_top_` | single removal | patched top-level |
 | `_k4bench_tmp_keep_only_sub_` | keep-only | each patched/redirected sub-file |
 | `_k4bench_tmp_keep_only_top_` | keep-only | patched top-level |
+
+A single removal therefore writes one `_top_` file and *n* `_sub_` files, where
+*n* is the include depth of the detector's owning file (1 for a file the top
+level includes directly, 0 when the detector is declared in the top level).
 
 ## The context managers (use these)
 
