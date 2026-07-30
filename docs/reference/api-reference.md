@@ -20,7 +20,10 @@ from k4bench.results.model import RunResult
 
 # Geometry
 from k4bench.geometry.scanner import get_detector_names, resolve_includes
-from k4bench.geometry.patcher import patched_geometry, patched_geometry_keep_only
+from k4bench.geometry.index import GeometryIndex
+from k4bench.geometry.patcher import (
+    build_patch, patched, patched_geometry, patched_geometry_keep_only,
+)
 
 # Analysis (the most common public surface)
 from k4bench.analysis import (
@@ -36,7 +39,9 @@ from k4bench.analysis import (
 | `k4bench.cli` | `main` | [cli](api/cli.md) |
 | `k4bench.benchmark.ddsim` | `BenchmarkConfig`, `SweepMode`, `run_sweep` | [benchmark.ddsim](api/benchmark/ddsim.md) |
 | `k4bench.geometry.scanner` | `get_detector_names`, `resolve_includes` | [geometry.scanner](api/geometry/scanner.md) |
-| `k4bench.geometry.patcher` | `patched_geometry`, `patched_geometry_keep_only`, `build_patched_xml`, `DetectorNotFoundError` | [geometry.patcher](api/geometry/patcher.md) |
+| `k4bench.geometry.index` | `GeometryIndex`, `FilesystemRef` | [geometry.index](api/geometry/index.md) |
+| `k4bench.geometry.patcher` | `build_patch`, `patched`, `PatchResult`, `patched_geometry`, `patched_geometry_keep_only` | [geometry.patcher](api/geometry/patcher.md) |
+| `k4bench.geometry.errors` | geometry exception hierarchy | [geometry.errors](api/geometry/errors.md) |
 | `k4bench.runner.executor` | `run_ddsim` | [runner.executor](api/runner/executor.md) |
 | `k4bench.runner.parser` | `parse_time_output` | [runner.parser](api/runner/parser.md) |
 | `k4bench.results.model` | `RunResult` | [results.model](api/results/model.md) |

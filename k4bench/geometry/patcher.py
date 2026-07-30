@@ -1,556 +1,510 @@
-"""Patch a DD4hep compact geometry to remove a single subdetector.
-
-The patcher writes temporary XML files to the system temp directory so
-that the original geometry (which may live on a read-only filesystem
-such as CVMFS) is never modified.  All relative ``<include ref="...">``
-paths in the patched XMLs are rewritten to absolute paths so that
-ddsim can resolve them regardless of where the temp files land.
-
-Temporary files are prefixed with ``_k4bench_tmp_`` so they are easy
-to identify and clean up.  The recommended usage is via the
-:func:`patched_geometry` context manager, which guarantees cleanup even
-if the simulation run raises an exception.
-
-"""
+"""Build temporary, validated DD4hep geometries with detectors removed."""
 
 from __future__ import annotations
 
 import contextlib
-import os
+import shutil
 import tempfile
 import warnings
+from collections import deque
+from collections.abc import Generator
+from dataclasses import dataclass
 from pathlib import Path
+from typing import AbstractSet
 from xml.dom import minidom
 from xml.parsers.expat import ExpatError
 
-from k4bench.geometry.scanner import resolve_includes
+from k4bench.geometry.errors import (
+    DetectorNotFoundError,
+    GeometryParseError,
+    PatchValidationError,
+)
+from k4bench.geometry.index import FilesystemRef, GeometryIndex
+from k4bench.geometry.references import (
+    FILESYSTEM_REF_ELEMENTS,
+    is_geometry_document_ref,
+    resolve_local_ref,
+)
 
-# Prefix for all temporary files written by this module.
-_TMP_PREFIX = "_k4bench_tmp_"
+_PATCH_DIR_PREFIX = "_k4bench_patch_"
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class RemovedPlugin:
+    """A plugin removed because one of its arguments named a detector."""
+
+    file: Path
+    plugin_type: str
+    matched_value: str
 
 
-@contextlib.contextmanager
-def patched_geometry_keep_only(xml_path: Path, keep_names: set[str]):
-    """Context manager yielding a geometry with only *keep_names* detectors active.
+@dataclass
+class PatchResult:
+    """Generated patch paths and the facts measured during validation."""
 
-    All ``<detector>`` elements whose ``name`` attribute is not in *keep_names*
-    are removed from every file in the include tree.  Temp files are written
-    to the system temp directory and deleted on exit.
+    top_path: Path
+    directory: Path
+    subfile_map: dict[Path, Path]
+    removed_detectors: frozenset[str]
+    collateral_detectors: frozenset[str]
+    present_detectors: frozenset[str]
+    removed_plugins: tuple[RemovedPlugin, ...]
+    unresolved_refs: tuple[FilesystemRef, ...]
 
-    Parameters
-    ----------
-    xml_path:
-        Path to the original top-level compact XML.
-    keep_names:
-        Detector names to keep.  All others are removed.
+    def cleanup(self) -> None:
+        """Remove this patch's private temporary directory."""
+        shutil.rmtree(self.directory, ignore_errors=True)
 
-    Yields
-    ------
-    Path
-        Path to the patched top-level XML file.
+
+def build_patch(index: GeometryIndex, remove: AbstractSet[str]) -> PatchResult:
+    """Build and validate one geometry patch.
+
+    The supplied index must be complete.  Every declaration of each requested
+    detector is removed, along with plugins whose argument values name it.
     """
-    tmp_files, top_tmp = _build_keep_only_xml(xml_path, keep_names)
-    try:
-        yield top_tmp
-    finally:
-        for tmp in tmp_files:
-            tmp.unlink(missing_ok=True)
+    if index.parse_errors:
+        raise index.parse_errors[0]
 
+    removed = frozenset(remove)
+    unknown = removed - index.detectors.keys()
+    if unknown:
+        names = ", ".join(repr(name) for name in sorted(unknown))
+        raise DetectorNotFoundError(
+            f"Detector(s) {names} not found in any XML reachable from {index.top}."
+        )
 
-@contextlib.contextmanager
-def patched_geometry(xml_path: Path, detector_name: str):
-    """Context manager that yields a patched geometry path.
+    for name in sorted(removed):
+        if len(index.detectors[name]) > 1:
+            warnings.warn(
+                f"Detector {name!r} is declared more than once; every declaration "
+                "will be removed.",
+                stacklevel=2,
+            )
 
-    Creates temporary XML files with *detector_name* removed, yields the
-    path to the patched top-level XML, then deletes the temp files on
-    exit regardless of whether an exception was raised.
+    detector_targets = index.files_declaring(removed)
+    plugin_targets: set[Path] = set()
+    plugin_names = set(removed)
 
-    Parameters
-    ----------
-    xml_path:
-        Path to the original top-level compact XML.
-    detector_name:
-        Name of the ``<detector>`` element to remove.
+    while True:
+        attempt = _write_patch_attempt(
+            index,
+            removed=removed,
+            detector_targets=detector_targets,
+            plugin_targets=plugin_targets,
+            plugin_names=plugin_names,
+        )
+        present = frozenset(attempt.generated.detector_names)
+        collateral = frozenset(index.detector_names) - removed - present
+        orphan_names = set(removed) | set(collateral)
+        orphan_files = attempt.generated.files_with_plugins_for(orphan_names)
+        if not orphan_files:
+            break
 
-    Yields
-    ------
-    Path
-        Path to the patched top-level XML file.
+        generated_to_original = {
+            attempt.top_path: index.top,
+            **{
+                generated: original
+                for original, generated in attempt.subfile_map.items()
+            },
+        }
+        additional_targets = {
+            generated_to_original.get(path, path)
+            for path in orphan_files
+        } - plugin_targets
+        if not additional_targets:
+            shutil.rmtree(attempt.directory, ignore_errors=True)
+            raise PatchValidationError(
+                "Generated geometry still contains plugin(s) naming removed "
+                f"detector(s): {', '.join(sorted(orphan_names))}"
+            )
 
-    Raises
-    ------
-    DetectorNotFoundError
-        If *detector_name* is not found in any reachable XML file.
+        shutil.rmtree(attempt.directory, ignore_errors=True)
+        plugin_targets.update(additional_targets)
+        plugin_names.update(orphan_names)
 
-    Example
-    -------
-    ::
-
-        with patched_geometry(Path("ALLEGRO.xml"), "EcalBarrel") as tmp_xml:
-            result = run_ddsim(xml_path=tmp_xml, ...)
-    """
-    top_tmp, sub_tmps = build_patched_xml(xml_path, detector_name)
-    try:
-        yield top_tmp
-    finally:
-        for tmp in (top_tmp, *sub_tmps):
-            tmp.unlink(missing_ok=True)
-
-
-def build_patched_xml(
-    xml_path: Path, detector_name: str
-) -> tuple[Path, list[Path]]:
-    """Write patched XML files with *detector_name* removed.
-
-    Locates the file that owns *detector_name*, removes the ``<detector>`` node
-    from it, writes a temp copy, then redirects every file on the include path
-    from the top-level down to that copy — so ddsim reaches the patched
-    sub-tree however deeply it is nested.
-
-    Parameters
-    ----------
-    xml_path:
-        Path to the original top-level compact XML.
-    detector_name:
-        Name of the ``<detector>`` element to remove.
-
-    Returns
-    -------
-    tuple[Path, list[Path]]
-        ``(top_tmp_path, sub_tmp_paths)`` — the caller is responsible for
-        deleting all of them.  ``sub_tmp_paths`` holds one entry per file that
-        had to change: the detector's owning file, any file holding a plugin
-        that named it, and every file that reaches one of those through an
-        ``<include>``.  It is empty only when the detector was declared in the
-        top-level compact *and* nothing else needed patching.  Prefer
-        :func:`patched_geometry` to handle cleanup automatically.
-
-    Raises
-    ------
-    DetectorNotFoundError
-        If *detector_name* is not found in any reachable XML file.
-    """
-    xml_path = xml_path.resolve()
-    all_files = resolve_includes(xml_path)
-
-    owner, patched_doc = _find_and_remove_detector(xml_path, detector_name, all_files)
-
-    modified = {owner: patched_doc}
-    _sweep_orphaned_plugins(all_files, modified, {detector_name})
-
-    if owner == xml_path and len(modified) == 1:
-        # The detector is declared in the top-level compact and no other file
-        # needed touching, so the document the node was removed from *is* the
-        # top-level: write it directly.  Routing it through the sub-tree builder
-        # would write the patched document as a sub-file nothing includes and
-        # hand back the original, unpatched top level.
-        _absolutize_refs(patched_doc, xml_path.parent)
-        return _write_tmp_xml(patched_doc, None, f"no_{detector_name}_top_"), []
-
-    sub_tmp_map, sub_tmps = _patched_tree(
-        all_files, xml_path, modified, f"no_{detector_name}_sub_"
+    unresolved = attempt.generated.unresolved
+    result = PatchResult(
+        top_path=attempt.top_path,
+        directory=attempt.directory,
+        subfile_map=attempt.subfile_map,
+        removed_detectors=removed,
+        collateral_detectors=collateral,
+        present_detectors=present,
+        removed_plugins=tuple(attempt.removed_plugins),
+        unresolved_refs=unresolved,
     )
     try:
-        top_tmp_path = _write_patched_top(
-            xml_path, sub_tmp_map, modified.get(xml_path),
-            f"no_{detector_name}_top_",
-        )
+        _report_diagnostics(attempt.removed_plugins, collateral, unresolved)
     except BaseException:
-        for tmp in sub_tmps:
-            tmp.unlink(missing_ok=True)
+        result.cleanup()
         raise
-
-    return top_tmp_path, sub_tmps
-
-
-# ---------------------------------------------------------------------------
-# Custom exception
-# ---------------------------------------------------------------------------
+    return result
 
 
-class DetectorNotFoundError(ValueError):
-    """Raised when the requested detector name is not in the geometry."""
+@dataclass
+class _PatchAttempt:
+    directory: Path
+    top_path: Path
+    subfile_map: dict[Path, Path]
+    removed_plugins: list[RemovedPlugin]
+    generated: GeometryIndex
 
 
-# ---------------------------------------------------------------------------
-# Private helpers
-# ---------------------------------------------------------------------------
+def _write_patch_attempt(
+    index: GeometryIndex,
+    *,
+    removed: frozenset[str],
+    detector_targets: set[Path],
+    plugin_targets: set[Path],
+    plugin_names: AbstractSet[str],
+) -> _PatchAttempt:
+    """Write one patch attempt for the current reachable plugin targets."""
+    targets = detector_targets | plugin_targets
+    replaced = index.ancestors(targets) - {index.top}
+    directory = Path(tempfile.mkdtemp(prefix=_PATCH_DIR_PREFIX))
+    top_path = directory / f"top_{index.top.name}"
+    removed_plugins: list[RemovedPlugin] = []
 
-
-def _retarget_includes(
-    doc: minidom.Document, base_dir: Path, sub_tmp_map: dict[Path, Path]
-) -> bool:
-    """Point *doc*'s ``<include>`` refs at the patched copies in *sub_tmp_map*.
-
-    Returns whether anything was redirected.  Refs carrying an unresolved
-    environment variable are left alone — ddsim resolves those on its own search
-    path, so there is no file here to compare against.
-    """
-    redirected = False
-    for node in doc.getElementsByTagName("include"):
-        ref = node.getAttribute("ref")
-        if not ref or "$" in ref:
-            continue
-        resolved = (base_dir / os.path.expandvars(ref)).resolve()
-        if resolved in sub_tmp_map:
-            node.setAttribute("ref", str(sub_tmp_map[resolved]))
-            redirected = True
-    return redirected
-
-
-def _include_graph(all_files: list[Path]) -> dict[Path, set[Path]]:
-    """``file -> the files its <include> refs resolve to``.
-
-    Built once so the reachability pass below is pure set arithmetic instead of
-    a re-parse per iteration.  Refs carrying an environment variable are left
-    out: ddsim resolves those on its own search path, so there is no file here
-    to redirect.
-    """
-    graph: dict[Path, set[Path]] = {}
-    for f in all_files:
-        targets: set[Path] = set()
-        try:
-            doc = minidom.parse(str(f))
-        except (ExpatError, OSError):
-            graph[f] = targets
-            continue
-        for node in doc.getElementsByTagName("include"):
-            ref = node.getAttribute("ref")
-            if ref and "$" not in ref:
-                targets.add((f.parent / os.path.expandvars(ref)).resolve())
-        graph[f] = targets
-    return graph
-
-
-def _sweep_orphaned_plugins(
-    all_files: list[Path],
-    modified: dict[Path, minidom.Document],
-    removed_names: set[str],
-) -> None:
-    """Drop every ``<plugin>`` naming a removed detector, wherever it lives.
-
-    A plugin and the detector it names need not share a file, so this has to see
-    the *complete* set of removed names against *every* reachable file — removing
-    plugins only from the file a detector was removed from, or only from the
-    top-level, leaves a plugin pointing at a detector that is no longer there.
-
-    *modified* is extended in place with any file that only needed a plugin
-    dropped, so the tree builder gives it a patched copy like any other.
-    """
-    if not removed_names:
-        return
-    for f in all_files:
-        doc = modified.get(f)
-        if doc is not None:
-            # Already patched for its own detectors; re-check it against the
-            # complete set, which may name detectors removed from other files.
-            _remove_orphaned_plugins(doc, removed_names)
-            continue
-        try:
-            doc = minidom.parse(str(f))
-        except (ExpatError, OSError):
-            continue
-        if _remove_orphaned_plugins(doc, removed_names):
-            modified[f] = doc
-
-
-def _patched_tree(
-    all_files: list[Path],
-    xml_path: Path,
-    modified: dict[Path, minidom.Document],
-    tmp_prefix: str,
-) -> tuple[dict[Path, Path], list[Path]]:
-    """Write a self-consistent temp copy of every sub-file that must change.
-
-    Returns ``(original -> temp path, temp files written)``; the top-level is
-    excluded, since the caller owns how that document is built.
-
-    A patched file is only reached by ddsim if **every** file on the path from
-    the top level down to it references the patched copy.  Two facts make that
-    more than a walk up one chain:
-
-    * the owner may be nested (``top → A → B``), so ``A`` needs a redirected
-      copy even though nothing was removed from it — without that, ``top`` has
-      no include resolving to ``B``, the patched copy is never referenced, and
-      the run silently uses the original geometry;
-    * a file needing a redirect may *itself* be one of the modified ones
-      (``top → group → leaf`` with detectors removed from both), so paths are
-      allocated for the whole set **before** any document is written.  Writing a
-      modified parent as soon as it is patched is what left it pointing at the
-      original child.
-
-    The reachability pass therefore runs over the include graph first, and only
-    then are documents retargeted and serialised.  It terminates because the set
-    only ever grows inside a finite file list.
-    """
-    graph = _include_graph(all_files)
-
-    needs_copy = {f for f in modified if f != xml_path}
-    changed = True
-    while changed:
-        changed = False
-        for f in all_files:
-            if f == xml_path or f in needs_copy:
+    try:
+        documents: dict[Path, minidom.Document] = {}
+        severed: set[tuple[Path, Path]] = set()
+        for original in index.files:
+            if original != index.top and original not in replaced:
                 continue
-            if graph[f] & needs_copy:
-                needs_copy.add(f)
-                changed = True
+            doc = _parse_document(original, index)
+            if original in targets:
+                removals = _apply_removals(
+                    doc,
+                    original,
+                    removed_detectors=(
+                        removed if original in detector_targets else frozenset()
+                    ),
+                    removed_plugin_names=(
+                        plugin_names if original in plugin_targets else frozenset()
+                    ),
+                )
+                removed_plugins.extend(removals.plugins)
+                severed.update(
+                    (original, child) for child in removals.severed_includes
+                )
+            documents[original] = doc
 
-    sub_tmp_map: dict[Path, Path] = {}
-    written: list[Path] = []
-    try:
-        # Allocate every path up front: retargeting a parent needs its child's
-        # temp path, and with a shared or diamond include graph there is no
-        # write order that guarantees children come first.
-        #
-        # Recorded one at a time rather than by a comprehension: a comprehension
-        # binds nothing until it finishes, so a reservation failing part-way
-        # through (a full or unwritable temp dir, no free descriptors) would
-        # leave the files already created with nobody holding their paths.
-        for original in sorted(needs_copy):
-            tmp = _reserve_tmp_xml(tmp_prefix)
-            sub_tmp_map[original] = tmp
-            written.append(tmp)
-
-        for original, tmp in sub_tmp_map.items():
-            doc = modified.get(original)
-            if doc is None:
-                doc = minidom.parse(str(original))
-            _retarget_includes(doc, original.parent, sub_tmp_map)
-            _absolutize_refs(doc, original.parent)
-            _write_doc(doc, tmp)
-    except BaseException:
-        # Own the cleanup rather than handing the caller a partial list: a raise
-        # part-way through would otherwise leave the files reserved or written so
-        # far with nobody holding their paths.
-        for tmp in written:
-            tmp.unlink(missing_ok=True)
-        raise
-
-    return sub_tmp_map, written
-
-
-def _build_keep_only_xml(xml_path: Path, keep_names: set[str]) -> tuple[list[Path], Path]:
-    """Write patched XML files keeping only detectors in *keep_names*.
-
-    Scans every file reachable from *xml_path*, removes all ``<detector>``
-    elements not in *keep_names*, writes patched versions of affected files
-    to the system temp directory, and returns a patched top-level XML that
-    references them.
-
-    Returns
-    -------
-    tuple[list[Path], Path]
-        ``(all_tmp_paths, top_tmp_path)``.  Caller is responsible for
-        cleanup; prefer :func:`patched_geometry_keep_only`.
-    """
-    xml_path = xml_path.resolve()
-    all_files = resolve_includes(xml_path)
-
-    # Pass 1: remove unwanted detectors from every reachable file.
-    # resolve_includes yields xml_path first, so the top-level is processed too.
-    modified: dict[Path, minidom.Document] = {}
-    all_removed: set[str] = set()
-    for f in all_files:
-        try:
-            doc = minidom.parse(str(f))
-        except (ExpatError, OSError):
-            continue
-        nodes_to_remove = [
-            node
-            for node in doc.getElementsByTagName("detector")
-            if node.getAttribute("name") and node.getAttribute("name") not in keep_names
+        # A removed <detector> can carry the only <include> that reached a
+        # subtree, so which files the patch still needs is only known once the
+        # removals have been applied.
+        reachable = _reachable_after(index, severed)
+        subfile_map = {
+            original: directory / f"{number:03d}_{original.name}"
+            for number, original in enumerate(sorted(replaced & reachable))
+        }
+        removed_plugins = [
+            plugin
+            for plugin in removed_plugins
+            if plugin.file == index.top or plugin.file in subfile_map
         ]
-        if not nodes_to_remove:
-            continue
-        all_removed |= {node.getAttribute("name") for node in nodes_to_remove}
-        for node in nodes_to_remove:
-            node.parentNode.removeChild(node)
-        modified[f] = doc
 
-    # Pass 2: drop plugins naming any removed detector, wherever they live — a
-    # plugin need not share a file with its detector, so this needs the complete
-    # removed set and may pull in files that lost no detector of their own.
-    _sweep_orphaned_plugins(all_files, modified, all_removed)
+        for original, doc in documents.items():
+            if original != index.top and original not in subfile_map:
+                continue
+            destination = (
+                top_path if original == index.top else subfile_map[original]
+            )
+            _rewrite_refs(doc, original.parent, subfile_map)
+            _write_doc(doc, destination)
 
-    # Pass 3: write the patched sub-tree, with every include on every path
-    # rewired.  Modified files are retargeted here too, not written as they are
-    # found: a modified parent that includes a modified child has to end up
-    # pointing at the child's patched copy.
-    sub_tmp_map, all_tmp = _patched_tree(all_files, xml_path, modified, "keep_only_sub_")
-
-    try:
-        top_tmp = _write_patched_top(
-            xml_path, sub_tmp_map, modified.get(xml_path), "keep_only_top_"
+        generated = _validate(
+            top_path,
+            original=index,
+            removed=removed,
+            subfile_map=subfile_map,
+            replaced_originals=replaced,
+        )
+        return _PatchAttempt(
+            directory=directory,
+            top_path=top_path,
+            subfile_map=subfile_map,
+            removed_plugins=removed_plugins,
+            generated=generated,
         )
     except BaseException:
-        for tmp in all_tmp:
-            tmp.unlink(missing_ok=True)
+        shutil.rmtree(directory, ignore_errors=True)
         raise
 
-    all_tmp.append(top_tmp)
-    return all_tmp, top_tmp
+
+@contextlib.contextmanager
+def patched(
+    index: GeometryIndex,
+    remove: AbstractSet[str],
+) -> Generator[PatchResult, None, None]:
+    """Yield one validated patch and always clean up its directory."""
+    result = build_patch(index, remove)
+    try:
+        yield result
+    finally:
+        result.cleanup()
 
 
-def _find_and_remove_detector(
-    xml_path: Path, detector_name: str, files: list[Path] | None = None
-) -> tuple[Path, minidom.Document]:
-    """Locate *detector_name* in the include tree and remove its node.
+@contextlib.contextmanager
+def patched_geometry(
+    xml_path: Path,
+    detector_name: str,
+) -> Generator[Path, None, None]:
+    """Yield a strict, validated geometry with *detector_name* removed."""
+    index = GeometryIndex.load(xml_path, strict=True)
+    with patched(index, {detector_name}) as result:
+        yield result.top_path
 
-    Returns the owning file path and the modified document.  *files* is the
-    already-resolved include tree, so a caller that has one does not pay for a
-    second traversal.  Raises :exc:`DetectorNotFoundError` if not found.
-    """
-    for f in files if files is not None else resolve_includes(xml_path):
-        try:
-            doc = minidom.parse(str(f))
-        except (ExpatError, OSError):
+
+@contextlib.contextmanager
+def patched_geometry_keep_only(
+    xml_path: Path,
+    keep_names: set[str],
+) -> Generator[Path, None, None]:
+    """Yield a strict, validated geometry containing only *keep_names*."""
+    index = GeometryIndex.load(xml_path, strict=True)
+    remove = set(index.detector_names) - keep_names
+    with patched(index, remove) as result:
+        yield result.top_path
+
+
+def _parse_document(path: Path, index: GeometryIndex) -> minidom.Document:
+    """Parse a file during patching and preserve geometry error context."""
+    try:
+        return minidom.parse(str(path))
+    except (ExpatError, OSError) as exc:
+        raise GeometryParseError(
+            path,
+            index.top,
+            _include_chain(index, path),
+            exc,
+        ) from exc
+
+
+def _include_chain(index: GeometryIndex, target: Path) -> tuple[Path, ...]:
+    """Return one include chain from the top level to *target*."""
+    if target == index.top:
+        return (index.top,)
+
+    pending = deque([(target, (target,))])
+    seen = {target}
+    while pending:
+        child, reverse_chain = pending.popleft()
+        for parent in index.parents.get(child, ()):
+            chain = (*reverse_chain, parent)
+            if parent == index.top:
+                return tuple(reversed(chain))
+            if parent not in seen:
+                seen.add(parent)
+                pending.append((parent, chain))
+    return (index.top, target)
+
+
+@dataclass(frozen=True)
+class _Removals:
+    """What one document lost: plugin records and severed document edges."""
+
+    plugins: list[RemovedPlugin]
+    severed_includes: frozenset[Path]
+
+
+def _document_edges(doc: minidom.Document, base_dir: Path) -> set[Path]:
+    """Return the files *doc* currently reaches through document references."""
+    return {
+        resolved
+        for node in doc.getElementsByTagName("*")
+        if node.tagName in FILESYSTEM_REF_ELEMENTS
+        and is_geometry_document_ref(node)
+        and (resolved := resolve_local_ref(node.getAttribute("ref"), base_dir))
+        is not None
+    }
+
+
+def _apply_removals(
+    doc: minidom.Document,
+    file: Path,
+    *,
+    removed_detectors: AbstractSet[str],
+    removed_plugin_names: AbstractSet[str],
+) -> _Removals:
+    """Remove matching detector declarations and plugin elements from *doc*."""
+    edges_before = _document_edges(doc, file.parent)
+
+    for detector in list(doc.getElementsByTagName("detector")):
+        if detector.getAttribute("name") in removed_detectors:
+            detector.parentNode.removeChild(detector)
+
+    records: list[RemovedPlugin] = []
+    for plugin in list(doc.getElementsByTagName("plugin")):
+        matched = tuple(
+            dict.fromkeys(
+                argument.getAttribute("value")
+                for argument in plugin.getElementsByTagName("argument")
+                if argument.getAttribute("value") in removed_plugin_names
+            )
+        )
+        if not matched:
             continue
+        plugin_type = plugin.getAttribute("name") or plugin.tagName
+        records.extend(
+            RemovedPlugin(
+                file=file,
+                plugin_type=plugin_type,
+                matched_value=value,
+            )
+            for value in matched
+        )
+        plugin.parentNode.removeChild(plugin)
 
-        for node in doc.getElementsByTagName("detector"):
-            if node.getAttribute("name") == detector_name:
-                node.parentNode.removeChild(node)
-                return f, doc
-
-    raise DetectorNotFoundError(
-        f"Detector '{detector_name}' not found in any XML reachable from "
-        f"{xml_path}."
+    return _Removals(
+        plugins=records,
+        severed_includes=frozenset(
+            edges_before - _document_edges(doc, file.parent)
+        ),
     )
 
 
-def _remove_orphaned_plugins(doc: minidom.Document, removed_names: set[str]) -> bool:
-    """Remove <plugin> elements where any <argument value="..."> names a removed detector.
-
-    Returns whether anything was removed, so a caller can tell that an otherwise
-    untouched file now needs a patched copy of its own.
-
-    This relies on the DD4hep convention that detector identity is encoded in
-    argument ``value`` attributes.  Plugins that reference detectors differently
-    (e.g. via other attributes or child elements) will not be caught here.
-    """
-    removed = False
-    for plugin in list(doc.getElementsByTagName("plugin")):
-        args = plugin.getElementsByTagName("argument")
-        if any(arg.getAttribute("value") in removed_names for arg in args):
-            plugin.parentNode.removeChild(plugin)
-            removed = True
-    return removed
-
-
-# DD4hep element types whose ref= attribute is always a filesystem path, spelled
-# exactly as DD4hep declares them (``include``, ``gdmlFile``, ``file`` in its
-# XML/UnicodeValues.h). Other elements (e.g. <detector ref="…">) use ref= for
-# logical names, not files.
-#
-# The comparison is exact, matching every other tag test in this module and in
-# `geometry.scanner`. XML element names are case-sensitive and DD4hep matches
-# these exact names, so a `<GdmlFile>` is not a DD4hep element at all: rewriting
-# its ref would be rewriting something ddsim ignores, and warning that it could
-# not be resolved would be pure noise. Note the camel case on ``gdmlFile`` — it
-# is the one tag here that is not all-lowercase, and a lower-cased set silently
-# stops matching it.
-_FILESYSTEM_REF_ELEMENTS = frozenset({"include", "gdmlFile", "file"})
+def _rewrite_refs(
+    doc: minidom.Document,
+    base_dir: Path,
+    subfile_map: dict[Path, Path],
+) -> None:
+    """Retarget generated files and absolutize other relative filesystem refs."""
+    warned: set[str] = set()
+    for node in doc.getElementsByTagName("*"):
+        if node.tagName not in FILESYSTEM_REF_ELEMENTS:
+            continue
+        ref = node.getAttribute("ref")
+        resolved = resolve_local_ref(ref, base_dir)
+        if resolved is None:
+            continue
+        if resolved in subfile_map:
+            node.setAttribute("ref", str(subfile_map[resolved]))
+        elif not Path(ref).is_absolute():
+            if resolved.exists():
+                node.setAttribute("ref", str(resolved))
+            elif ref not in warned:
+                warned.add(ref)
+                warnings.warn(
+                    f"Could not absolutize ref {ref!r} — path does not exist: "
+                    f"{resolved}",
+                    stacklevel=2,
+                )
 
 
-def _absolutize_refs(doc: minidom.Document, base_dir: Path) -> None:
-    """Rewrite relative ref="..." on filesystem-ref elements to absolute paths.
-
-    Only <include>, <gdmlFile>, and <file> elements are touched — these are the
-    DD4hep element types whose ref= attribute is guaranteed to be a file path.
-    Elements that use ref= for logical names (e.g. detector component names) are
-    left untouched, avoiding false-positive warnings.
-
-    Refs that contain '$' (env vars) or are already absolute are skipped.
-    Warns once per distinct ref that cannot be resolved to an existing file.
-    """
-    _warned: set[str] = set()
-
-    def _walk(node: minidom.Node) -> None:
-        if node.nodeType == node.ELEMENT_NODE and node.tagName in _FILESYSTEM_REF_ELEMENTS:
-            ref = node.getAttribute("ref")
-            if ref and "$" not in ref and not os.path.isabs(ref):
-                abs_path = (base_dir / ref).resolve()
-                if abs_path.exists():
-                    node.setAttribute("ref", str(abs_path))
-                elif ref not in _warned:
-                    _warned.add(ref)
-                    warnings.warn(
-                        f"Could not absolutize ref '{ref}' — path does not exist: {abs_path}",
-                        stacklevel=2,
-                    )
-        for child in node.childNodes:
-            _walk(child)
-
-    _walk(doc.documentElement)
+def _reachable_after(
+    index: GeometryIndex,
+    severed: AbstractSet[tuple[Path, Path]],
+) -> set[Path]:
+    """Return the files still reachable once *severed* include edges are gone."""
+    reachable = {index.top}
+    pending = deque([index.top])
+    while pending:
+        parent = pending.popleft()
+        for child in index.includes.get(parent, ()):
+            if (parent, child) in severed or child in reachable:
+                continue
+            reachable.add(child)
+            pending.append(child)
+    return reachable
 
 
-def _reserve_tmp_xml(suffix: str) -> Path:
-    """Claim a temp path without writing to it yet.
+def _validate(
+    top: Path,
+    *,
+    original: GeometryIndex,
+    removed: AbstractSet[str],
+    subfile_map: dict[Path, Path],
+    replaced_originals: AbstractSet[Path] | None = None,
+) -> GeometryIndex:
+    """Reindex and validate a generated patch before it reaches ddsim."""
+    try:
+        generated = GeometryIndex.load(top, strict=True)
+    except GeometryParseError as exc:
+        raise PatchValidationError(
+            f"Generated geometry could not be parsed: {exc}"
+        ) from exc
 
-    Separate from :func:`_write_tmp_xml` because a patched sub-tree has to know
-    every temp path before it can serialise any document (see
-    :func:`_patched_tree`); the file is created empty so the name cannot be
-    handed out twice.
-    """
-    fd, name = tempfile.mkstemp(suffix=".xml", prefix=f"{_TMP_PREFIX}{suffix}")
-    os.close(fd)
-    return Path(name)
+    missing = sorted(
+        {
+            ref.resolved
+            for refs in generated.filesystem_refs.values()
+            for ref in refs
+            if ref.resolved is not None and not ref.resolved.exists()
+        }
+    )
+    if missing:
+        raise PatchValidationError(
+            "Generated geometry contains missing filesystem reference(s): "
+            + ", ".join(str(path) for path in missing)
+        )
+
+    reachable = set(generated.files)
+    unreachable_generated = set(subfile_map.values()) - reachable
+    if unreachable_generated:
+        raise PatchValidationError(
+            "Generated subfile(s) are not reachable from the patched top level: "
+            + ", ".join(str(path) for path in sorted(unreachable_generated))
+        )
+
+    # Files whose replacement was dropped as unreachable are checked too: if
+    # one is still reached, the edge was not severed and the drop was wrong.
+    replaced = set(subfile_map if replaced_originals is None else replaced_originals)
+    originals_still_reached = replaced & reachable
+    if originals_still_reached:
+        raise PatchValidationError(
+            "Original file(s) that required replacement remain reachable: "
+            + ", ".join(str(path) for path in sorted(originals_still_reached))
+        )
+
+    present = set(generated.detector_names)
+    still_present = set(removed) & present
+    if still_present:
+        raise PatchValidationError(
+            "Generated geometry still contains removed detector(s): "
+            + ", ".join(sorted(still_present))
+        )
+
+    allowed = set(original.detector_names) - set(removed)
+    unexpected = present - allowed
+    if unexpected:
+        raise PatchValidationError(
+            "Generated geometry contains unexpected detector(s): "
+            + ", ".join(sorted(unexpected))
+        )
+
+    return generated
+
+
+def _report_diagnostics(
+    removed_plugins: list[RemovedPlugin],
+    collateral_detectors: frozenset[str],
+    unresolved_refs: tuple[FilesystemRef, ...],
+) -> None:
+    for plugin in removed_plugins:
+        print(
+            f"  removed plugin {plugin.plugin_type} from {plugin.file} — "
+            f"argument value {plugin.matched_value!r}"
+        )
+
+    if collateral_detectors:
+        print(
+            "  collateral detector removals: "
+            + ", ".join(sorted(collateral_detectors))
+        )
+
+    seen: set[str] = set()
+    for ref in unresolved_refs:
+        if not ref.ref or ref.ref in seen:
+            continue
+        seen.add(ref.ref)
+        warnings.warn(
+            f"Skipped unresolved ref {ref.ref!r} — detectors behind it cannot "
+            "be patched.",
+            stacklevel=3,
+        )
 
 
 def _write_doc(doc: minidom.Document, path: Path) -> None:
-    """Serialise *doc* over an already-reserved path."""
-    with open(path, "w") as fh:
-        doc.writexml(fh)
-
-
-def _write_tmp_xml(doc: minidom.Document, directory: Path | None, suffix: str) -> Path:
-    """Serialise *doc* to a named temp file.
-
-    *directory* defaults to the system temp dir when ``None``.
-    """
-    tmp = tempfile.NamedTemporaryFile(
-        suffix=".xml",
-        delete=False,
-        mode="w",
-        dir=directory,
-        prefix=f"{_TMP_PREFIX}{suffix}",
-    )
-    doc.writexml(tmp)
-    tmp.close()
-    return Path(tmp.name)
-
-
-def _write_patched_top(
-    original_top: Path,
-    sub_tmp_map: dict[Path, Path],
-    top_doc: minidom.Document | None,
-    tmp_prefix: str,
-) -> Path:
-    """Rewrite the top-level XML so its includes point at the patched copies in
-    *sub_tmp_map*.
-
-    *top_doc* is the already-patched top-level document when the top level itself
-    had content removed, and ``None`` to read it fresh from disk.  A freshly read
-    one needs no plugin sweep: :func:`_sweep_orphaned_plugins` would have handed
-    it over as a modified document if it held a plugin naming a removed detector.
-
-    Only refs that resolve to a patched file are changed; everything else is
-    left verbatim.
-    """
-    geo_dir = original_top.parent
-    if top_doc is None:
-        try:
-            top_doc = minidom.parse(str(original_top))
-        except (ExpatError, OSError) as exc:
-            raise OSError(
-                f"Could not parse top-level XML {original_top}: {exc}"
-            ) from exc
-
-    _retarget_includes(top_doc, geo_dir, sub_tmp_map)
-    _absolutize_refs(top_doc, geo_dir)
-    return _write_tmp_xml(top_doc, None, tmp_prefix)
+    """Serialize a patched XML document."""
+    with path.open("w") as stream:
+        doc.writexml(stream)

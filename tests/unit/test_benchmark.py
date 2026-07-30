@@ -5,12 +5,15 @@ run_ddsim is monkey-patched throughout so no real ddsim is needed.
 
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
+import k4bench.benchmark.ddsim as ddsim_module
 from k4bench.benchmark.ddsim import BenchmarkConfig, SweepMode, run_sweep
+from k4bench.geometry.index import GeometryIndex
 from k4bench.results.model import RunResult
 
 # ---------------------------------------------------------------------------
@@ -94,10 +97,45 @@ class TestFullMode:
         labels = {r.label for r in results}
         assert all(f"without_{d}" in labels for d in ALL_DETECTORS)
 
-    def test_no_tmp_files_left_behind(self, tmp_path):
+    def test_no_tmp_files_left_behind(self, tmp_path, monkeypatch):
+        private = tmp_path / "system_tmp"
+        private.mkdir()
+        monkeypatch.setattr(tempfile, "tempdir", str(private))
         with patch("k4bench.benchmark.ddsim.run_ddsim", side_effect=_mock_run):
             run_sweep(_make_config(tmp_path, mode=SweepMode.FULL))
-        assert list(FIXTURES.glob("_k4bench_tmp_*")) == []
+        assert list(private.glob("_k4bench_patch_*")) == []
+
+    def test_original_geometry_is_strictly_indexed_once(self, tmp_path, monkeypatch):
+        calls: list[tuple[Path, bool]] = []
+
+        class CountingIndex:
+            @classmethod
+            def load(cls, path, *, strict):
+                calls.append((Path(path).resolve(), strict))
+                return GeometryIndex.load(path, strict=strict)
+
+        monkeypatch.setattr(ddsim_module, "GeometryIndex", CountingIndex)
+        with patch("k4bench.benchmark.ddsim.run_ddsim", side_effect=_mock_run):
+            run_sweep(_make_config(tmp_path, mode=SweepMode.FULL))
+
+        assert calls == [(MINIMAL_XML.resolve(), True)]
+
+    def test_strict_index_failure_happens_after_baseline(self, tmp_path, monkeypatch):
+        class BrokenIndex:
+            @classmethod
+            def load(cls, path, *, strict):
+                raise RuntimeError("strict indexing failed")
+
+        monkeypatch.setattr(ddsim_module, "GeometryIndex", BrokenIndex)
+        with patch("k4bench.benchmark.ddsim.run_ddsim", side_effect=_mock_run) as run:
+            results = run_sweep(_make_config(tmp_path, mode=SweepMode.FULL))
+
+        assert [result.label for result in results] == [
+            "baseline_all",
+            "patch_setup",
+        ]
+        assert not results[-1].succeeded
+        assert run.call_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -276,7 +314,7 @@ class TestFailureHandling:
 
         assert len(results) == 5
 
-    def test_unexpected_exception_skips_run_continues(self, tmp_path):
+    def test_unexpected_exception_records_failure_and_continues(self, tmp_path):
         def side_effect(**kw):
             if kw["label"] == "without_EcalBarrel":
                 raise RuntimeError("unexpected crash")
@@ -286,8 +324,41 @@ class TestFailureHandling:
             results = run_sweep(_make_config(tmp_path, mode=SweepMode.FULL))
 
         labels = {r.label for r in results}
-        assert "without_EcalBarrel" not in labels
-        assert len(results) == 4
+        assert "without_EcalBarrel" in labels
+        assert len(results) == 5
+        failed = next(r for r in results if r.label == "without_EcalBarrel")
+        assert not failed.succeeded
+
+    @pytest.mark.parametrize(
+        ("mode", "label"),
+        [
+            (SweepMode.INCLUDE_ONLY, "only_Keep"),
+            (SweepMode.EXCLUDE_ONLY, "without_Keep"),
+        ],
+    )
+    def test_geometry_failure_is_a_failed_run(self, mode, label, tmp_path):
+        """Single-run modes report patch failures instead of raising."""
+        geometry = tmp_path / "top.xml"
+        geometry.write_text(
+            '<lccdd><detector name="Keep"/><include ref="broken.xml"/></lccdd>'
+        )
+        (tmp_path / "broken.xml").write_text("<lccdd><unclosed>")
+        config = _make_config(
+            tmp_path,
+            xml_path=geometry,
+            mode=mode,
+            detector_names=["Keep"],
+        )
+
+        with (
+            pytest.warns(UserWarning, match="Could not parse"),
+            patch("k4bench.benchmark.ddsim.run_ddsim", side_effect=_mock_run) as run,
+        ):
+            results = run_sweep(config)
+
+        assert [result.label for result in results] == [label]
+        assert not results[0].succeeded
+        assert run.call_count == 0
 
 
 # ---------------------------------------------------------------------------

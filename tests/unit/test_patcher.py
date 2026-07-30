@@ -6,6 +6,7 @@ All tests use the minimal_geometry fixture — no ddsim, no DD4hep runtime.
 from __future__ import annotations
 
 import tempfile
+import warnings
 from pathlib import Path
 from xml.dom import minidom
 
@@ -13,11 +14,16 @@ import pytest
 
 from k4bench.geometry.patcher import (
     DetectorNotFoundError,
-    _TMP_PREFIX,
-    build_patched_xml,
+    PatchValidationError,
+    _PATCH_DIR_PREFIX,
+    _validate,
+    build_patch,
+    patched,
     patched_geometry,
     patched_geometry_keep_only,
 )
+from k4bench.geometry.index import GeometryIndex
+from k4bench.geometry.references import resolve_local_ref
 from k4bench.geometry.scanner import get_detector_names, resolve_includes
 
 # ---------------------------------------------------------------------------
@@ -41,15 +47,15 @@ def _detector_names_in_doc(path: Path) -> list[str]:
     ]
 
 
-def _get_tmp_files(directory: Path) -> list[Path]:
-    return list(directory.glob(f"{_TMP_PREFIX}*"))
+def _get_tmp_directories(directory: Path) -> list[Path]:
+    return list(directory.glob(f"{_PATCH_DIR_PREFIX}*"))
 
 
 @pytest.fixture
 def isolated_tmpdir(tmp_path, monkeypatch):
     """Point the patcher's temp writes at a private directory.
 
-    The cleanup assertions compare the set of ``_k4bench_tmp_*`` files before and
+    The cleanup assertions compare the set of patch directories before and
     after. Against the shared system temp dir that is a race: a concurrent test
     process — or any k4Bench run on the same machine — can add or remove one
     mid-assertion. Redirecting ``tempfile``'s default gives each test its own
@@ -62,67 +68,79 @@ def isolated_tmpdir(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# build_patched_xml — basic contract
+# build_patch — basic contract
 # ---------------------------------------------------------------------------
 
 
-def _cleanup(top: Path, subs: list[Path]) -> None:
-    for tmp in (top, *subs):
-        tmp.unlink(missing_ok=True)
+class TestBuildPatch:
+    @staticmethod
+    def _build(name: str):
+        return build_patch(
+            GeometryIndex.load(MINIMAL_XML, strict=True),
+            {name},
+        )
 
-
-class TestBuildPatchedXml:
     def test_returns_a_top_and_its_redirect_chain(self):
-        top, subs = build_patched_xml(MINIMAL_XML, "InnerTracker")
+        result = self._build("InnerTracker")
         try:
-            assert isinstance(top, Path)
+            assert isinstance(result.top_path, Path)
             # The fixture includes each sub-file directly, so the chain is just
             # the patched owner.
-            assert len(subs) == 1
-            assert all(isinstance(s, Path) for s in subs)
+            assert len(result.subfile_map) == 1
+            assert all(isinstance(path, Path) for path in result.subfile_map.values())
         finally:
-            _cleanup(top, subs)
+            result.cleanup()
 
     def test_tmp_files_exist_after_call(self):
-        top, subs = build_patched_xml(MINIMAL_XML, "InnerTracker")
+        result = self._build("InnerTracker")
         try:
-            assert top.exists()
-            assert all(s.exists() for s in subs)
+            assert result.top_path.exists()
+            assert all(path.exists() for path in result.subfile_map.values())
         finally:
-            _cleanup(top, subs)
+            result.cleanup()
 
     def test_tmp_files_in_system_tmp_directory(self):
-        top, subs = build_patched_xml(MINIMAL_XML, "InnerTracker")
+        result = self._build("InnerTracker")
         try:
             tmp_dir = Path(tempfile.gettempdir())
-            assert top.parent == tmp_dir
-            assert all(s.parent == tmp_dir for s in subs)
+            assert result.top_path.parent.parent == tmp_dir
+            assert result.directory.name.startswith(_PATCH_DIR_PREFIX)
+            assert all(
+                path.parent == result.directory
+                for path in result.subfile_map.values()
+            )
         finally:
-            _cleanup(top, subs)
+            result.cleanup()
 
     def test_tmp_files_have_expected_prefix(self):
-        top, subs = build_patched_xml(MINIMAL_XML, "InnerTracker")
+        result = self._build("InnerTracker")
         try:
-            assert top.name.startswith(_TMP_PREFIX)
-            assert all(s.name.startswith(_TMP_PREFIX) for s in subs)
+            assert result.top_path.name == f"top_{MINIMAL_XML.name}"
+            assert all(
+                path.name[:3].isdigit()
+                for path in result.subfile_map.values()
+            )
         finally:
-            _cleanup(top, subs)
+            result.cleanup()
 
     def test_original_file_unchanged(self):
         original_mtime = MINIMAL_XML.stat().st_mtime
-        top, subs = build_patched_xml(MINIMAL_XML, "InnerTracker")
+        result = self._build("InnerTracker")
         try:
             assert MINIMAL_XML.stat().st_mtime == original_mtime
         finally:
-            _cleanup(top, subs)
+            result.cleanup()
 
     def test_raises_for_unknown_detector(self):
         with pytest.raises(DetectorNotFoundError, match="NoSuchDetector"):
-            build_patched_xml(MINIMAL_XML, "NoSuchDetector")
+            build_patch(
+                GeometryIndex.load(MINIMAL_XML, strict=True),
+                {"NoSuchDetector"},
+            )
 
 
 # ---------------------------------------------------------------------------
-# build_patched_xml — detector removal correctness
+# build_patch — detector removal correctness
 # ---------------------------------------------------------------------------
 
 
@@ -132,32 +150,38 @@ class TestDetectorRemoval:
     ])
     def removed(self, request):
         name = request.param
-        top, subs = build_patched_xml(MINIMAL_XML, name)
-        yield name, top, subs
-        _cleanup(top, subs)
+        result = build_patch(
+            GeometryIndex.load(MINIMAL_XML, strict=True),
+            {name},
+        )
+        yield name, result
+        result.cleanup()
 
     def test_removed_detector_absent_from_patched_geometry(self, removed):
-        name, top, _ = removed
-        remaining = get_detector_names(top)
+        name, result = removed
+        remaining = get_detector_names(result.top_path)
         assert name not in remaining
 
     def test_other_detectors_still_present(self, removed):
-        name, top, _ = removed
+        name, result = removed
         all_names = {"InnerTracker", "OuterTracker", "EcalBarrel", "HcalBarrel"}
-        remaining = set(get_detector_names(top))
+        remaining = set(get_detector_names(result.top_path))
         assert remaining == all_names - {name}
 
     def test_detector_count_reduced_by_one(self, removed):
-        name, top, _ = removed
-        assert len(get_detector_names(top)) == 3
+        _, result = removed
+        assert len(get_detector_names(result.top_path)) == 3
 
     def test_sub_file_does_not_contain_removed_detector(self, removed):
-        name, _, subs = removed
-        assert all(name not in _detector_names_in_doc(sub) for sub in subs)
+        name, result = removed
+        assert all(
+            name not in _detector_names_in_doc(path)
+            for path in result.subfile_map.values()
+        )
 
 
 # ---------------------------------------------------------------------------
-# build_patched_xml — top-level XML include redirect
+# build_patch — top-level XML include redirect
 # ---------------------------------------------------------------------------
 
 
@@ -168,26 +192,74 @@ def _include_refs(path: Path) -> list[str]:
 
 class TestIncludeRedirect:
     def test_top_xml_references_sub_tmp(self):
-        top, subs = build_patched_xml(MINIMAL_XML, "InnerTracker")
+        result = build_patch(
+            GeometryIndex.load(MINIMAL_XML, strict=True),
+            {"InnerTracker"},
+        )
         try:
-            assert str(subs[0]) in _include_refs(top)
+            generated = next(iter(result.subfile_map.values()))
+            assert str(generated) in _include_refs(result.top_path)
         finally:
-            _cleanup(top, subs)
+            result.cleanup()
 
     def test_unaffected_includes_preserved(self):
         # Removing a tracker detector should leave calorimeter include intact
-        top, subs = build_patched_xml(MINIMAL_XML, "InnerTracker")
+        result = build_patch(
+            GeometryIndex.load(MINIMAL_XML, strict=True),
+            {"InnerTracker"},
+        )
         try:
-            refs = _include_refs(top)
+            refs = _include_refs(result.top_path)
             # materials.xml and calorimeter include should still be present
             assert any("materials" in r for r in refs)
             assert any("calorimeter" in r for r in refs)
         finally:
-            _cleanup(top, subs)
+            result.cleanup()
+
+
+class TestIncludesFileDocument:
+    @pytest.fixture
+    def geometry(self, tmp_path):
+        top = tmp_path / "top.xml"
+        child = tmp_path / "subdetectors.xml"
+        top.write_text(
+            "<lccdd><includes>"
+            '<file ref="subdetectors.xml"/>'
+            "</includes></lccdd>"
+        )
+        child.write_text(
+            "<lccdd><detectors>"
+            '<detector name="BehindFile"/>'
+            '<detector name="Keep"/>'
+            "</detectors></lccdd>"
+        )
+        return top
+
+    def test_detector_is_discovered_and_removed(self, geometry):
+        assert get_detector_names(geometry) == ["BehindFile", "Keep"]
+        with patched_geometry(geometry, "BehindFile") as patched_top:
+            assert get_detector_names(patched_top) == ["Keep"]
+
+    def test_file_reference_is_retargeted_to_the_generated_child(self, geometry):
+        result = build_patch(
+            GeometryIndex.load(geometry, strict=True),
+            {"BehindFile"},
+        )
+        try:
+            doc = minidom.parse(str(result.top_path))
+            refs = [
+                node.getAttribute("ref")
+                for node in doc.getElementsByTagName("file")
+            ]
+            generated = next(iter(result.subfile_map.values()))
+            assert refs == [str(generated)]
+            assert generated in set(resolve_includes(result.top_path))
+        finally:
+            result.cleanup()
 
 
 # ---------------------------------------------------------------------------
-# build_patched_xml — nested include chains
+# build_patch — nested include chains
 # ---------------------------------------------------------------------------
 
 
@@ -228,24 +300,26 @@ class TestNestedIncludeChain:
     def test_every_file_on_the_chain_is_redirected(self, nested_geometry):
         # The leaf is patched, so the intermediate must be rewritten to point at
         # the patched leaf, and the top at the rewritten intermediate.
-        top, subs = build_patched_xml(nested_geometry, "DeepTracker")
+        result = build_patch(
+            GeometryIndex.load(nested_geometry, strict=True),
+            {"DeepTracker"},
+        )
         try:
-            assert len(subs) == 2  # patched leaf + redirected intermediate
+            assert len(result.subfile_map) == 2
             # The chain is connected — both patched copies are reachable from the
-            # top — and no original on it is still reached. Asserted on
-            # reachability rather than on `subs` order, which is not a contract.
-            reached = set(resolve_includes(top))
-            assert set(subs) <= reached
+            # top — and no original on it is still reached.
+            reached = set(resolve_includes(result.top_path))
+            assert set(result.subfile_map.values()) <= reached
             assert not any(f.name in ("group.xml", "leaf.xml") for f in reached)
         finally:
-            _cleanup(top, subs)
+            result.cleanup()
 
     def test_chain_tmp_files_cleaned_up(self, nested_geometry, isolated_tmpdir):
         tmp_dir = isolated_tmpdir
-        before = set(_get_tmp_files(tmp_dir))
+        before = set(_get_tmp_directories(tmp_dir))
         with patched_geometry(nested_geometry, "DeepCalo"):
             pass
-        assert set(_get_tmp_files(tmp_dir)) == before
+        assert set(_get_tmp_directories(tmp_dir)) == before
 
 
 class TestRedirectedFileKeepsItsSiblings:
@@ -342,7 +416,7 @@ class TestIncludeInsideDetector:
 
 
 # ---------------------------------------------------------------------------
-# build_patched_xml — detectors declared in the top-level compact
+# build_patch — detectors declared in the top-level compact
 # ---------------------------------------------------------------------------
 
 
@@ -370,25 +444,31 @@ class TestTopLevelDetector:
         return xml
 
     def test_removed_detector_absent_from_patched_top(self, inline_geometry):
-        top, subs = build_patched_xml(inline_geometry, "InlineTracker")
+        result = build_patch(
+            GeometryIndex.load(inline_geometry, strict=True),
+            {"InlineTracker"},
+        )
         try:
-            assert get_detector_names(top) == ["InlineCalo"]
+            assert get_detector_names(result.top_path) == ["InlineCalo"]
         finally:
-            _cleanup(top, subs)
+            result.cleanup()
 
     def test_no_sub_file_is_written(self, inline_geometry):
-        top, subs = build_patched_xml(inline_geometry, "InlineTracker")
+        result = build_patch(
+            GeometryIndex.load(inline_geometry, strict=True),
+            {"InlineTracker"},
+        )
         try:
-            assert subs == []
+            assert result.subfile_map == {}
         finally:
-            _cleanup(top, subs)
+            result.cleanup()
 
     def test_context_manager_cleans_up(self, inline_geometry, isolated_tmpdir):
         tmp_dir = isolated_tmpdir
-        before = set(_get_tmp_files(tmp_dir))
+        before = set(_get_tmp_directories(tmp_dir))
         with patched_geometry(inline_geometry, "InlineCalo") as tmp:
             assert get_detector_names(tmp) == ["InlineTracker"]
-        assert set(_get_tmp_files(tmp_dir)) == before
+        assert set(_get_tmp_directories(tmp_dir)) == before
 
 
 class TestKeepOnlyNestedModifiedFiles:
@@ -498,6 +578,20 @@ class TestCrossFileOrphanedPlugins:
         with patched_geometry_keep_only(geometry, {"Keep"}) as tmp:
             assert self._plugin_args(tmp) == ["Keep"]
 
+    def test_removed_plugin_is_recorded_and_reported(self, geometry, capsys):
+        result = build_patch(
+            GeometryIndex.load(geometry, strict=True),
+            {"Target"},
+        )
+        try:
+            assert [
+                (entry.plugin_type, entry.matched_value)
+                for entry in result.removed_plugins
+            ] == [("DD4hep_ReadoutSetup", "Target")]
+            assert "removed plugin DD4hep_ReadoutSetup" in capsys.readouterr().out
+        finally:
+            result.cleanup()
+
 
 class TestFilesystemRefElements:
     """Which elements' ``ref=`` the patcher rewrites when relocating a file.
@@ -558,19 +652,19 @@ class TestPatchedGeometryContextManager:
 
     def test_tmp_files_cleaned_up_on_exit(self, isolated_tmpdir):
         tmp_dir = isolated_tmpdir
-        before = set(_get_tmp_files(tmp_dir))
+        before = set(_get_tmp_directories(tmp_dir))
         with patched_geometry(MINIMAL_XML, "EcalBarrel"):
             pass
-        after = set(_get_tmp_files(tmp_dir))
+        after = set(_get_tmp_directories(tmp_dir))
         assert after == before
 
     def test_tmp_files_cleaned_up_on_exception(self, isolated_tmpdir):
         tmp_dir = isolated_tmpdir
-        before = set(_get_tmp_files(tmp_dir))
+        before = set(_get_tmp_directories(tmp_dir))
         with pytest.raises(RuntimeError):
             with patched_geometry(MINIMAL_XML, "EcalBarrel"):
                 raise RuntimeError("simulated failure")
-        after = set(_get_tmp_files(tmp_dir))
+        after = set(_get_tmp_directories(tmp_dir))
         assert after == before
 
     def test_patched_geometry_has_correct_detectors(self):
@@ -583,3 +677,366 @@ class TestPatchedGeometryContextManager:
         with pytest.raises(DetectorNotFoundError):
             with patched_geometry(MINIMAL_XML, "NoSuchDetector"):
                 pass  # pragma: no cover
+
+
+# ---------------------------------------------------------------------------
+# Removal engine invariants and validation failures
+# ---------------------------------------------------------------------------
+
+
+def test_lenient_index_cannot_reach_build_patch(
+    tmp_path,
+    isolated_tmpdir,
+):
+    top = tmp_path / "top.xml"
+    bad = tmp_path / "bad.xml"
+    top.write_text('<lccdd><include ref="bad.xml"/><detector name="Known"/></lccdd>')
+    bad.write_text("not XML <<<")
+    with pytest.warns(UserWarning, match="Could not parse"):
+        index = GeometryIndex.load(top, strict=False)
+
+    before = set(_get_tmp_directories(isolated_tmpdir))
+    with pytest.raises(Exception) as caught:
+        build_patch(index, {"Known"})
+    assert caught.value is index.parse_errors[0]
+    assert set(_get_tmp_directories(isolated_tmpdir)) == before
+
+
+def test_duplicate_detector_name_removes_every_declaration(tmp_path):
+    top = tmp_path / "top.xml"
+    left = tmp_path / "left.xml"
+    right = tmp_path / "right.xml"
+    top.write_text(
+        '<lccdd><include ref="left.xml"/><include ref="right.xml"/></lccdd>'
+    )
+    left.write_text('<lccdd><detector name="Duplicate"/></lccdd>')
+    right.write_text('<lccdd><detector name="Duplicate"/></lccdd>')
+    index = GeometryIndex.load(top, strict=True)
+
+    with pytest.warns(UserWarning, match="declared more than once"):
+        result = build_patch(index, {"Duplicate"})
+    try:
+        assert result.present_detectors == frozenset()
+        assert "Duplicate" not in get_detector_names(result.top_path)
+        assert set(result.subfile_map) == {left.resolve(), right.resolve()}
+    finally:
+        result.cleanup()
+
+
+def test_diamond_graph_reaches_one_generated_shared_child(tmp_path):
+    top = tmp_path / "top.xml"
+    left = tmp_path / "left.xml"
+    right = tmp_path / "right.xml"
+    leaf = tmp_path / "leaf.xml"
+    top.write_text(
+        '<lccdd><include ref="left.xml"/><include ref="right.xml"/></lccdd>'
+    )
+    left.write_text('<lccdd><include ref="leaf.xml"/></lccdd>')
+    right.write_text('<lccdd><include ref="leaf.xml"/></lccdd>')
+    leaf.write_text(
+        '<lccdd><detector name="Drop"/><detector name="Keep"/></lccdd>'
+    )
+    index = GeometryIndex.load(top, strict=True)
+
+    result = build_patch(index, {"Drop"})
+    try:
+        reached = set(resolve_includes(result.top_path))
+        assert result.present_detectors == frozenset({"Keep"})
+        assert set(result.subfile_map.values()) <= reached
+        assert not (set(result.subfile_map) & reached)
+        assert len(result.subfile_map) == 3
+    finally:
+        result.cleanup()
+
+
+@pytest.mark.parametrize("failure", [OSError("write failed"), KeyboardInterrupt()])
+def test_partial_write_removes_the_patch_directory(
+    failure,
+    isolated_tmpdir,
+    monkeypatch,
+):
+    index = GeometryIndex.load(MINIMAL_XML, strict=True)
+
+    def fail_write(*_args):
+        raise failure
+
+    monkeypatch.setattr("k4bench.geometry.patcher._write_doc", fail_write)
+    before = set(_get_tmp_directories(isolated_tmpdir))
+    with pytest.raises(type(failure)):
+        build_patch(index, {"InnerTracker"})
+    assert set(_get_tmp_directories(isolated_tmpdir)) == before
+
+
+def test_validate_rejects_an_original_replacement_still_reachable():
+    index = GeometryIndex.load(MINIMAL_XML, strict=True)
+    result = build_patch(index, {"InnerTracker"})
+    try:
+        original = next(iter(result.subfile_map))
+        doc = minidom.parse(str(result.top_path))
+        include = doc.createElement("include")
+        include.setAttribute("ref", str(original))
+        doc.documentElement.appendChild(include)
+        with result.top_path.open("w") as stream:
+            doc.writexml(stream)
+
+        with pytest.raises(PatchValidationError, match="remain reachable"):
+            _validate(
+                result.top_path,
+                original=index,
+                removed={"InnerTracker"},
+                subfile_map=result.subfile_map,
+            )
+    finally:
+        result.cleanup()
+
+
+def test_validate_rejects_an_unreachable_generated_subfile():
+    index = GeometryIndex.load(MINIMAL_XML, strict=True)
+    result = build_patch(index, {"InnerTracker"})
+    try:
+        unused = result.directory / "unused.xml"
+        unused.write_text("<lccdd/>")
+        corrupted_map = {
+            **result.subfile_map,
+            Path("/not/an/original.xml"): unused,
+        }
+        with pytest.raises(PatchValidationError, match="not reachable"):
+            _validate(
+                result.top_path,
+                original=index,
+                removed={"InnerTracker"},
+                subfile_map=corrupted_map,
+            )
+    finally:
+        result.cleanup()
+
+
+def test_collateral_detector_is_recorded(tmp_path, capsys):
+    top = tmp_path / "top.xml"
+    detectors = tmp_path / "detectors.xml"
+    module = tmp_path / "module.xml"
+    top.write_text(
+        "<lccdd>"
+        '<include ref="detectors.xml"/>'
+        '<plugin name="NestedSetup"><argument value="Nested"/></plugin>'
+        "</lccdd>"
+    )
+    detectors.write_text(
+        "<lccdd><detector name=\"Outer\">"
+        '<include ref="module.xml"/>'
+        "</detector></lccdd>"
+    )
+    module.write_text('<lccdd><detector name="Nested"/></lccdd>')
+    index = GeometryIndex.load(top, strict=True)
+
+    result = build_patch(index, {"Outer"})
+    try:
+        assert result.collateral_detectors == frozenset({"Nested"})
+        assert [
+            (plugin.plugin_type, plugin.matched_value)
+            for plugin in result.removed_plugins
+        ] == [("NestedSetup", "Nested")]
+        generated = GeometryIndex.load(result.top_path, strict=True)
+        assert "Nested" not in generated.plugin_values
+        assert "collateral detector removals: Nested" in capsys.readouterr().out
+    finally:
+        result.cleanup()
+
+
+def _write_nested_geometry(tmp_path: Path, *, extra_edge: str = "") -> Path:
+    """Top → detectors.xml, whose ``Outer`` detector nests module.xml."""
+    top = tmp_path / "top.xml"
+    top.write_text(f'<lccdd><include ref="detectors.xml"/>{extra_edge}</lccdd>')
+    (tmp_path / "detectors.xml").write_text(
+        '<lccdd><detector name="Outer">'
+        '<include ref="module.xml"/>'
+        "</detector></lccdd>"
+    )
+    (tmp_path / "module.xml").write_text('<lccdd><detector name="Nested"/></lccdd>')
+    return top
+
+
+def test_removing_a_parent_and_its_nested_detector_together(tmp_path):
+    """The nested file's replacement is dropped, not rejected as unreachable."""
+    top = _write_nested_geometry(tmp_path)
+    index = GeometryIndex.load(top, strict=True)
+
+    result = build_patch(index, {"Outer", "Nested"})
+    try:
+        assert result.present_detectors == frozenset()
+        assert result.collateral_detectors == frozenset()
+        # module.xml lost its only document edge, so no replacement is written.
+        assert set(result.subfile_map) == {tmp_path / "detectors.xml"}
+        generated = GeometryIndex.load(result.top_path, strict=True)
+        assert generated.detector_names == ()
+        assert tmp_path / "module.xml" not in generated.files
+    finally:
+        result.cleanup()
+
+
+def test_removing_only_the_nested_detector_keeps_the_parent_reachable(tmp_path):
+    top = _write_nested_geometry(tmp_path)
+    index = GeometryIndex.load(top, strict=True)
+
+    result = build_patch(index, {"Nested"})
+    try:
+        assert result.present_detectors == frozenset({"Outer"})
+        assert set(result.subfile_map) == {
+            tmp_path / "detectors.xml",
+            tmp_path / "module.xml",
+        }
+    finally:
+        result.cleanup()
+
+
+def test_a_nested_file_reachable_elsewhere_is_still_patched(tmp_path):
+    """Only edges the removal actually severed may drop a replacement."""
+    top = _write_nested_geometry(tmp_path, extra_edge='<include ref="module.xml"/>')
+    index = GeometryIndex.load(top, strict=True)
+
+    result = build_patch(index, {"Outer", "Nested"})
+    try:
+        assert set(result.subfile_map) == {
+            tmp_path / "detectors.xml",
+            tmp_path / "module.xml",
+        }
+        generated = GeometryIndex.load(result.top_path, strict=True)
+        assert generated.detector_names == ()
+        assert len(generated.files) == 3
+    finally:
+        result.cleanup()
+
+
+def test_duplicate_edge_outside_a_removed_detector_keeps_the_replacement(tmp_path):
+    """One surviving parent→child ref is enough to keep the child reachable."""
+    top = tmp_path / "top.xml"
+    top.write_text('<lccdd><include ref="detectors.xml"/></lccdd>')
+    (tmp_path / "detectors.xml").write_text(
+        '<lccdd><detector name="Outer"><include ref="module.xml"/></detector>'
+        '<include ref="module.xml"/></lccdd>'
+    )
+    (tmp_path / "module.xml").write_text('<lccdd><detector name="Nested"/></lccdd>')
+    index = GeometryIndex.load(top, strict=True)
+
+    result = build_patch(index, {"Outer", "Nested"})
+    try:
+        assert tmp_path / "module.xml" in result.subfile_map
+        generated = GeometryIndex.load(result.top_path, strict=True)
+        assert generated.detector_names == ()
+    finally:
+        result.cleanup()
+
+
+def test_dropped_replacements_leave_no_files_behind(tmp_path, isolated_tmpdir):
+    top = _write_nested_geometry(tmp_path)
+    index = GeometryIndex.load(top, strict=True)
+
+    with patched(index, {"Outer", "Nested"}) as result:
+        assert sorted(path.name for path in result.directory.iterdir()) == [
+            "000_detectors.xml",
+            "top_top.xml",
+        ]
+    assert _get_tmp_directories(isolated_tmpdir) == []
+
+
+def test_keep_only_can_drop_a_parent_and_its_nested_detector(tmp_path):
+    """The whole-sweep entry point exercises the same multi-removal path."""
+    top = _write_nested_geometry(tmp_path)
+    with patched_geometry_keep_only(top, set()) as patched_top:
+        assert _detector_names_in_doc(patched_top) == []
+
+
+@pytest.mark.parametrize("tag", ["gdmlFile", "file"])
+def test_patch_rejects_missing_local_asset_ref(
+    tag,
+    tmp_path,
+    isolated_tmpdir,
+):
+    top = tmp_path / "top.xml"
+    top.write_text(
+        f'<lccdd><{tag} ref="missing.xml"/><detector name="Drop"/></lccdd>'
+    )
+    index = GeometryIndex.load(top, strict=True)
+    assert index.is_complete
+
+    before = set(_get_tmp_directories(isolated_tmpdir))
+    with (
+        pytest.warns(UserWarning, match="Could not absolutize"),
+        pytest.raises(PatchValidationError, match="missing filesystem"),
+    ):
+        build_patch(index, {"Drop"})
+    assert set(_get_tmp_directories(isolated_tmpdir)) == before
+
+
+def test_unresolved_refs_are_reported_once_per_distinct_value(tmp_path):
+    top = tmp_path / "top.xml"
+    top.write_text(
+        "<lccdd>"
+        '<include ref="${K4GEO}/shared.xml"/>'
+        '<file ref="${K4GEO}/shared.xml"/>'
+        '<detector name="Drop"/>'
+        "</lccdd>"
+    )
+    index = GeometryIndex.load(top, strict=True)
+
+    with pytest.warns(UserWarning, match="detectors behind it") as caught:
+        result = build_patch(index, {"Drop"})
+    try:
+        assert len(result.unresolved_refs) == 2
+        assert len(caught) == 1
+    finally:
+        result.cleanup()
+
+
+def test_diagnostic_warning_as_error_cleans_up_patch_directory(
+    tmp_path,
+    isolated_tmpdir,
+):
+    top = tmp_path / "top.xml"
+    top.write_text(
+        "<lccdd>"
+        '<include ref="${K4GEO}/shared.xml"/>'
+        '<detector name="Drop"/>'
+        "</lccdd>"
+    )
+    index = GeometryIndex.load(top, strict=True)
+
+    before = set(_get_tmp_directories(isolated_tmpdir))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(UserWarning, match="detectors behind it"):
+            build_patch(index, {"Drop"})
+    assert set(_get_tmp_directories(isolated_tmpdir)) == before
+
+
+@pytest.mark.parametrize(
+    ("ref", "expected"),
+    [
+        ("child.xml", "child.xml"),
+        ("../child.xml", "../child.xml"),
+        ("", None),
+        ("${ROOT}/child.xml", None),
+    ],
+)
+def test_resolve_local_ref(tmp_path, ref, expected):
+    resolved = resolve_local_ref(ref, tmp_path)
+    if expected is None:
+        assert resolved is None
+    else:
+        assert resolved == (tmp_path / expected).resolve()
+
+
+def test_resolve_local_ref_preserves_absolute_path(tmp_path):
+    absolute = (tmp_path / "child.xml").resolve()
+    assert resolve_local_ref(str(absolute), tmp_path / "elsewhere") == absolute
+
+
+def test_patched_context_yields_result_and_cleans_up(isolated_tmpdir):
+    index = GeometryIndex.load(MINIMAL_XML, strict=True)
+    with patched(index, {"InnerTracker"}) as result:
+        directory = result.directory
+        assert result.top_path.exists()
+        assert result.present_detectors == frozenset(
+            {"OuterTracker", "EcalBarrel", "HcalBarrel"}
+        )
+    assert not directory.exists()
