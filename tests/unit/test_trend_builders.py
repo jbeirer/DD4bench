@@ -89,10 +89,23 @@ def test_parse_run_dir_defaults_stack_packages_to_empty(tmp_path):
     assert trend.parse_run_dir(tmp_path / "does-not-exist")["k4h_packages"] == {}
 
 
-def test_parse_run_dir_treats_an_empty_config_roster_as_legacy_metadata(tmp_path):
+def test_parse_run_dir_rejects_empty_or_blank_config_rosters(tmp_path):
+    r1 = _make_run(tmp_path, "2026-05-20", "key4hep-2026-05-20", 5.0)
+    info_path = r1 / "run_info.json"
+    for labels in ([], [""], ["baseline_all", " "]):
+        info = json.loads(info_path.read_text())
+        info["configured_labels"] = labels
+        info_path.write_text(json.dumps(info))
+        assert trend.parse_run_dir(r1)["configured_labels"] is None
+
+
+def test_parse_run_dir_deduplicates_config_roster(tmp_path):
     r1 = _make_run(tmp_path, "2026-05-20", "key4hep-2026-05-20", 5.0)
     info_path = r1 / "run_info.json"
     info = json.loads(info_path.read_text())
-    info["configured_labels"] = []
+    info["configured_labels"] = ["baseline_all", "without_ECal", "baseline_all"]
     info_path.write_text(json.dumps(info))
-    assert trend.parse_run_dir(r1)["configured_labels"] is None
+    assert trend.parse_run_dir(r1)["configured_labels"] == [
+        "baseline_all",
+        "without_ECal",
+    ]

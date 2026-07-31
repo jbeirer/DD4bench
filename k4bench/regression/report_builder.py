@@ -302,7 +302,7 @@ def _failed_config_verdicts(
 
 
 def _missing_config_failures(
-    results_df: pd.DataFrame,
+    results_df: pd.DataFrame | None,
     run_id: str,
     configured_labels: list[str] | None = None,
 ) -> list[str]:
@@ -314,12 +314,21 @@ def _missing_config_failures(
     before writing any results leaves no CSV at all, and a returncode check
     alone would miss it.
     """
-    if "label" not in results_df.columns:
-        return []
-    tonight_labels = set(results_df.loc[results_df["run_id"] == run_id, "label"])
+    have_results = (
+        results_df is not None and {"run_id", "label"} <= set(results_df.columns)
+    )
+    tonight_labels = (
+        set(results_df.loc[results_df["run_id"] == run_id, "label"])
+        if have_results else set()
+    )
     if configured_labels is not None:
+        # A run that wrote no CSV at all is exactly the case the roster exists
+        # for: every configured label is missing, so the empty frame is a
+        # verdict, not a reason to give up.
         expected = set(configured_labels)
     else:
+        if not have_results:
+            return []
         n_runs = results_df["run_id"].nunique()
         if n_runs < 2:
             return []
@@ -393,7 +402,10 @@ def _group_report_from_frames(
     """
     no_results = results_df is None or results_df.empty
     no_events = event_df is None or event_df.empty
-    if no_results and no_events:
+    # With nothing loaded and no roster there is nothing to say about the
+    # triple. A roster changes that: it names configs that were supposed to
+    # produce results, so a night that produced none is a reportable failure.
+    if no_results and no_events and not configured_labels:
         return None
 
     k4h_release = ""
@@ -453,9 +465,9 @@ def _group_report_from_frames(
             detector=detector, platform=platform, sample=sample,
             results_df=results_df, run_id=tonight, run_date=tonight,
         ))
-        group.job_failures.extend(
-            _missing_config_failures(results_df, tonight, configured_labels)
-        )
+    group.job_failures.extend(
+        _missing_config_failures(results_df, tonight, configured_labels)
+    )
 
     return group
 
@@ -513,21 +525,28 @@ def group_report_from_run_dirs(
     oldest → newest; each directory's name is its nightly date)."""
     if not run_dirs:
         return None
-    tonight_dir = max(run_dirs, key=lambda d: Path(d).name)
-    configured_labels = parse_run_dir(Path(tonight_dir))["configured_labels"]
+    tonight = max(Path(d).name for d in run_dirs)
+    tonight_meta = parse_run_dir(
+        next(Path(d) for d in run_dirs if Path(d).name == tonight)
+    )
     results_df = build_results_trend(run_dirs)
     event_df = build_event_timing_trend(run_dirs)
     machine_df = build_machine_info_trend(run_dirs)
     reliability = run_reliability_map(results_df, machine_df)
-    tonight = max(Path(d).name for d in run_dirs)
     group = _group_report_from_frames(
         detector, platform, sample,
         results_df=results_df, event_df=event_df,
         reliability=reliability, tonight=tonight,
         hosts=host_facts(machine_df),
-        configured_labels=configured_labels,
+        configured_labels=tonight_meta["configured_labels"],
     )
-    return None if group is None else _with_region_deltas(group, run_dirs)
+    if group is None:
+        return None
+    # A night that wrote no result CSV has no release in its (absent) rows;
+    # run_info still names the stack that failed.
+    if not group.k4h_release:
+        group.k4h_release = tonight_meta["k4h_release"] or ""
+    return _with_region_deltas(group, run_dirs)
 
 
 def build_nightly_report(

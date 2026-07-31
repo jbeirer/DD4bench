@@ -207,7 +207,13 @@ CONFIGS_JSON=$(
 # what produced a CSV, while this is what was supposed to produce one.  If the
 # benchmark process was killed part-way through a sweep, the difference is the
 # missing-config failure the nightly report needs to surface.
-CONFIGURED_LABELS_JSON=$(
+#
+# Any failure here — a broken import, a missing interpreter, an unreadable
+# geometry — must leave the roster unknown rather than abort the job before it
+# uploads what the benchmark did produce.  ``null`` is the legacy metadata the
+# report already understands, and it is also the fallback for empty output so
+# the interpolation below always stays valid JSON.
+if ! CONFIGURED_LABELS_JSON=$(
 python3 - "${DETECTOR_XML}" "${SWEEP}" "${SWEEP_DETECTORS}" \
           "${INCLUDE_ONLY}" "${EXCLUDE_ONLY}" <<'PYEOF'
 import json
@@ -235,13 +241,15 @@ else:
 try:
     labels = planned_config_labels(Path(xml), mode, names)
 except Exception as exc:
-    # A roster failure must not prevent partial benchmark output from being
-    # uploaded.  ``null`` preserves the report's legacy historical fallback.
     print(f"WARNING: could not resolve configured labels: {exc}", file=sys.stderr)
     labels = None
 print(json.dumps(labels))
 PYEOF
-)
+); then
+    echo "WARNING: could not resolve configured labels" >&2
+    CONFIGURED_LABELS_JSON=null
+fi
+[[ -n "${CONFIGURED_LABELS_JSON}" ]] || CONFIGURED_LABELS_JSON=null
 
 # run_info.json
 python3 - "${DETECTOR}" "${SAMPLE}" "${DATE}" "${K4H_PLATFORM}" "${K4H_RELEASE}" \
