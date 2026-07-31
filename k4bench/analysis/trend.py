@@ -26,6 +26,18 @@ _log = logging.getLogger(__name__)
 EXPECTED_LOAD_ERRORS = (FileNotFoundError, ValueError, pd.errors.ParserError)
 
 
+def _parse_configured_labels(info: dict) -> list[str] | None:
+    """Validate and deduplicate the optional benchmark configuration roster."""
+    raw = info.get("configured_labels")
+    if (
+        not isinstance(raw, list)
+        or not raw
+        or any(not isinstance(label, str) or not label.strip() for label in raw)
+    ):
+        return None
+    return list(dict.fromkeys(raw))
+
+
 def parse_run_dir(run_dir: Path) -> dict:
     """Extract run metadata from a date-level run directory.
 
@@ -52,6 +64,7 @@ def parse_run_dir(run_dir: Path) -> dict:
             "n_events":         None,
             "status":           None,
             "failed_configs":   [],
+            "configured_labels": None,
             "machine_consistent": None,
         }
 
@@ -85,6 +98,10 @@ def parse_run_dir(run_dir: Path) -> dict:
                 "n_events":         info.get("n_events"),
                 "status":           info.get("status"),
                 "failed_configs":   info.get("failed_configs") or [],
+                # Exact result labels planned by the expanded benchmark config.
+                # Absent on legacy runs; ``None`` tells the regression report to
+                # retain its historical-inference fallback.
+                "configured_labels": _parse_configured_labels(info),
                 "machine_consistent": info.get("machine_consistent"),
             }
         except (OSError, json.JSONDecodeError, TypeError, ValueError):

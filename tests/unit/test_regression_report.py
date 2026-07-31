@@ -62,6 +62,7 @@ def _write_run(
     contended: bool = False,
     sample: str = "single_e",
     github_run_url: str | None = None,
+    configured_labels: tuple[str, ...] | None = None,
 ) -> Path:
     """One synthetic nightly run dir: run_info + per-config results + machine info.
 
@@ -69,7 +70,7 @@ def _write_run(
     (which drives the load-average hard criterion into FAIL).
     """
     run_dir.mkdir(parents=True)
-    (run_dir / "run_info.json").write_text(json.dumps({
+    run_info = {
         "date": night,
         "platform": _PLAT,
         # One release per night — the production norm; nights sharing a
@@ -77,7 +78,10 @@ def _write_run(
         "k4h_release": f"key4hep-{night}",
         "sample": sample,
         "github_run_url": github_run_url,
-    }))
+    }
+    if configured_labels is not None:
+        run_info["configured_labels"] = list(configured_labels)
+    (run_dir / "run_info.json").write_text(json.dumps(run_info))
     for label in labels:
         (run_dir / f"{label}_results.csv").write_text(
             "label,returncode,n_events,wall_time_s,peak_rss_mb,user_cpu_s,events_per_sec\n"
@@ -216,6 +220,93 @@ def test_config_missing_tonight_is_job_failure(tmp_path):
         "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
     )
     assert any("variant" in msg for msg in group.job_failures)
+
+
+def test_deliberately_removed_config_is_not_a_job_failure(tmp_path):
+    walls = [100.0] * 12
+    per_night = {i: {"labels": ("baseline", "variant")} for i in range(11)}
+    per_night[11] = {
+        "labels": ("baseline",),
+        "configured_labels": ("baseline",),
+    }
+    run_dirs = _make_history(tmp_path, walls, per_night)
+    group = group_report_from_run_dirs(
+        "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
+    )
+    assert group is not None
+    assert group.job_failures == []
+
+
+def test_configured_label_missing_tonight_is_a_job_failure(tmp_path):
+    run_dirs = _make_history(
+        tmp_path,
+        [100.0, 100.0],
+        {1: {
+            "labels": ("baseline",),
+            "configured_labels": ("baseline", "new_variant"),
+        }},
+    )
+    group = group_report_from_run_dirs(
+        "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
+    )
+    assert group is not None
+    assert group.job_failures == [
+        "config 'new_variant' produced no results tonight"
+    ]
+
+
+def test_night_with_no_results_at_all_fails_every_configured_label(tmp_path):
+    """The roster is the only evidence a night that wrote nothing was ever
+    supposed to write something — the frames it would be inferred from are
+    exactly what is missing."""
+    run_dirs = _make_history(
+        tmp_path,
+        [100.0, 100.0],
+        {1: {
+            "labels": (),
+            "configured_labels": ("baseline", "variant"),
+        }},
+    )
+    group = group_report_from_run_dirs(
+        "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
+    )
+    assert group is not None
+    assert group.job_failures == [
+        "config 'baseline' produced no results tonight",
+        "config 'variant' produced no results tonight",
+    ]
+
+
+def test_first_ever_night_with_no_results_is_still_reported(tmp_path):
+    """No history to compare against, so the group exists only because the
+    roster says two configs were due."""
+    run_dirs = _make_history(
+        tmp_path,
+        [100.0],
+        {0: {
+            "labels": (),
+            "configured_labels": ("baseline", "variant"),
+        }},
+    )
+    group = group_report_from_run_dirs(
+        "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
+    )
+    assert group is not None
+    assert group.k4h_release == "key4hep-2026-01-01"
+    assert group.verdicts == []
+    assert group.job_failures == [
+        "config 'baseline' produced no results tonight",
+        "config 'variant' produced no results tonight",
+    ]
+
+
+def test_first_ever_night_with_no_results_and_no_roster_is_not_reported(tmp_path):
+    """Legacy metadata says nothing about what was due, so there is nothing to
+    report — unchanged from before the roster existed."""
+    run_dirs = _make_history(tmp_path, [100.0], {0: {"labels": ()}})
+    assert group_report_from_run_dirs(
+        "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
+    ) is None
 
 
 def _local_tree(root: Path, detector: str, sample: str) -> Path:

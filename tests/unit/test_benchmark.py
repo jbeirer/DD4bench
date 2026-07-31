@@ -12,7 +12,12 @@ from unittest.mock import patch
 import pytest
 
 import k4bench.benchmark.ddsim as ddsim_module
-from k4bench.benchmark.ddsim import BenchmarkConfig, SweepMode, run_sweep
+from k4bench.benchmark.ddsim import (
+    BenchmarkConfig,
+    SweepMode,
+    planned_config_labels,
+    run_sweep,
+)
 from k4bench.geometry.index import GeometryIndex
 from k4bench.results.model import RunResult
 
@@ -75,6 +80,109 @@ class TestBenchmarkConfigValidation:
     def test_full_mode_needs_no_extra_fields(self, tmp_path):
         config = _make_config(tmp_path, mode=SweepMode.FULL)
         assert config.mode == SweepMode.FULL
+
+
+class TestPlannedConfigLabels:
+    def test_full_sweep_uses_every_geometry_detector(self):
+        assert set(planned_config_labels(MINIMAL_XML, SweepMode.FULL)) == {
+            "baseline_all",
+            *(f"without_{name}" for name in ALL_DETECTORS),
+        }
+
+    def test_partial_sweep_uses_only_configured_detectors(self):
+        assert planned_config_labels(
+            MINIMAL_XML,
+            SweepMode.FULL,
+            ["HcalBarrel", "NonExistent"],
+        ) == ["baseline_all", "without_HcalBarrel"]
+
+    @pytest.mark.parametrize(
+        ("mode", "expected"),
+        [
+            (SweepMode.INCLUDE_ONLY, "only_EcalBarrel"),
+            (SweepMode.EXCLUDE_ONLY, "without_EcalBarrel"),
+        ],
+    )
+    def test_combined_modes_drop_unknown_names_from_the_label(self, mode, expected):
+        assert planned_config_labels(
+            MINIMAL_XML,
+            mode,
+            ["EcalBarrel", "NonExistent"],
+        ) == [expected]
+
+    def test_single_run_modes_use_their_actual_labels(self):
+        assert planned_config_labels(MINIMAL_XML, SweepMode.BASELINE) == [
+            "baseline_all"
+        ]
+        assert planned_config_labels(
+            MINIMAL_XML,
+            SweepMode.INCLUDE_ONLY,
+            ["EcalBarrel", "HcalBarrel"],
+        ) == ["only_EcalBarrel_HcalBarrel"]
+        assert planned_config_labels(
+            MINIMAL_XML,
+            SweepMode.EXCLUDE_ONLY,
+            ["InnerTracker", "OuterTracker"],
+        ) == ["without_InnerTracker_OuterTracker"]
+
+    @pytest.mark.parametrize(
+        ("mode", "prefix"),
+        [
+            (SweepMode.INCLUDE_ONLY, "only_"),
+            (SweepMode.EXCLUDE_ONLY, "without_"),
+        ],
+    )
+    def test_long_hashed_label_matches_the_runtime_label(
+        self,
+        tmp_path,
+        mode,
+        prefix,
+    ):
+        names = [f"Detector{i}" for i in range(7)]
+        geometry = tmp_path / "many.xml"
+        detectors = "".join(f'<detector name="{name}"/>' for name in names)
+        geometry.write_text(f"<lccdd><detectors>{detectors}</detectors></lccdd>")
+        selected = names[:6]
+        planned = planned_config_labels(geometry, mode, selected)
+
+        def fake_keep_only(config, keep, label):
+            return [_make_result(label)]
+
+        config = _make_config(
+            tmp_path,
+            xml_path=geometry,
+            mode=mode,
+            detector_names=selected,
+        )
+        with patch.object(
+            ddsim_module,
+            "_run_keep_only",
+            side_effect=fake_keep_only,
+        ):
+            results = run_sweep(config)
+
+        assert [result.label for result in results] == planned
+        assert planned[0].startswith(f"{prefix}6_detectors_")
+        assert len(planned[0].removeprefix(f"{prefix}6_detectors_")) == 8
+
+    @pytest.mark.parametrize(
+        "detector_names",
+        [[], ["HcalBarrel", "EcalBarrel"], ["HcalBarrel", "NonExistent"]],
+        ids=["all", "subset", "mixed_validity"],
+    )
+    def test_sweep_labels_match_the_runtime_labels(self, tmp_path, detector_names):
+        """The roster is only useful if it is what the sweep actually runs."""
+        planned = planned_config_labels(MINIMAL_XML, SweepMode.FULL, detector_names)
+        config = _make_config(
+            tmp_path,
+            mode=SweepMode.FULL,
+            detector_names=detector_names,
+        )
+        with patch("k4bench.benchmark.ddsim.run_ddsim", side_effect=_mock_run):
+            results = run_sweep(config)
+
+        assert [result.label for result in results] == planned
+
 
 # ---------------------------------------------------------------------------
 # FULL mode
@@ -284,6 +392,16 @@ class TestExcludeMode:
         with patch("k4bench.benchmark.ddsim.run_ddsim", side_effect=_mock_run):
             with pytest.raises(ValueError, match="No valid detectors to exclude"):
                 run_sweep(config)
+
+    def test_unknown_detector_is_dropped_from_combined_label(self, tmp_path):
+        config = _make_config(
+            tmp_path,
+            mode=SweepMode.EXCLUDE_ONLY,
+            detector_names=["EcalBarrel", "NonExistent"],
+        )
+        with patch("k4bench.benchmark.ddsim.run_ddsim", side_effect=_mock_run):
+            results = run_sweep(config)
+        assert [result.label for result in results] == ["without_EcalBarrel"]
 
 
 # ---------------------------------------------------------------------------

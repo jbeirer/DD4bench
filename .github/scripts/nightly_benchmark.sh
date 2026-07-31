@@ -202,6 +202,55 @@ CONFIGS_JSON=$(
     | python3 -c "import sys, json; print(json.dumps(sys.stdin.read().split()))"
 )
 
+# Resolve the exact roster implied by the expanded benchmark YAML and the
+# geometry this job loaded.  Keep this separate from CONFIGS_JSON: that value is
+# what produced a CSV, while this is what was supposed to produce one.  If the
+# benchmark process was killed part-way through a sweep, the difference is the
+# missing-config failure the nightly report needs to surface.
+#
+# Any failure here — a broken import, a missing interpreter, an unreadable
+# geometry — must leave the roster unknown rather than abort the job before it
+# uploads what the benchmark did produce.  ``null`` is the legacy metadata the
+# report already understands, and it is also the fallback for empty output so
+# the interpolation below always stays valid JSON.
+if ! CONFIGURED_LABELS_JSON=$(
+python3 - "${DETECTOR_XML}" "${SWEEP}" "${SWEEP_DETECTORS}" \
+          "${INCLUDE_ONLY}" "${EXCLUDE_ONLY}" <<'PYEOF'
+import json
+import shlex
+import sys
+from pathlib import Path
+
+from k4bench.benchmark.ddsim import (
+    SweepMode,
+    planned_config_labels,
+)
+
+xml, sweep, sweep_detectors, include_only, exclude_only = sys.argv[1:]
+if include_only:
+    mode, names = SweepMode.INCLUDE_ONLY, shlex.split(include_only)
+elif exclude_only:
+    mode, names = SweepMode.EXCLUDE_ONLY, shlex.split(exclude_only)
+elif sweep_detectors:
+    mode, names = SweepMode.FULL, shlex.split(sweep_detectors)
+elif sweep == "true":
+    mode, names = SweepMode.FULL, []
+else:
+    mode, names = SweepMode.BASELINE, []
+
+try:
+    labels = planned_config_labels(Path(xml), mode, names)
+except Exception as exc:
+    print(f"WARNING: could not resolve configured labels: {exc}", file=sys.stderr)
+    labels = None
+print(json.dumps(labels))
+PYEOF
+); then
+    echo "WARNING: could not resolve configured labels" >&2
+    CONFIGURED_LABELS_JSON=null
+fi
+[[ -n "${CONFIGURED_LABELS_JSON}" ]] || CONFIGURED_LABELS_JSON=null
+
 # run_info.json
 python3 - "${DETECTOR}" "${SAMPLE}" "${DATE}" "${K4H_PLATFORM}" "${K4H_RELEASE}" \
           "${N_EVENTS}" "${SWEEP}" "${XML_PATH}" <<PYEOF
@@ -233,6 +282,7 @@ run_info = {
     "n_events":         n_events,
     "sweep":            sweep,
     "configs":          ${CONFIGS_JSON},
+    "configured_labels": ${CONFIGURED_LABELS_JSON},
 }
 
 # Upstream commit of every package the stack built from git, so a regression

@@ -34,6 +34,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from typing import Iterable
 
 from k4bench.geometry.index import GeometryIndex
 from k4bench.geometry.errors import DetectorNotFoundError, GeometryError
@@ -138,15 +139,21 @@ def run_sweep(config: BenchmarkConfig) -> list[RunResult]:
         Results in execution order.
     """
     config.log_dir.mkdir(parents=True, exist_ok=True)
+    plan = _resolve_sweep_plan(
+        config.xml_path,
+        config.mode,
+        config.detector_names,
+        announce=True,
+    )
 
     if config.mode == SweepMode.BASELINE:
         return _run_baseline(config)
     elif config.mode == SweepMode.INCLUDE_ONLY:
-        return _run_include_only_sweep(config)
+        return _run_include_only_sweep(config, plan)
     elif config.mode == SweepMode.EXCLUDE_ONLY:
-        return _run_exclude_only_sweep(config)
+        return _run_exclude_only_sweep(config, plan)
     else:
-        return _run_removal_sweep(config)
+        return _run_removal_sweep(config, plan)
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +185,114 @@ def _make_detector_label(prefix: str, names: set[str]) -> str:
     return f"{prefix}{len(sorted_names)}_detectors_{digest}"
 
 
+def planned_config_labels(
+    xml_path: Path,
+    mode: SweepMode,
+    detector_names: Iterable[str] = (),
+) -> list[str]:
+    """Return the result labels a configured benchmark intends to produce.
+
+    This is the configuration-side roster, resolved against the same geometry
+    the benchmark will load.  It is recorded in ``run_info.json`` by the
+    nightly runner so report assembly can distinguish a missing active config
+    from a config deliberately removed from the benchmark definition.
+    """
+    plan = _resolve_sweep_plan(xml_path, mode, detector_names, announce=False)
+    return list(plan.labels)
+
+
+@dataclass(frozen=True)
+class _SweepPlan:
+    """Resolved detector selection and labels shared by planning and execution."""
+
+    labels: tuple[str, ...]
+    available_detectors: tuple[str, ...] = ()
+    selected_detectors: tuple[str, ...] = ()
+
+
+def _resolve_sweep_plan(
+    xml_path: Path,
+    mode: SweepMode,
+    detector_names: Iterable[str],
+    *,
+    announce: bool,
+) -> _SweepPlan:
+    """Resolve one sweep once so metadata and execution cannot drift."""
+    requested = set(detector_names)
+    if mode is SweepMode.BASELINE:
+        return _SweepPlan(labels=(BASELINE_LABEL,))
+
+    if announce:
+        print("Scanning geometry for subdetectors …")
+    available = tuple(get_detector_names(xml_path))
+    available_set = set(available)
+
+    if mode is SweepMode.FULL:
+        if not available:
+            if announce:
+                warnings.warn(
+                    "No subdetectors found — only baseline will run.",
+                    stacklevel=2,
+                )
+            return _SweepPlan(labels=(BASELINE_LABEL,))
+
+        unknown = requested - available_set
+        if unknown and announce:
+            warnings.warn(
+                f"Detectors not found in geometry, will be skipped: {sorted(unknown)}",
+                stacklevel=2,
+            )
+        selected = (
+            available
+            if not requested
+            else tuple(name for name in available if name in requested)
+        )
+        if requested and not selected:
+            raise ValueError(
+                f"No valid detectors to sweep — all of {sorted(requested)} "
+                f"are unknown in this geometry.\n"
+                f"Available detectors: {sorted(available)}"
+            )
+        labels = (BASELINE_LABEL, *(f"without_{name}" for name in selected))
+        if announce:
+            print(f"Found {len(available)} subdetectors, running {len(selected)}:")
+            for name in selected:
+                print(f"  - {name}")
+            print()
+        return _SweepPlan(labels, available, selected)
+
+    if mode is SweepMode.EXCLUDE_ONLY and not requested:
+        if announce:
+            warnings.warn(
+                "No detectors to exclude — running with full geometry.",
+                stacklevel=2,
+            )
+        return _SweepPlan((BASELINE_LABEL,), available)
+
+    unknown = requested - available_set
+    if unknown and announce:
+        warnings.warn(
+            f"Detectors not found in geometry, will be skipped: {sorted(unknown)}",
+            stacklevel=2,
+        )
+    selected_set = requested & available_set
+    if not selected_set:
+        action = "keep" if mode is SweepMode.INCLUDE_ONLY else "exclude"
+        raise ValueError(
+            f"No valid detectors to {action} — all of {sorted(requested)} "
+            f"are unknown in this geometry.\n"
+            f"Available detectors: {sorted(available)}"
+        )
+
+    selected = tuple(sorted(selected_set))
+    prefix = "only_" if mode is SweepMode.INCLUDE_ONLY else "without_"
+    labels = (_make_detector_label(prefix, selected_set),)
+    if announce:
+        verb = "Keeping" if mode is SweepMode.INCLUDE_ONLY else "Excluding"
+        print(f"{verb} {len(selected)} detector(s): {list(selected)}\n")
+    return _SweepPlan(labels, available, selected)
+
+
 # ---------------------------------------------------------------------------
 # Sweep strategies
 # ---------------------------------------------------------------------------
@@ -190,15 +305,17 @@ def _run_baseline(config: BenchmarkConfig) -> list[RunResult]:
     return [result]
 
 
-def _run_removal_sweep(config: BenchmarkConfig) -> list[RunResult]:
+def _run_removal_sweep(
+    config: BenchmarkConfig,
+    plan: _SweepPlan,
+) -> list[RunResult]:
     """Baseline + per-detector removal runs for FULL mode."""
     if config.mode != SweepMode.FULL:
         raise ValueError(f"_run_removal_sweep called with unexpected mode: {config.mode}")
 
-    detectors_to_remove = _resolve_detectors(config)
     results: list[RunResult] = []
 
-    total = 1 + len(detectors_to_remove)
+    total = len(plan.labels)
     _print_run_header(1, total, BASELINE_LABEL, config.xml_path)
     results.append(
         _timed_run(xml_path=config.xml_path, label=BASELINE_LABEL, config=config)
@@ -211,8 +328,10 @@ def _run_removal_sweep(config: BenchmarkConfig) -> list[RunResult]:
         results.append(_failed_run("patch_setup", config))
         return results
 
-    for i, name in enumerate(detectors_to_remove, start=2):
-        label = f"without_{name}"
+    for i, (name, label) in enumerate(
+        zip(plan.selected_detectors, plan.labels[1:], strict=True),
+        start=2,
+    ):
         try:
             with patched(index, {name}) as result:
                 _print_run_header(i, total, label, result.top_path)
@@ -239,58 +358,32 @@ def _failed_run(label: str, config: BenchmarkConfig) -> RunResult:
     return RunResult(label=label, returncode=1, n_events=config.n_events)
 
 
-def _run_include_only_sweep(config: BenchmarkConfig) -> list[RunResult]:
+def _run_include_only_sweep(
+    config: BenchmarkConfig,
+    plan: _SweepPlan,
+) -> list[RunResult]:
     """Single run keeping only the named detectors active.
 
     All detectors not in ``config.detector_names`` are removed from the
     geometry.  The result is labelled ``only_<name1>_<name2>_...``.
     """
-    print("Scanning geometry for subdetectors …")
-    all_names = set(get_detector_names(config.xml_path))
-
-    keep = set(config.detector_names)
-    unknown = keep - all_names
-    if unknown:
-        warnings.warn(f"Detectors not found in geometry, will be skipped: {sorted(unknown)}", stacklevel=2)
-    keep -= unknown
-
-    if not keep:
-        raise ValueError(
-            f"No valid detectors to keep — all of {sorted(config.detector_names)} "
-            f"are unknown in this geometry.\nAvailable detectors: {sorted(all_names)}"
-        )
-
-    label = _make_detector_label("only_", keep)
-    print(f"Keeping {len(keep)} detector(s): {sorted(keep)}\n")
-    return _run_keep_only(config, keep, label)
+    return _run_keep_only(
+        config,
+        set(plan.selected_detectors),
+        plan.labels[0],
+    )
 
 
-def _run_exclude_only_sweep(config: BenchmarkConfig) -> list[RunResult]:
+def _run_exclude_only_sweep(
+    config: BenchmarkConfig,
+    plan: _SweepPlan,
+) -> list[RunResult]:
     """Single run with the named detectors removed, all others active."""
-    print("Scanning geometry for subdetectors …")
-    all_names = set(get_detector_names(config.xml_path))
-
-    exclude = set(config.detector_names)
-
-    if not exclude:
-        warnings.warn("No detectors to exclude — running with full geometry.", stacklevel=2)
+    if not plan.selected_detectors:
         return _run_baseline(config)
 
-    unknown = exclude - all_names
-    if unknown:
-        warnings.warn(f"Detectors not found in geometry, will be skipped: {sorted(unknown)}", stacklevel=2)
-    exclude -= unknown
-
-    if not exclude:
-        raise ValueError(
-            f"No valid detectors to exclude — all of {sorted(config.detector_names)} "
-            f"are unknown in this geometry.\nAvailable detectors: {sorted(all_names)}"
-        )
-
-    keep = all_names - exclude
-    label = _make_detector_label("without_", exclude)
-    print(f"Excluding {len(exclude)} detector(s): {sorted(exclude)}\n")
-    return _run_keep_only(config, keep, label)
+    keep = set(plan.available_detectors) - set(plan.selected_detectors)
+    return _run_keep_only(config, keep, plan.labels[0])
 
 
 def _run_keep_only(config: BenchmarkConfig, keep: set[str], label: str) -> list[RunResult]:
@@ -316,50 +409,6 @@ def _run_keep_only(config: BenchmarkConfig, keep: set[str], label: str) -> list[
         ]
     finally:
         patch.cleanup()
-
-
-# ---------------------------------------------------------------------------
-# Detector list resolution
-# ---------------------------------------------------------------------------
-
-
-def _resolve_detectors(config: BenchmarkConfig) -> list[str]:
-    """Return the ordered list of detectors to remove for the current mode."""
-
-    print("Scanning geometry for subdetectors …")
-    all_names = get_detector_names(config.xml_path)
-
-    if not all_names:
-        warnings.warn("No subdetectors found — only baseline will run.", stacklevel=2)
-        return []
-
-    if config.mode != SweepMode.FULL:
-        raise ValueError(f"Unexpected mode for removal sweep: {config.mode}")
-
-    if config.detector_names:
-        requested = set(config.detector_names)
-        unknown = requested - set(all_names)
-        if unknown:
-            warnings.warn(
-                f"Detectors not found in geometry, will be skipped: {sorted(unknown)}",
-                stacklevel=2,
-            )
-        # Preserve geometry order so a partial sweep is a strict subset of the full one.
-        selected = [n for n in all_names if n in requested]
-        if not selected:
-            raise ValueError(
-                f"No valid detectors to sweep — all of {sorted(config.detector_names)} "
-                f"are unknown in this geometry.\nAvailable detectors: {sorted(all_names)}"
-            )
-    else:
-        selected = all_names
-
-    print(f"Found {len(all_names)} subdetectors, running {len(selected)}:")
-    for name in selected:
-        print(f"  - {name}")
-    print()
-
-    return selected
 
 
 # ---------------------------------------------------------------------------
