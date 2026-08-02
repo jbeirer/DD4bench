@@ -89,14 +89,20 @@ def test_overview_says_it_spans_every_detector():
     line = _line(_run("Overview"))
     assert "all detectors" in line
     assert "CLD" not in line
-    assert PLAT in line and "single_e" in line
+    assert "AlmaLinux 9" in line and "single_e" in line
     # Reports are per-night, not per-release, so the release must not appear.
     assert STACK not in line
 
 
 def test_config_impact_names_the_selected_release():
-    line = _line(_run("Config Impact"))
-    assert line == f"Showing CLD · {PLAT} · single_e · {STACK}"
+    # Every dimension goes through k4bench.labels, so the note reads in the
+    # same vocabulary as the tabs below it — never the raw EOS identifiers.
+    line = _line(_run("Config Impact", sample="single_e-_10GeV"))
+    assert line == (
+        "Showing CLD — AlmaLinux 9 · GCC 14.2.0 (optimized) "
+        "— Single e⁻ · 10GeV — 2026-07-10"
+    )
+    assert PLAT not in line and STACK not in line
 
 
 def test_run_trends_says_it_plots_every_release():

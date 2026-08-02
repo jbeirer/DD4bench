@@ -27,7 +27,7 @@ import streamlit as st
 from k4bench.blame.models import BlameReport, BlameSchemaError
 from k4bench.provenance.diff import ADDED, CHANGED, REMOVED, diff_packages, unchanged_packages
 from k4bench.regression.models import MetricVerdict
-from k4bench.labels import pretty_sample
+from k4bench.labels import RELEASE_PREFIX, pretty_release, pretty_sample
 from k4bench.regression.render import from_json
 from remote_cache import (
     _cached_fetch_blame,
@@ -49,7 +49,7 @@ from ui_chrome import seed_query_param
 
 #: Releases are stored as ``key4hep-{YYYY-MM-DD}`` directories; the tab talks
 #: in the bare nightly tag the rest of the dashboard shows on its axes.
-_PREFIX = "key4hep-"
+_PREFIX = RELEASE_PREFIX
 
 #: This tab's section name and the query-param names its two pickers seed from
 #: (see :func:`_seed`). Kept here, beside the widgets that read them, so a tab
@@ -130,7 +130,7 @@ _TAG_HELP = (
 )
 
 def _release(stack: str) -> str:
-    return stack.removeprefix(_PREFIX)
+    return pretty_release(stack)
 
 
 def _plural(n: int, noun: str) -> str:

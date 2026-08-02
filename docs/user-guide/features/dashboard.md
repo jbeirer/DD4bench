@@ -43,8 +43,10 @@ from its charts.
 
 Not every tab honours the whole hierarchy, so a single muted line directly
 under the section bar names the slice the tab in front of you actually uses —
-for example `Showing CLD · x86_64-almalinux9-gcc14.2.0-opt · single_e ·
-key4hep-2026-07-10`. Where a tab deliberately ignores a level it says so
+for example `Showing CLD — AlmaLinux 9 · GCC 14.2.0 (optimized) — Single e⁻ ·
+10GeV — 2026-07-10`. Each level is written the way the tabs and the nightly
+mail write it, so a sample reads as its physics rather than as its EOS
+directory. Where a tab deliberately ignores a level it says so
 instead of quietly dropping it: Overview reads **all detectors**, Run Trends
 reads **all releases**, and Stack Changes reads **platform-wide package diff**,
 because a Key4hep release is the same stack whatever benchmarked it. The line

@@ -13,6 +13,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from k4bench.labels import pretty_platform, pretty_release, pretty_sample
 from sections import SECTION_SCOPE
 
 
@@ -270,6 +271,14 @@ def render_scope_note(
     them here would duplicate or, on the tabs that switch between the latest
     run and the trend window, contradict them.
 
+    Each dimension is rendered through :mod:`k4bench.labels`, the module that
+    owns these identifiers' layouts, so the note reads in the same vocabulary
+    as the tabs below it and the nightly mail: a sample is named by its physics
+    rather than its directory, and the release drops the prefix every tag
+    shares. The dimensions are therefore joined with an em dash — the labels
+    use ``·`` internally, and reusing it here would flatten "AlmaLinux 9 · GCC
+    14.2.0" into two dimensions that look like four.
+
     In local mode the hierarchy does not exist (there is no EOS tree to walk,
     just one run directory), so every dimension arrives as ``None`` and the
     note names *data_dir* instead.
@@ -280,11 +289,12 @@ def render_scope_note(
 
     parts: list[str] = []
     scoped_any = False
-    for declared, value in (
-        (scope.detector, detector),
-        (scope.platform, platform),
-        (scope.sample, sample),
-        (scope.release, release),
+    for declared, value, pretty in (
+        # A detector name is already the name a person uses for it.
+        (scope.detector, detector, str),
+        (scope.platform, platform, pretty_platform),
+        (scope.sample,   sample,   pretty_sample),
+        (scope.release,  release,  pretty_release),
     ):
         if declared is None:
             continue
@@ -294,7 +304,7 @@ def render_scope_note(
         # SCOPED: show the sidebar's selection, or nothing when it is unset —
         # a scoped dimension with no value is local mode, handled below.
         if value:
-            parts.append(str(value))
+            parts.append(pretty(str(value)))
             scoped_any = True
 
     if not scoped_any:
@@ -302,7 +312,7 @@ def render_scope_note(
             st.caption(f"Showing local run directory `{data_dir}`")
         return
 
-    st.caption("Showing " + " · ".join(parts))
+    st.caption("Showing " + " — ".join(parts))
 
 
 def render_logs_tab(

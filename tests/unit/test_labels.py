@@ -14,7 +14,13 @@ from pathlib import Path
 import pytest
 
 from k4bench import labels
-from k4bench.labels import describe_platform, pretty_platform, pretty_sample
+from k4bench.labels import (
+    RELEASE_PREFIX,
+    describe_platform,
+    pretty_platform,
+    pretty_release,
+    pretty_sample,
+)
 
 
 # ── Samples ───────────────────────────────────────────────────────────────────
@@ -74,6 +80,26 @@ def test_pretty_platform_omits_the_architecture():
     assert pretty_platform("x86_64-almalinux9-gcc14.2.0-opt") == (
         "AlmaLinux 9 · GCC 14.2.0 (optimized)"
     )
+
+
+# ── Release tags ──────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("stack, expected", [
+    ("key4hep-2026-07-10", "2026-07-10"),
+    # Already bare, or a tag that never carried the prefix: left alone rather
+    # than mangled, like every other label in this module.
+    ("2026-07-10", "2026-07-10"),
+    ("", ""),
+])
+def test_release_tags_drop_the_shared_prefix(stack, expected):
+    assert pretty_release(stack) == expected
+
+
+def test_release_prefix_is_the_one_the_dashboard_composes_with():
+    # The Stack Changes tab strips the prefix for display and puts it back to
+    # build an EOS directory name; both directions read it from here, so the
+    # two can't drift into disagreeing about the layout.
+    assert pretty_release(RELEASE_PREFIX + "2026-07-10") == "2026-07-10"
 
 
 # ── Layering ──────────────────────────────────────────────────────────────────
