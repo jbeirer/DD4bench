@@ -222,6 +222,31 @@ def test_manual_bin_count_survives_config_selection_changes(view, prefix):
 
 
 @pytest.mark.parametrize(("view", "prefix"), _VIEWS)
+def test_manual_count_stays_manual_when_it_matches_a_later_auto_count(view, prefix):
+    labels = [f"cfg_{i:02d}" for i in range(6)]
+    at = _run(view, labels)
+    one_extra = list(at.multiselect(key=f"{prefix}_configs").options)[:1]
+    all_extras = list(at.multiselect(key=f"{prefix}_configs").options)
+
+    at.multiselect(key=f"{prefix}_configs").set_value(all_extras).run()
+    expanded_auto = at.session_state["_auto_bins"]
+    at.multiselect(key=f"{prefix}_configs").set_value(one_extra).run()
+    assert expanded_auto != at.session_state["_auto_bins"]
+
+    # This is a manual choice relative to the current selection. It happens to
+    # equal the automatic count of the expanded selection used next.
+    at.number_input(key=f"{prefix}_hist_bins").set_value(expanded_auto).run()
+    at.multiselect(key=f"{prefix}_configs").set_value(all_extras).run()
+    assert at.number_input(key=f"{prefix}_hist_bins").value == expanded_auto
+
+    # Matching an automatic count incidentally must not opt the user back into
+    # auto-follow mode. Only another explicit edit or Reset may do that.
+    at.multiselect(key=f"{prefix}_configs").set_value(one_extra).run()
+    assert at.number_input(key=f"{prefix}_hist_bins").value == expanded_auto
+    assert at.session_state["_captured_plot_kwargs"]["bins"] == expanded_auto
+
+
+@pytest.mark.parametrize(("view", "prefix"), _VIEWS)
 def test_out_of_range_bin_count_is_clamped_and_warned(view, prefix):
     """The field, warning and plot must all agree on the applied boundary."""
     at = _run(view, ["cfg_a", "cfg_b"])

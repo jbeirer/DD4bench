@@ -83,6 +83,10 @@ def resolve_bin_edges(
     if bin_width is None:
         if bin_origin is not None:
             raise ValueError("bin_origin requires bin_width.")
+        if isinstance(bins, (bool, np.bool_)):
+            raise ValueError(
+                f"bins must be an integer, rule name, or edge sequence, got {bins!r}."
+            )
 
         # Reject an oversized integer before NumPy allocates ``bins + 1``
         # edges.  The limit is a resource-safety guard, so checking only after

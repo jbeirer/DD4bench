@@ -26,6 +26,11 @@ class TestResolveBinEdges:
         assert len(edges) - 1 == 17
         assert np.array_equal(edges, np.histogram_bin_edges(sample, bins=17))
 
+    @pytest.mark.parametrize("value", [True, False, np.bool_(True)])
+    def test_boolean_bin_count_rejected(self, sample, value):
+        with pytest.raises(ValueError, match="integer, rule name, or edge sequence"):
+            resolve_bin_edges(sample, bins=value)
+
     def test_explicit_edges_pass_through(self, sample):
         explicit = np.linspace(sample.min(), sample.max(), 11)
         assert np.array_equal(resolve_bin_edges(sample, bins=explicit), explicit)

@@ -322,8 +322,6 @@ def _bin_count_control(key_prefix: str, options: BinCountOptions) -> int:
         _validate_bin_count(
             key, auto_key, custom_key, warning_key, options.minimum, options.maximum,
         )
-    elif int(st.session_state[key]) == bins_default:
-        st.session_state[custom_key] = False
 
     bins = st.number_input(
         "Bins",
