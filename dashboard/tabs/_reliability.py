@@ -94,6 +94,9 @@ def render_sidebar_run_quality(
     reliable = verdict.reliable
     if reliable is None:
         return
+    # The red/green accent carries the verdict, so it comes from the semantic
+    # --k4-verdict-* tokens (app.py) rather than the neutral chrome ones: each
+    # keeps its hue in both themes and only shifts shade to stay readable.
     if reliable is False:
         # Name the hard checks that failed, mirroring the Machine Info banner, so the
         # card explains itself without opening the tab.
@@ -102,15 +105,19 @@ def render_sidebar_run_quality(
             f"Failed: {names} — see Machine Info." if names
             else "Likely host contention — see the Machine Info tab."
         )
-        accent, bg, icon, title = "#d63c3c", "rgba(214,60,60,0.08)", "⚠️", "Unreliable run"
+        accent, bg, edge, icon, title = (
+            "var(--k4-verdict-bad)", "var(--k4-verdict-bad-fill)",
+            "var(--k4-verdict-bad-edge)", "⚠️", "Unreliable run",
+        )
     else:
-        accent, bg, icon, title, subtitle = (
-            "#2ea043", "rgba(46,160,67,0.07)", "✅", "Reliable run",
+        accent, bg, edge, icon, title, subtitle = (
+            "var(--k4-verdict-good)", "var(--k4-verdict-good-fill)",
+            "var(--k4-verdict-good-edge)", "✅", "Reliable run",
             "Passed the host-condition checks.",
         )
     st.markdown(
         f"""
-        <div style="background:{bg};border:1px solid {accent}45;
+        <div style="background:{bg};border:1px solid {edge};
                     border-left:3px solid {accent};border-radius:8px;
                     padding:0.5rem 0.7rem;margin:0.15rem 0 0.35rem 0;">
           <div style="display:flex;align-items:center;gap:0.5rem;">
@@ -118,7 +125,7 @@ def render_sidebar_run_quality(
             <div style="line-height:1.3;">
               <div style="font-size:0.66rem;text-transform:uppercase;letter-spacing:0.06em;
                           color:{accent};font-weight:700;">{title}</div>
-              <div style="font-size:0.72rem;color:#9a9a9a;">{subtitle}</div>
+              <div style="font-size:0.72rem;color:var(--k4-muted);">{subtitle}</div>
             </div>
           </div>
         </div>

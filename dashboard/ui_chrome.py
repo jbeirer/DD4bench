@@ -579,13 +579,15 @@ def render_example_detector_badge(detector: str) -> None:
 def resource_link_card(href: str, icon_html: str, label: str, text: str) -> str:
     """Return the HTML for a styled sidebar link card (currently used by WebEOS data).
 
-    ``icon_html`` may be an emoji or an inline SVG.
+    ``icon_html`` may be an emoji or an inline SVG. The colours come from the
+    ``--k4-*`` chrome tokens defined in :mod:`app`, so the card tracks the theme
+    picked in the settings menu.
     """
     return f"""
         <a href="{href}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;">
           <div style="
-            background: rgba(91,155,213,0.08);
-            border: 1px solid rgba(91,155,213,0.28);
+            background: var(--k4-link-card-bg);
+            border: 1px solid var(--k4-link-card-border);
             border-radius: 8px;
             padding: 0.45rem 0.75rem;
             margin-bottom: 0.25rem;
@@ -600,13 +602,13 @@ def resource_link_card(href: str, icon_html: str, label: str, text: str) -> str:
                 font-size:0.63rem;
                 text-transform:uppercase;
                 letter-spacing:0.07em;
-                color:#7a9fbf;
+                color:var(--k4-link-label);
                 font-weight:600;
                 margin-bottom:0.1rem;
               ">{label}</div>
               <div style="
                 font-size:0.70rem;
-                color:#5b9bd5;
+                color:var(--k4-link);
                 font-weight:500;
                 white-space:nowrap;
                 overflow:hidden;
@@ -624,7 +626,7 @@ def _render_footer() -> None:
     year = date.today().year
     st.markdown(
         f"""
-        <hr class="k4-footer" style="border:none;border-top:1px solid rgba(128,128,128,0.25);margin:0rem 0 0rem 0;">
+        <hr class="k4-footer" style="border:none;border-top:1px solid var(--k4-rule);margin:0rem 0 0rem 0;">
         <div style="
             display:flex;
             justify-content:center;
@@ -632,22 +634,22 @@ def _render_footer() -> None:
             gap:1.2rem;
             padding:0.2rem 0 1.2rem 0;
             font-size:0.80rem;
-            color:#9a9a9a;
+            color:var(--k4-muted);
             line-height:1.7;
             text-align:center;
         ">
             <span style="font-size:1.8rem;opacity:0.75;">⚛️</span>
             <div>
-                <strong style="color:#c0c0c0;letter-spacing:0.02em;">© {year} CERN</strong>
+                <strong style="color:var(--k4-emphasis);letter-spacing:0.02em;">© {year} CERN</strong>
                 &nbsp;·&nbsp;
                 For the benefit of the&nbsp;<a
                     href="https://fcc.web.cern.ch/"
                     target="_blank"
                     rel="noopener noreferrer"
-                    style="color:#5b9bd5;text-decoration:none;font-weight:600;"
+                    style="color:var(--k4-link);text-decoration:none;font-weight:600;"
                 >FCC project</a>
                 <br>
-                Created by <strong style="color:#c0c0c0;">Joshua Falco Beirer</strong>
+                Created by <strong style="color:var(--k4-emphasis);">Joshua Falco Beirer</strong>
                 &nbsp;<span style="opacity:0.6;">(CERN)</span>
             </div>
         </div>
@@ -661,12 +663,12 @@ def _render_sidebar_footer() -> None:
     year = date.today().year
     st.markdown(
         f"""
-        <hr style="border:none;border-top:1px solid rgba(128,128,128,0.2);margin:1.5rem 0 0.6rem 0;">
-        <div style="font-size:0.72rem;color:#888;text-align:center;line-height:1.6;padding-bottom:0.4rem;">
-            <strong style="color:#a0a0a0;">© {year} CERN</strong><br>
+        <hr style="border:none;border-top:1px solid var(--k4-rule);margin:1.5rem 0 0.6rem 0;">
+        <div style="font-size:0.72rem;color:var(--k4-muted);text-align:center;line-height:1.6;padding-bottom:0.4rem;">
+            <strong style="color:var(--k4-emphasis);">© {year} CERN</strong><br>
             For the benefit of the<br>
             <a href="https://fcc.web.cern.ch/" target="_blank" rel="noopener noreferrer"
-               style="color:#5b9bd5;text-decoration:none;">FCC project</a><br>
+               style="color:var(--k4-link);text-decoration:none;">FCC project</a><br>
             <span style="opacity:0.7;">J. F. Beirer (CERN)</span>
         </div>
         """,

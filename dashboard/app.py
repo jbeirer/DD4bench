@@ -76,6 +76,82 @@ def main() -> None:
     st.markdown(
         """
         <style>
+        /* ── Chrome colour tokens ────────────────────────────────────────────
+           Streamlit 1.59 exposes no theme colours as CSS custom properties (its
+           palette lives in an emotion theme object), so the hand-written chrome
+           in ui_chrome.py, tabs/_reliability.py, tabs/impact.py and
+           tabs/region_timing/attribution.py resolves its colours through these
+           tokens instead.
+
+           light-dark() is keyed off the `color-scheme` Streamlit sets on
+           [data-testid="stApp"] (and again on the sidebar <section>), so the
+           tokens follow the theme chosen in the ☰ settings menu rather than the
+           operating system's preference — which prefers-color-scheme would get
+           wrong for anyone whose OS and app themes disagree. The @supports block
+           below falls back to the OS preference on engines without light-dark().
+
+           The --k4-verdict-* pair is semantic and stays semantic: red always
+           means "unreliable run" and green "reliable run". Only the shade moves
+           between themes, so each stays unmistakably its own hue while clearing
+           5:1 against the background it is read on. Colours that encode a value
+           on a chart — the regression flag marks in tabs/_regression_flags.py,
+           the source/sink hues in tabs/region_timing/attribution.py, the
+           diverging heat-map fills in tabs/impact.py — are plotted marks rather
+           than chrome and are picked at their use site. */
+        [data-testid="stApp"] {
+            --k4-muted:              light-dark(#6b7280, #9a9a9a);
+            --k4-emphasis:           light-dark(#31333f, #c0c0c0);
+            --k4-rule:               rgba(128,128,128,0.3);
+            --k4-link:               light-dark(#1a6ba8, #5b9bd5);
+            --k4-link-label:         light-dark(#3f6f96, #7a9fbf);
+            --k4-link-card-bg:       light-dark(rgba(26,107,168,0.07), rgba(91,155,213,0.08));
+            --k4-link-card-border:   light-dark(rgba(26,107,168,0.30), rgba(91,155,213,0.28));
+            --k4-surface:            light-dark(#ffffff, #0e1117);
+            --k4-border:             light-dark(rgba(49,51,63,0.2), rgba(250,250,250,0.25));
+            --k4-verdict-bad:        light-dark(#c0362c, #e5534b);
+            --k4-verdict-bad-fill:   light-dark(rgba(192,54,44,0.08), rgba(229,83,75,0.09));
+            --k4-verdict-bad-edge:   light-dark(rgba(192,54,44,0.30), rgba(229,83,75,0.32));
+            --k4-verdict-good:       light-dark(#15803d, #3fb950);
+            --k4-verdict-good-fill:  light-dark(rgba(21,128,61,0.08), rgba(63,185,80,0.09));
+            --k4-verdict-good-edge:  light-dark(rgba(21,128,61,0.30), rgba(63,185,80,0.32));
+        }
+        @supports not (color: light-dark(#000, #fff)) {
+            [data-testid="stApp"] {
+                --k4-muted:             #6b7280;
+                --k4-emphasis:          #31333f;
+                --k4-link:              #1a6ba8;
+                --k4-link-label:        #3f6f96;
+                --k4-link-card-bg:      rgba(26,107,168,0.07);
+                --k4-link-card-border:  rgba(26,107,168,0.30);
+                --k4-surface:           #ffffff;
+                --k4-border:            rgba(49,51,63,0.2);
+                --k4-verdict-bad:       #c0362c;
+                --k4-verdict-bad-fill:  rgba(192,54,44,0.08);
+                --k4-verdict-bad-edge:  rgba(192,54,44,0.30);
+                --k4-verdict-good:      #15803d;
+                --k4-verdict-good-fill: rgba(21,128,61,0.08);
+                --k4-verdict-good-edge: rgba(21,128,61,0.30);
+            }
+            @media (prefers-color-scheme: dark) {
+                [data-testid="stApp"] {
+                    --k4-muted:             #9a9a9a;
+                    --k4-emphasis:          #c0c0c0;
+                    --k4-link:              #5b9bd5;
+                    --k4-link-label:        #7a9fbf;
+                    --k4-link-card-bg:      rgba(91,155,213,0.08);
+                    --k4-link-card-border:  rgba(91,155,213,0.28);
+                    --k4-surface:           #0e1117;
+                    --k4-border:            rgba(250,250,250,0.25);
+                    --k4-verdict-bad:       #e5534b;
+                    --k4-verdict-bad-fill:  rgba(229,83,75,0.09);
+                    --k4-verdict-bad-edge:  rgba(229,83,75,0.32);
+                    --k4-verdict-good:      #3fb950;
+                    --k4-verdict-good-fill: rgba(63,185,80,0.09);
+                    --k4-verdict-good-edge: rgba(63,185,80,0.32);
+                }
+            }
+        }
+
         /* Make the top toolbar transparent so it doesn't obscure tabs */
         [data-testid="stToolbar"],
         header[data-testid="stHeader"] {

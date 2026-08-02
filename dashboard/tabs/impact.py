@@ -260,7 +260,7 @@ def render(results_df: pd.DataFrame | None) -> None:
                 out.loc[row_lbl, lbl] = _score_to_css(score, bad_hex, mid_hex, good_hex)
         return out
 
-    baseline_row_style = "font-style: italic; border-left: 3px solid #9ca3af;"
+    baseline_row_style = "font-style: italic; border-left: 3px solid var(--k4-muted);"
 
     styled = (
         pct_df.style
@@ -286,12 +286,16 @@ def render(results_df: pd.DataFrame | None) -> None:
                 ("white-space", "nowrap"),
                 ("font-weight", "normal"),
             ]},
+            # The sticky header scrolls over the coloured cells, so it needs an
+            # opaque background: --k4-surface (app.py) is the app's own page
+            # colour in whichever theme is active, which keeps the inherited
+            # header text readable against it.
             {"selector": "thead th", "props": [
                 ("position", "sticky"),
                 ("top", "0"),
-                ("background", "#ffffff"),
+                ("background", "var(--k4-surface)"),
                 ("z-index", "2"),
-                ("border-bottom", "2px solid rgba(49,51,63,0.2)"),
+                ("border-bottom", "2px solid var(--k4-border)"),
             ]},
             {"selector": "th.row_heading", "props": [("text-align", "left")]},
         ])
@@ -319,7 +323,7 @@ def render(results_df: pd.DataFrame | None) -> None:
     # too large a gap above it. max() keeps a usable floor on short windows.
     st.markdown(
         f'<div style="max-height: max(220px, calc(100vh - 620px)); overflow:auto; '
-        f'border:1px solid rgba(49,51,63,0.2); border-radius:0.5rem;">'
+        f'border:1px solid var(--k4-border); border-radius:0.5rem;">'
         f'{styled.to_html()}</div>',
         unsafe_allow_html=True,
     )

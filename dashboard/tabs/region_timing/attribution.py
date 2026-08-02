@@ -30,7 +30,7 @@ def _attribution_explainer() -> None:
             'padding:10px 14px;border-radius:4px">'
             f'<b style="color:{_SOURCE_COLOR}">&#x1F7E0; Source region</b><br>'
             "Particles <em>created</em> here spend most of their simulation tracking time in other regions.<br>"
-            '<small style="color:#888">by birth &gt; at location &mdash; bar extends left</small>'
+            '<small style="color:var(--k4-muted)">by birth &gt; at location &mdash; bar extends left</small>'
             "</div>",
             unsafe_allow_html=True,
         )
@@ -40,7 +40,7 @@ def _attribution_explainer() -> None:
             'padding:10px 14px;border-radius:4px">'
             f'<b style="color:{_SINK_COLOR}">&#x1F535; Sink region</b><br>'
             "Simulation tracking time here is dominated by particles created in other regions.<br>"
-            '<small style="color:#888">at location &gt; by birth &mdash; bar extends right</small>'
+            '<small style="color:var(--k4-muted)">at location &gt; by birth &mdash; bar extends right</small>'
             "</div>",
             unsafe_allow_html=True,
         )
