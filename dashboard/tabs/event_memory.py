@@ -4,16 +4,16 @@ import pandas as pd
 import streamlit as st
 
 from k4bench.analysis.plots import plot_event_memory
-from stats import build_event_stats_table, select_top_n_by_ratio, style_stats_table
+from stats import build_event_stats_table, style_stats_table
 from tabs._reliability import render_reliability_filter
-from ui_chrome import _drop_stale_selection
 from ui_utils import (
-    _auto_palette_index,
+    _baseline_selector_control,
+    _cached_event_bin_options,
+    _config_selector_control,
+    _histogram_display_controls,
     _is_valid_df,
-    _PALETTE_NAMES,
     _PALETTES,
     _render_historical_trends,
-    _reset_widget_on_scope,
 )
 
 
@@ -34,6 +34,7 @@ _HIST_STATS = [
 def _render_current_run(
     event_data: dict,
     selected_labels: list[str],
+    display_options_slot=None,
 ) -> None:
     """Render the current-run per-event memory view."""
     current_labels = [label for label in selected_labels if label in event_data]
@@ -41,60 +42,26 @@ def _render_current_run(
         st.info("No event memory data available for the selected configurations in this run.")
         return
 
-    col_bl, col_topn, col_pal = st.columns([2, 2, 2])
-    with col_bl:
-        _drop_stale_selection("evt_memory_baseline", current_labels)
-        baseline_label = (
-            st.selectbox(
-                "Baseline",
-                options=current_labels,
-                index=0,
-                key="evt_memory_baseline",
-                help=(
-                    "The configuration used as the reference. "
-                    "The lower panel shows every other config's RSS memory "
-                    "as a ratio relative to this one — values above 1 use more "
-                    "memory, below 1 use less. RSS = Resident Set Size (physical RAM)."
-                ),
-            )
-            if selected_labels
-            else None
-        )
-    with col_topn:
-        max_n = len(current_labels)
-        if max_n > 2:
-            if st.session_state.get("_evt_memory_max_n") != max_n:
-                st.session_state["evt_memory_topn"] = min(5, max_n)
-                st.session_state["_evt_memory_max_n"] = max_n
-            top_n = st.slider(
-                "Top N runs by memory ratio",
-                min_value=2,
-                max_value=max_n,
-                key="evt_memory_topn",
-                help=(
-                    "When many configurations are selected, shows only the N "
-                    "with the largest absolute deviation from the baseline. "
-                    "Keeps the plot readable when dozens of configs are loaded."
-                ),
-            )
-        else:
-            top_n = max_n
-            st.session_state["_evt_memory_max_n"] = max_n
-    with col_pal:
-        palette_default = _auto_palette_index(top_n)
-        _reset_widget_on_scope(
-            "evt_memory_palette", palette_default, reset_unscoped=True,
-        )
-        palette_name = st.selectbox(
-            "Colour palette",
-            options=_PALETTE_NAMES,
-            index=palette_default,
-            key="evt_memory_palette",
+    col_baseline, col_configs = st.columns([1, 3], gap="medium", vertical_alignment="bottom")
+    with col_baseline:
+        baseline_label = _baseline_selector_control("evt_memory", current_labels)
+    with col_configs:
+        display_labels = _config_selector_control(
+            "evt_memory", event_data, current_labels, baseline_label, "rss_end_mb", "MB",
         )
 
-    display_labels = select_top_n_by_ratio(
-        event_data, current_labels, "rss_end_mb", "MB", baseline_label, True, top_n
+    bin_options = _cached_event_bin_options(
+        event_data, "rss_end_mb", tuple(display_labels)
     )
+    if display_options_slot is None:
+        bins, palette_name, alpha, show_errors, show_mean_lines = (
+            _histogram_display_controls("evt_memory", bin_options, len(display_labels))
+        )
+    else:
+        with display_options_slot.container(horizontal=True, horizontal_alignment="right"):
+            bins, palette_name, alpha, show_errors, show_mean_lines = (
+                _histogram_display_controls("evt_memory", bin_options, len(display_labels))
+            )
 
     fig = plot_event_memory(
         event_data,
@@ -103,6 +70,10 @@ def _render_current_run(
         show="both",
         exclude_events=[0],
         palette=_PALETTES[palette_name],
+        bins=bins,
+        alpha=alpha,
+        show_errors=show_errors,
+        show_mean_lines=show_mean_lines,
     )
     st.plotly_chart(fig, width="stretch", key="evt_memory_current_chart")
 
@@ -114,6 +85,14 @@ def _render_current_run(
         st.dataframe(style_stats_table(stats), width="stretch")
     else:
         st.info("No valid statistics available (missing or empty data).")
+
+    if set(display_labels) != set(current_labels):
+        with st.expander(f"All filtered configurations ({len(current_labels)})"):
+            all_stats = build_event_stats_table(
+                event_data, current_labels, "rss_end_mb", "MB", baseline_label, True
+            )
+            if not all_stats.empty:
+                st.dataframe(style_stats_table(all_stats), width="stretch")
 
 
 def _render_historical(
@@ -172,20 +151,25 @@ def render(
 
     # The "Historical Trends" option is gated on remote mode (not on the current
     # window's data) so the view selector stays put when the trend window changes.
-    if trends_enabled:
-        view = st.radio(
-            "View",
-            options=["Current Run", "Historical Trends"],
-            horizontal=True,
-            key="evt_memory_view_mode",
-        )
-    else:
-        view = "Current Run"
+    view_col, display_options_col = st.columns(
+        [2, 1], gap="medium", vertical_alignment="bottom",
+    )
+    with view_col:
+        if trends_enabled:
+            view = st.radio(
+                "View",
+                options=["Current Run", "Historical Trends"],
+                horizontal=True,
+                key="evt_memory_view_mode",
+            )
+        else:
+            view = "Current Run"
+    display_options_slot = display_options_col.empty()
 
     if view == "Current Run":
         if event_data is None:
             st.info("No event memory data available in the selected directory.")
         else:
-            _render_current_run(event_data, selected_labels)
+            _render_current_run(event_data, selected_labels, display_options_slot)
     else:
         _render_historical(trend_event_df, selected_labels, reliability)

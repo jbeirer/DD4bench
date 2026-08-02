@@ -8,22 +8,24 @@ from __future__ import annotations
 
 import warnings
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+from ._binning import MAX_BINS, BinSpec, describe_binning, resolve_bin_edges
 from ._theme import _BLUE, _PALETTE, _TEMPLATE
-from ._traces import _histogram_traces
+from ._traces import _histogram_traces, bin_contents
 from ._utils import (
     _DEFAULT_EXCLUDE_EVENTS,
     _OUTLIER_EXTREME_RATIO,
     _OUTLIER_FRACTION_WARN,
-    _compute_core_range,
     _compute_stats,
     _default_baseline,
     _ensure_event_data,
+    _prepare_event_arrays,
 )
 
 
@@ -92,7 +94,11 @@ def _plot_event_metric(
     labels: list[str] | None = None,
     baseline_label: str | None = None,
     show: str = "both",
-    bins: int | str = "auto",
+    bins: BinSpec = "auto",
+    bin_width: float | None = None,
+    bin_origin: float | None = None,
+    show_errors: bool = False,
+    show_mean_lines: bool = True,
     alpha: float = 0.7,
     figsize: tuple[float, float] | None = None,
     outlier_threshold: float = 3.5,
@@ -120,48 +126,21 @@ def _plot_event_metric(
             f"Available: {available}"
         )
 
-    label_list = list(event_data.keys())
+    prepared = _prepare_event_arrays(event_data, column, exclude_events, outlier_threshold)
+    label_list = prepared.label_list
+    filtered_data = prepared.filtered
+    arrays = prepared.arrays
+    hist_arrays = prepared.hist_arrays
+    core_range = prepared.core_range
     n = len(label_list)
     _pal = palette if palette is not None else _PALETTE
 
-    filtered_data = {
-        lbl: df[~df["event_number"].isin(exclude_events)]
-        for lbl, df in event_data.items()
-    }
-    empty_labels = [lbl for lbl, df in filtered_data.items() if df.empty]
-    if empty_labels:
-        raise ValueError(
-            "No events left after applying exclude_events for: "
-            + ", ".join(empty_labels)
-        )
-
-    required_cols = {column, "event_number"}
-    for lbl, df in filtered_data.items():
-        missing = required_cols - set(df.columns)
-        if missing:
-            raise ValueError(f"'{lbl}': missing columns {missing}")
-        if df["event_number"].duplicated().any():
-            dups = df.loc[df["event_number"].duplicated(keep=False), "event_number"].unique().tolist()
-            raise ValueError(
-                f"'{lbl}': duplicate event_number values detected: {dups[:5]}"
-                + (" ..." if len(dups) > 5 else "")
-            )
-
-    arrays = {lbl: filtered_data[lbl][column].to_numpy() for lbl in label_list}
-    all_data = np.concatenate(list(arrays.values()))
-
-    per_run_ranges = [_compute_core_range(arr, threshold=outlier_threshold)[0] for arr in arrays.values()]
-    core_range = (min(r[0] for r in per_run_ranges), max(r[1] for r in per_run_ranges))
-    clipped_all = all_data[(all_data >= core_range[0]) & (all_data <= core_range[1])]
-    if len(clipped_all) == 0:
-        clipped_all = all_data
-        core_range = (float(all_data.min()), float(all_data.max()))
-    _, common_edges = np.histogram(clipped_all, bins=bins)
-
-    hist_arrays = {
-        lbl: arr[(arr >= core_range[0]) & (arr <= core_range[1])]
-        for lbl, arr in arrays.items()
-    }
+    common_edges = resolve_bin_edges(
+        prepared.clipped_all,
+        bins=bins,
+        bin_width=bin_width,
+        bin_origin=bin_origin,
+    )
 
     show_ratio = (n >= 2) and (show == "both")
 
@@ -197,17 +176,20 @@ def _plot_event_metric(
     # ------------------------------------------------------------------
     # Distribution panel
     # ------------------------------------------------------------------
-    hist_alpha = alpha if n == 1 else min(alpha, 0.6)
     if dist_rc is not None:
-        for tr in _histogram_traces(hist_arrays, common_edges, label_list, hist_alpha, n > 1, palette=_pal):
+        for tr in _histogram_traces(
+            hist_arrays, common_edges, label_list, alpha, n > 1, palette=_pal,
+            show_errors=show_errors,
+        ):
             fig.add_trace(tr, row=dist_rc[0], col=dist_rc[1])
 
-        for i, lbl in enumerate(label_list):
-            color = _BLUE if n == 1 else _pal[i % len(_pal)]
-            fig.add_vline(
-                x=float(arrays[lbl].mean()), line_dash="dash", line_color=color,
-                line_width=1.2, opacity=0.8, row=dist_rc[0], col=dist_rc[1],
-            )
+        if show_mean_lines:
+            for i, lbl in enumerate(label_list):
+                color = _BLUE if n == 1 else _pal[i % len(_pal)]
+                fig.add_vline(
+                    x=float(arrays[lbl].mean()), line_dash="dash", line_color=color,
+                    line_width=1.2, opacity=0.8, row=dist_rc[0], col=dist_rc[1],
+                )
 
         fig.update_yaxes(title_text="Count", row=dist_rc[0], col=dist_rc[1])
 
@@ -260,8 +242,7 @@ def _plot_event_metric(
     # Ratio panels (n >= 2, show == "both") — one trace per non-baseline run
     # ------------------------------------------------------------------
     if show_ratio:
-        ref_counts, _ = np.histogram(hist_arrays[ref_label], bins=common_edges)
-        ref_counts = ref_counts.astype(float)
+        ref_counts, _ = bin_contents(hist_arrays[ref_label], common_edges)
         bin_centers = 0.5 * (common_edges[:-1] + common_edges[1:])
         df_ref = filtered_data[ref_label].set_index("event_number")
 
@@ -271,15 +252,12 @@ def _plot_event_metric(
             other_idx = label_list.index(other_label)
             ratio_color = _pal[other_idx % len(_pal)]
 
-            other_counts, _ = np.histogram(hist_arrays[other_label], bins=common_edges)
-            other_counts = other_counts.astype(float)
+            other_counts, _ = bin_contents(hist_arrays[other_label], common_edges)
+            filled = (ref_counts > 0) & (other_counts > 0)
             with np.errstate(invalid="ignore", divide="ignore"):
-                ratio = np.where(
-                    (ref_counts > 0) & (other_counts > 0),
-                    other_counts / ref_counts, np.nan,
-                )
+                ratio = np.where(filled, other_counts / ref_counts, np.nan)
                 ratio_err = np.where(
-                    (ref_counts > 0) & (other_counts > 0),
+                    filled,
                     ratio * np.sqrt(1.0 / other_counts + 1.0 / ref_counts), np.nan,
                 )
             valid = ~np.isnan(ratio)
@@ -335,7 +313,7 @@ def _plot_event_metric(
         fig.update_yaxes(title_text=ratio_ylabel, title_font=dict(size=10),
                          row=ratio_seq_rc[0], col=ratio_seq_rc[1])
 
-    if n > 1:
+    if n > 1 and any(isinstance(tr, go.Bar) for tr in fig.data):
         fig.update_layout(barmode="overlay")
 
     # ── Legend & margin layout ─────────────────────────────────────────────────
@@ -372,6 +350,13 @@ def _plot_event_metric(
         height=total_h,
         legend=legend_dict,
         margin=dict(l=20, r=20, t=t_margin, b=b_margin),
+        # The resolved binning travels with the figure so callers can report the
+        # bin width they actually got without re-deriving it.  A sequence-only
+        # figure has no histogram to describe.
+        meta=(
+            {**describe_binning(common_edges), "unit": stat_unit}
+            if dist_rc is not None else None
+        ),
     )
 
     return fig
@@ -381,13 +366,98 @@ def _plot_event_metric(
 # Public API
 # ---------------------------------------------------------------------------
 
+
+class BinCountOptions(NamedTuple):
+    """Automatic and allowed dashboard bin counts for one data selection."""
+
+    automatic: int
+    minimum: int
+    maximum: int
+
+
+def event_bin_options(
+    source: dict[str, pd.DataFrame] | str | Path | list[str | Path],
+    *,
+    column: str,
+    labels: list[str] | None = None,
+    exclude_events: list[int] | None = None,
+    outlier_threshold: float = 3.5,
+) -> BinCountOptions:
+    """Return automatic and sensible editable bin counts for an event metric.
+
+    The maximum is derived from the current pooled in-range sample: more bins
+    than observations normally add no statistical resolution. If NumPy's
+    automatic rule itself chooses more, that exact automatic count remains
+    selectable. The renderer ceiling remains the absolute upper bound.
+    """
+    if exclude_events is None:
+        exclude_events = list(_DEFAULT_EXCLUDE_EVENTS)
+    all_event_data = _ensure_event_data(source)
+    if labels is None:
+        event_data = all_event_data
+    else:
+        event_data = {
+            key: frame
+            for key, frame in all_event_data.items()
+            if key in labels or any(key.endswith(f"/{wanted}") for wanted in labels)
+        }
+    if not event_data:
+        raise ValueError(f"No event data found for labels={labels}.")
+    prepared = _prepare_event_arrays(event_data, column, exclude_events, outlier_threshold)
+    automatic = len(resolve_bin_edges(prepared.clipped_all)) - 1
+    maximum = min(MAX_BINS, max(automatic, len(prepared.clipped_all), 1))
+    return BinCountOptions(automatic=automatic, minimum=1, maximum=maximum)
+
+
+def auto_bin_count(
+    source: dict[str, pd.DataFrame] | str | Path | list[str | Path],
+    *,
+    column: str,
+    labels: list[str] | None = None,
+    exclude_events: list[int] | None = None,
+    outlier_threshold: float = 3.5,
+) -> int:
+    """Return the bin count ``plot_event_*`` would choose with ``bins="auto"``.
+
+    Runs the same preparation the plotting functions do — the same event
+    exclusions, the same outlier clipping, the same pooled range — so callers
+    that want to offer an editable bin count can seed it with the number the
+    figure would otherwise have used, instead of an arbitrary default that
+    would silently rebin the plot on first render.
+
+    Parameters
+    ----------
+    source : dict[str, pd.DataFrame], str/Path, or list of str/Path
+        As for :func:`plot_event_timing`.
+    column : str
+        The value column to bin, e.g. ``"event_time_s"`` or ``"rss_end_mb"``.
+    labels : list[str] or None
+        Restrict to these run labels.
+    exclude_events : list[int] or None
+        Event numbers to exclude.  Defaults to ``[0]``.
+    outlier_threshold : float
+        MAD-based modified Z-score threshold for range clipping.
+    """
+    return event_bin_options(
+        source,
+        column=column,
+        labels=labels,
+        exclude_events=exclude_events,
+        outlier_threshold=outlier_threshold,
+    ).automatic
+
+
 def plot_event_timing(
     source: dict[str, pd.DataFrame] | str | Path | list[str | Path],
     *,
     labels: list[str] | None = None,
     baseline_label: str | None = None,
     show: str = "both",
-    bins: int | str = "auto",
+    bins: BinSpec = "auto",
+    bin_width: float | None = None,
+    bin_origin: float | None = None,
+    show_errors: bool = False,
+    show_mean_lines: bool = True,
     alpha: float = 0.7,
     figsize: tuple[float, float] | None = None,
     outlier_threshold: float = 3.5,
@@ -411,10 +481,25 @@ def plot_event_timing(
         Reference run for the ratio panel (multi-run only).
     show : {"both", "distribution", "sequence"}
         Which panels to display.
-    bins : int or str
-        Bin specification for histograms.
+    bins : int, str, or sequence of float
+        Bin count, a :func:`numpy.histogram_bin_edges` rule name, or explicit
+        edges covering the pooled in-range data. Edges are resolved once, so all
+        runs and the ratio panel share exactly the same bins.
+    bin_width : float or None
+        Fixed bin width in data units. Mutually exclusive with ``bins``. The
+        width and origin define a stable grid across separate figures, whereas
+        ``bins="auto"`` derives each figure's binning from its pooled data.
+    bin_origin : float or None
+        Origin of the fixed-width grid. Used only with ``bin_width`` and defaults
+        to zero.
+    show_errors : bool
+        Draw Poisson ``√N`` uncertainties on the bin contents.
+    show_mean_lines : bool
+        Draw the dashed per-run mean line on the distribution panel.
     alpha : float
-        Histogram opacity (default: 0.7).
+        Opacity of the filled bars (default: 0.7).  The step outline drawn over
+        each histogram stays fully opaque, so lowering this fades overlapping
+        fills without losing any distribution; ``alpha=0`` leaves outlines only.
     figsize : (width, height) or None
         Figure size in inches (converted to pixels at 96 dpi).
     outlier_threshold : float
@@ -439,6 +524,10 @@ def plot_event_timing(
         baseline_label=baseline_label,
         show=show,
         bins=bins,
+        bin_width=bin_width,
+        bin_origin=bin_origin,
+        show_errors=show_errors,
+        show_mean_lines=show_mean_lines,
         alpha=alpha,
         figsize=figsize,
         outlier_threshold=outlier_threshold,
@@ -453,7 +542,11 @@ def plot_event_memory(
     labels: list[str] | None = None,
     baseline_label: str | None = None,
     show: str = "both",
-    bins: int | str = "auto",
+    bins: BinSpec = "auto",
+    bin_width: float | None = None,
+    bin_origin: float | None = None,
+    show_errors: bool = False,
+    show_mean_lines: bool = True,
     alpha: float = 0.7,
     figsize: tuple[float, float] | None = None,
     outlier_threshold: float = 3.5,
@@ -476,10 +569,25 @@ def plot_event_memory(
         Reference run for the ratio panel (multi-run only).
     show : {"both", "distribution", "sequence"}
         Which panels to display.
-    bins : int or str
-        Bin specification for histograms.
+    bins : int, str, or sequence of float
+        Bin count, a :func:`numpy.histogram_bin_edges` rule name, or explicit
+        edges covering the pooled in-range data. Edges are resolved once, so all
+        runs and the ratio panel share exactly the same bins.
+    bin_width : float or None
+        Fixed bin width in data units. Mutually exclusive with ``bins``. The
+        width and origin define a stable grid across separate figures, whereas
+        ``bins="auto"`` derives each figure's binning from its pooled data.
+    bin_origin : float or None
+        Origin of the fixed-width grid. Used only with ``bin_width`` and defaults
+        to zero.
+    show_errors : bool
+        Draw Poisson ``√N`` uncertainties on the bin contents.
+    show_mean_lines : bool
+        Draw the dashed per-run mean line on the distribution panel.
     alpha : float
-        Histogram opacity (default: 0.7).
+        Opacity of the filled bars (default: 0.7).  The step outline drawn over
+        each histogram stays fully opaque, so lowering this fades overlapping
+        fills without losing any distribution; ``alpha=0`` leaves outlines only.
     figsize : (width, height) or None
         Figure size in inches (converted to pixels at 96 dpi).
     outlier_threshold : float
@@ -504,6 +612,10 @@ def plot_event_memory(
         baseline_label=baseline_label,
         show=show,
         bins=bins,
+        bin_width=bin_width,
+        bin_origin=bin_origin,
+        show_errors=show_errors,
+        show_mean_lines=show_mean_lines,
         alpha=alpha,
         figsize=figsize,
         outlier_threshold=outlier_threshold,

@@ -18,6 +18,9 @@ import pytest
 from k4bench.analysis.loader import load_results
 from k4bench.analysis.plots import (
     _compute_core_range,
+    auto_bin_count,
+    event_bin_options,
+    plot_event_memory,
     plot_event_timing,
     plot_region_timing,
     plot_run_overview,
@@ -272,6 +275,294 @@ class TestPlotEventTiming:
         labels_a = ["zrun", "arun", "mrun"]
         labels_b = ["mrun", "zrun", "arun"]
         assert _default_baseline(labels_a) == _default_baseline(labels_b) == "arun"
+
+
+# ---------------------------------------------------------------------------
+# Histogram display options
+# ---------------------------------------------------------------------------
+
+
+def _event_frames(n_cfg: int = 3, n: int = 200, seed: int = 0) -> dict[str, pd.DataFrame]:
+    """Pre-loaded event data for *n_cfg* runs with slightly offset timing."""
+    rng = np.random.default_rng(seed)
+    return {
+        f"cfg{i}": pd.DataFrame({
+            "event_number": np.arange(n),
+            "event_time_s": rng.normal(10.0 + 0.2 * i, 1.0, n),
+        })
+        for i in range(n_cfg)
+    }
+
+
+def _memory_frames(n_cfg: int = 3, n: int = 150, seed: int = 3) -> dict[str, pd.DataFrame]:
+    """Pre-loaded event data for *n_cfg* runs with slightly offset RSS."""
+    rng = np.random.default_rng(seed)
+    return {
+        f"cfg{i}": pd.DataFrame({
+            "event_number": np.arange(n),
+            "rss_end_mb": rng.normal(500.0 + 5 * i, 10.0, n),
+        })
+        for i in range(n_cfg)
+    }
+
+
+def _panel(fig: go.Figure, axis: str) -> list:
+    """Return the traces drawn on subplot x-axis *axis* ('x', 'x2', 'x3', 'x4')."""
+    return [tr for tr in fig.data if (tr.xaxis or "x") == axis]
+
+
+def _is_outline(trace) -> bool:
+    """True for a histogram's step-outline trace (as opposed to its filled bars)."""
+    return isinstance(trace, go.Scatter) and trace.mode == "lines"
+
+
+def _bars(fig: go.Figure) -> list:
+    """The distribution panel's filled bar traces, one per configuration."""
+    return [tr for tr in _panel(fig, "x") if isinstance(tr, go.Bar)]
+
+
+def _edges(fig: go.Figure) -> np.ndarray:
+    """Read the exact resolved bin edges reported in ``layout.meta``."""
+    return np.asarray(fig.layout.meta["bin_edges"])
+
+
+def _step_content(trace) -> np.ndarray:
+    """Extract the per-bin contents from a closed step outline's y values."""
+    return np.asarray(trace.y)[1:-1:2]
+
+
+class TestHistogramDisplay:
+    """The histogram must stay comparable across configurations and correct.
+
+    Every configuration in a figure shares one set of bin edges, no entry inside
+    the plotted range goes unbinned, and the uncertainties are Poisson errors on
+    the underlying counts however the bins are scaled.
+    """
+
+    def test_every_config_gets_a_bar_and_an_outline(self):
+        fig = plot_event_timing(
+            _event_frames(n_cfg=4), baseline_label="cfg0", show="distribution",
+            exclude_events=[],
+        )
+        dist = _panel(fig, "x")
+        assert len(dist) == 8
+        assert sum(isinstance(tr, go.Bar) for tr in dist) == 4
+        assert sum(_is_outline(tr) for tr in dist) == 4
+
+    def test_one_legend_entry_per_config_carried_by_the_outline(self):
+        """The outline swatch stays crisp at any opacity, so it owns the legend."""
+        fig = plot_event_timing(
+            _event_frames(n_cfg=4), baseline_label="cfg0", show="distribution",
+            alpha=0.0, exclude_events=[],
+        )
+        dist = _panel(fig, "x")
+        assert [tr.name for tr in dist if tr.showlegend] == ["cfg0", "cfg1", "cfg2", "cfg3"]
+        assert all(_is_outline(tr) for tr in dist if tr.showlegend)
+
+    def test_opacity_applies_to_the_bars_only(self):
+        """Fading the fill must not fade the outline — that is the whole point."""
+        for alpha in (0.0, 0.25, 1.0):
+            fig = plot_event_timing(
+                _event_frames(n_cfg=3), baseline_label="cfg0", show="distribution",
+                alpha=alpha, exclude_events=[],
+            )
+            for tr in _panel(fig, "x"):
+                if isinstance(tr, go.Bar):
+                    assert tr.marker.color.endswith(f",{alpha})")
+                else:
+                    assert "rgba" not in tr.line.color  # opaque hex, no alpha channel
+
+    def test_all_configs_share_identical_bins(self):
+        fig = plot_event_timing(
+            _event_frames(n_cfg=4), baseline_label="cfg0", show="distribution",
+            exclude_events=[],
+        )
+        edges = _edges(fig)
+        centers = 0.5 * (edges[:-1] + edges[1:])
+        for tr in _panel(fig, "x"):
+            expected = np.repeat(edges, 2) if _is_outline(tr) else centers
+            assert np.allclose(np.asarray(tr.x), expected)
+
+    def test_no_entry_in_range_goes_unbinned(self):
+        data = _event_frames(n_cfg=3)
+        fig = plot_event_timing(
+            data, baseline_label="cfg0", show="distribution", exclude_events=[],
+        )
+        edges = _edges(fig)
+        for tr in _panel(fig, "x"):
+            if isinstance(tr, go.Bar):
+                values = data[tr.name]["event_time_s"].to_numpy()
+                expected = np.sum((values >= edges[0]) & (values <= edges[-1]))
+                assert np.sum(tr.y) == expected
+
+    def test_outline_closes_on_the_baseline(self):
+        fig = plot_event_timing(
+            _event_frames(n_cfg=2), baseline_label="cfg0", show="distribution",
+            exclude_events=[],
+        )
+        for tr in _panel(fig, "x"):
+            if _is_outline(tr):
+                assert tr.y[0] == 0 and tr.y[-1] == 0
+                assert len(tr.x) == 2 * len(_edges(fig))
+
+    def test_outline_traces_the_bar_heights(self):
+        """Fill and outline must show the same histogram, not two derivations of it."""
+        fig = plot_event_timing(
+            _event_frames(n_cfg=3), baseline_label="cfg0", show="distribution",
+            exclude_events=[],
+        )
+        dist = _panel(fig, "x")
+        for bar, outline in zip(dist[::2], dist[1::2]):
+            assert np.allclose(_step_content(outline), np.asarray(bar.y))
+
+    def test_bin_count_is_honoured(self):
+        fig = plot_event_timing(
+            _event_frames(n_cfg=2), baseline_label="cfg0", show="distribution",
+            bins=37, exclude_events=[],
+        )
+        assert fig.layout.meta["n_bins"] == 37
+        for tr in _panel(fig, "x"):
+            if isinstance(tr, go.Bar):
+                assert len(tr.y) == 37
+
+    def test_bin_width_gives_uniformly_wide_bars(self):
+        fig = plot_event_timing(
+            _event_frames(n_cfg=2), baseline_label="cfg0", show="distribution",
+            bin_width=0.4, exclude_events=[],
+        )
+        assert fig.layout.meta["bin_width"] == pytest.approx(0.4)
+        for tr in _panel(fig, "x"):
+            if isinstance(tr, go.Bar):
+                assert np.allclose(tr.width, 0.4)
+
+    def test_explicit_non_uniform_edges_are_public_and_preserved_in_meta(self):
+        edges = [0.0, 9.0, 11.0, 20.0]
+        fig = plot_event_timing(
+            _event_frames(n_cfg=2), baseline_label="cfg0", show="distribution",
+            bins=edges, exclude_events=[],
+        )
+        assert fig.layout.meta["uniform"] is False
+        assert fig.layout.meta["bin_edges"] == edges
+        assert np.array_equal(_edges(fig), edges)
+
+    def test_error_bars_are_poisson_on_counts(self):
+        fig = plot_event_timing(
+            _event_frames(n_cfg=2), baseline_label="cfg0", show="distribution",
+            show_errors=True, exclude_events=[],
+        )
+        for tr in _panel(fig, "x"):
+            if isinstance(tr, go.Bar):
+                assert np.allclose(tr.error_y.array, np.sqrt(np.asarray(tr.y)))
+
+    def test_ratio_panel_shares_the_distribution_bins(self):
+        fig = plot_event_timing(
+            _event_frames(n_cfg=3), baseline_label="cfg0", exclude_events=[],
+        )
+        edges = _edges(fig)
+        centers = 0.5 * (edges[:-1] + edges[1:])
+        ratio_traces = _panel(fig, "x3")
+        assert ratio_traces
+        for tr in ratio_traces:
+            # Empty bins are dropped from the ratio, so its x values are a subset.
+            assert np.all(np.isin(np.asarray(tr.x), centers))
+
+    def test_mean_lines_can_be_switched_off(self):
+        args = dict(baseline_label="cfg0", show="distribution", exclude_events=[])
+        data = _event_frames(n_cfg=3)
+        assert len(plot_event_timing(data, **args).layout.shapes) == 3
+        assert len(plot_event_timing(data, show_mean_lines=False, **args).layout.shapes) == 0
+
+    def test_default_histogram_style_uses_exact_alpha_and_raw_counts(self):
+        """The API applies the requested default alpha without a multi-run cap."""
+        fig = plot_event_timing(
+            _event_frames(n_cfg=3), baseline_label="cfg0", exclude_events=[],
+        )
+        bars = _bars(fig)
+        assert len(bars) == 3
+        assert all(tr.marker.color.endswith(",0.7)") for tr in bars)
+        assert all(tr.error_y.array is None for tr in bars)
+        assert fig.layout.barmode == "overlay"
+        assert fig.layout.yaxis.title.text == "Count"
+
+    def test_sequence_only_figure_reports_no_binning(self):
+        fig = plot_event_timing(
+            _event_frames(n_cfg=2), baseline_label="cfg0", show="sequence",
+            exclude_events=[],
+        )
+        assert fig.layout.meta is None
+
+    def test_memory_view_shares_the_implementation(self):
+        """plot_event_memory takes the same options through the same code path."""
+        data = _memory_frames(n_cfg=3)
+        fig = plot_event_memory(
+            data, baseline_label="cfg0", show="distribution",
+            show_errors=True, bin_width=5.0, exclude_events=[],
+        )
+        assert fig.layout.meta["bin_width"] == pytest.approx(5.0)
+        assert fig.layout.meta["unit"] == "MB"
+        outlines = [tr for tr in _panel(fig, "x") if _is_outline(tr)]
+        assert len(outlines) == 3
+        for tr, values in zip(outlines, data.values()):
+            assert np.sum(_step_content(tr)) == len(values)
+
+    def test_bins_and_bin_width_together_rejected(self):
+        with pytest.raises(ValueError, match="not both"):
+            plot_event_timing(
+                _event_frames(n_cfg=2), baseline_label="cfg0",
+                exclude_events=[], bins=20, bin_width=0.5,
+            )
+
+
+class TestAutoBinCount:
+    """The count offered as an editable default must be the one the plot uses."""
+
+    @pytest.mark.parametrize("n_cfg", [1, 2, 5])
+    def test_matches_what_the_plot_would_choose(self, n_cfg):
+        data = _event_frames(n_cfg=n_cfg)
+        fig = plot_event_timing(
+            data, baseline_label="cfg0", show="distribution", exclude_events=[],
+        )
+        assert auto_bin_count(
+            data, column="event_time_s", exclude_events=[]
+        ) == fig.layout.meta["n_bins"]
+
+    def test_respects_labels_and_exclusions(self):
+        data = _event_frames(n_cfg=4)
+        labels = ["cfg0", "cfg1"]
+        fig = plot_event_timing(
+            data, labels=labels, baseline_label="cfg0", show="distribution",
+        )
+        assert auto_bin_count(
+            data, column="event_time_s", labels=labels
+        ) == fig.layout.meta["n_bins"]
+
+    def test_memory_column(self):
+        data = _memory_frames(n_cfg=2)
+        fig = plot_event_memory(
+            data, baseline_label="cfg0", show="distribution", exclude_events=[],
+        )
+        assert auto_bin_count(
+            data, column="rss_end_mb", exclude_events=[]
+        ) == fig.layout.meta["n_bins"]
+
+    def test_editable_range_is_derived_from_pooled_sample_size(self):
+        data = _event_frames(n_cfg=2, n=8)
+        options = event_bin_options(
+            data, column="event_time_s", exclude_events=[],
+        )
+        assert options.minimum == 1
+        assert options.maximum == 16
+        assert options.minimum <= options.automatic <= options.maximum
+
+    def test_editable_range_respects_renderer_ceiling_for_large_samples(self):
+        from k4bench.analysis.plots._binning import MAX_BINS
+
+        options = event_bin_options(
+            _event_frames(n_cfg=3, n=300),
+            column="event_time_s",
+            exclude_events=[],
+        )
+        assert options.maximum == MAX_BINS
 
 
 # ---------------------------------------------------------------------------
