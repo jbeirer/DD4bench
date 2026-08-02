@@ -3,11 +3,12 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from k4bench.analysis.plots import auto_bin_count, plot_event_timing
+from k4bench.analysis.plots import plot_event_timing
 from stats import build_event_stats_table, style_stats_table
 from tabs._reliability import render_reliability_filter
 from ui_utils import (
     _baseline_selector_control,
+    _cached_event_bin_options,
     _config_selector_control,
     _histogram_display_controls,
     _is_valid_df,
@@ -48,17 +49,17 @@ def _render_current_run(
             "evt_timing", event_data, current_labels, baseline_label, "event_time_s", "s",
         )
 
-    auto_bins = auto_bin_count(
-        event_data, column="event_time_s", labels=display_labels, exclude_events=[0]
+    bin_options = _cached_event_bin_options(
+        event_data, "event_time_s", tuple(display_labels)
     )
     if display_options_slot is None:
         bins, palette_name, alpha, show_errors, show_mean_lines = (
-            _histogram_display_controls("evt_timing", auto_bins, len(display_labels))
+            _histogram_display_controls("evt_timing", bin_options, len(display_labels))
         )
     else:
         with display_options_slot.container(horizontal=True, horizontal_alignment="right"):
             bins, palette_name, alpha, show_errors, show_mean_lines = (
-                _histogram_display_controls("evt_timing", auto_bins, len(display_labels))
+                _histogram_display_controls("evt_timing", bin_options, len(display_labels))
             )
 
     fig = plot_event_timing(

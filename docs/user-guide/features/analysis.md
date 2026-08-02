@@ -110,15 +110,24 @@ plot_event_timing(
 ```
 
 Every run in a figure is binned on one shared set of edges, which the ratio
-panel reuses, so the overlaid histograms are always directly comparable. Those
-edges come either from `bins` (a count or a
-[NumPy rule name](https://numpy.org/doc/stable/reference/generated/numpy.histogram_bin_edges.html))
-or from `bin_width`; the two are mutually exclusive. Prefer `bin_width` when
-comparing figures against each other: `bins="auto"` re-derives the width from
-the pooled data of whichever runs are shown, so it narrows as runs are added.
-The resolved binning is reported back on `fig.layout.meta`. In the dashboard,
-the **Bins** field under **Display options** starts at the current automatic
-count; editing it keeps that custom count as configurations change.
+panel reuses, so the overlaid histograms are directly comparable. Those edges
+come either from `bins` (a count, a
+[NumPy rule name](https://numpy.org/doc/stable/reference/generated/numpy.histogram_bin_edges.html),
+or an explicit edge sequence covering the data) or from `bin_width`; the two
+are mutually exclusive.
+
+Use `bin_width` for a stable grid across separate figures. Fixed-width bins are
+aligned to `bin_origin=0` by default, or to an origin you provide, and extend in
+whole-width steps until they cover the figure's pooled data. By contrast,
+`bins="auto"` derives each figure's count and range independently, so changing
+the runs can change its binning. The exact resolved edges, range, width and
+uniformity flag are reported in `fig.layout.meta`.
+
+In the dashboard, the **Bins** field under **Display options** starts at the
+current automatic count; editing it keeps that custom count as configurations
+change. Its allowed maximum is derived from the current pooled in-range event
+count and always includes NumPy's automatic choice (up to the renderer's safety
+ceiling), rather than coming from a fixed UI range.
 
 The automatic count is computed from the same prepared data the plotting
 functions use. It is also available directly through `auto_bin_count`:

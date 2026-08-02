@@ -19,6 +19,7 @@ from k4bench.analysis.loader import load_results
 from k4bench.analysis.plots import (
     _compute_core_range,
     auto_bin_count,
+    event_bin_options,
     plot_event_memory,
     plot_event_timing,
     plot_region_timing,
@@ -321,10 +322,8 @@ def _bars(fig: go.Figure) -> list:
 
 
 def _edges(fig: go.Figure) -> np.ndarray:
-    """Rebuild the figure's bin edges from the binning it reports in ``layout.meta``."""
-    meta = fig.layout.meta
-    lo, hi = meta["bin_range"]
-    return np.linspace(lo, hi, meta["n_bins"] + 1)
+    """Read the exact resolved bin edges reported in ``layout.meta``."""
+    return np.asarray(fig.layout.meta["bin_edges"])
 
 
 def _step_content(trace) -> np.ndarray:
@@ -436,6 +435,16 @@ class TestHistogramDisplay:
             if isinstance(tr, go.Bar):
                 assert np.allclose(tr.width, 0.4)
 
+    def test_explicit_non_uniform_edges_are_public_and_preserved_in_meta(self):
+        edges = [0.0, 9.0, 11.0, 20.0]
+        fig = plot_event_timing(
+            _event_frames(n_cfg=2), baseline_label="cfg0", show="distribution",
+            bins=edges, exclude_events=[],
+        )
+        assert fig.layout.meta["uniform"] is False
+        assert fig.layout.meta["bin_edges"] == edges
+        assert np.array_equal(_edges(fig), edges)
+
     def test_error_bars_are_poisson_on_counts(self):
         fig = plot_event_timing(
             _event_frames(n_cfg=2), baseline_label="cfg0", show="distribution",
@@ -463,8 +472,8 @@ class TestHistogramDisplay:
         assert len(plot_event_timing(data, **args).layout.shapes) == 3
         assert len(plot_event_timing(data, show_mean_lines=False, **args).layout.shapes) == 0
 
-    def test_defaults_stay_backwards_compatible(self):
-        """Existing callers keep filled bars, no error bars and raw counts."""
+    def test_default_histogram_style_uses_exact_alpha_and_raw_counts(self):
+        """The API applies the requested default alpha without a multi-run cap."""
         fig = plot_event_timing(
             _event_frames(n_cfg=3), baseline_label="cfg0", exclude_events=[],
         )
@@ -535,6 +544,25 @@ class TestAutoBinCount:
         assert auto_bin_count(
             data, column="rss_end_mb", exclude_events=[]
         ) == fig.layout.meta["n_bins"]
+
+    def test_editable_range_is_derived_from_pooled_sample_size(self):
+        data = _event_frames(n_cfg=2, n=8)
+        options = event_bin_options(
+            data, column="event_time_s", exclude_events=[],
+        )
+        assert options.minimum == 1
+        assert options.maximum == 16
+        assert options.minimum <= options.automatic <= options.maximum
+
+    def test_editable_range_respects_renderer_ceiling_for_large_samples(self):
+        from k4bench.analysis.plots._binning import MAX_BINS
+
+        options = event_bin_options(
+            _event_frames(n_cfg=3, n=300),
+            column="event_time_s",
+            exclude_events=[],
+        )
+        assert options.maximum == MAX_BINS
 
 
 # ---------------------------------------------------------------------------

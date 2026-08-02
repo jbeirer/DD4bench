@@ -15,7 +15,7 @@ import streamlit as st
 from plotly.colors import qualitative as _ql
 from plotly.subplots import make_subplots
 
-from k4bench.analysis.plots._binning import MAX_BINS
+from k4bench.analysis.plots import BinCountOptions, event_bin_options
 from k4bench.analysis.plots._theme import PALETTE, _TEMPLATE
 from k4bench.analysis.plots._utils import _default_baseline
 from stats import select_top_n_by_ratio
@@ -246,17 +246,26 @@ def _config_selector_control(
 # specialist histogram controls are composed into one compact Display options
 # popover by :func:`_histogram_display_controls` below.
 
-#: Interactive bin-count bounds. The ceiling is exactly the plotting layer's
-#: :data:`MAX_BINS` — not some smaller number layered on top of it — since that
-#: is the one real constraint here: Plotly renders every bin of every shown
-#: configuration as its own vertex, so a large enough count can freeze the tab.
-_HIST_MAX_BIN_COUNT = MAX_BINS
-_HIST_MIN_BIN_COUNT = 5
-
 #: Default bar opacity — low enough that overlapping fills stay out of the way
 #: of the (always fully opaque) outlines, without the user having to reach for
 #: the slider first.
 _HIST_DEFAULT_ALPHA = 0.25
+
+
+@st.cache_data(show_spinner=False)
+def _cached_event_bin_options(
+    event_data: dict[str, pd.DataFrame],
+    column: str,
+    labels: tuple[str, ...],
+    exclude_events: tuple[int, ...] = (0,),
+) -> BinCountOptions:
+    """Cache data-derived bin controls across appearance-only dashboard reruns."""
+    return event_bin_options(
+        event_data,
+        column=column,
+        labels=list(labels),
+        exclude_events=list(exclude_events),
+    )
 
 
 def _validate_bin_count(
@@ -264,19 +273,21 @@ def _validate_bin_count(
     auto_key: str,
     custom_key: str,
     warning_key: str,
+    minimum: int,
+    maximum: int,
 ) -> None:
     """Clamp an edited bin count, retain a warning, and track custom state."""
     raw = int(st.session_state[key])
-    bins = min(max(raw, _HIST_MIN_BIN_COUNT), _HIST_MAX_BIN_COUNT)
-    if raw < _HIST_MIN_BIN_COUNT:
+    bins = min(max(raw, minimum), maximum)
+    if raw < minimum:
         st.session_state[warning_key] = (
-            f"{raw} is below the minimum of {_HIST_MIN_BIN_COUNT}; "
-            f"the value was reset to {_HIST_MIN_BIN_COUNT}."
+            f"{raw} is below the minimum of {minimum}; "
+            f"the value was reset to {minimum}."
         )
-    elif raw > _HIST_MAX_BIN_COUNT:
+    elif raw > maximum:
         st.session_state[warning_key] = (
-            f"{raw} is above the maximum of {_HIST_MAX_BIN_COUNT}; "
-            f"the value was reset to {_HIST_MAX_BIN_COUNT}."
+            f"{raw} is above the maximum of {maximum} for the current data; "
+            f"the value was reset to {maximum}."
         )
     else:
         st.session_state.pop(warning_key, None)
@@ -284,13 +295,12 @@ def _validate_bin_count(
     st.session_state[custom_key] = bins != int(st.session_state[auto_key])
 
 
-def _bin_count_control(key_prefix: str, auto_bins: int) -> int:
+def _bin_count_control(key_prefix: str, options: BinCountOptions) -> int:
     """Render the bin-count field, seeded automatically until the user edits it.
 
-    *auto_bins* is the count the plot would have picked on its own — from
-    :func:`~k4bench.analysis.plots.auto_bin_count`, which prepares the data
-    exactly as the plotting functions do.  It seeds the field so the first
-    render shows the binning that is actually on screen.
+    *options.automatic* is the count the plot would have picked on its own.
+    The allowed maximum is derived from the current pooled sample rather than
+    being a separate hard-coded UI policy.
 
     Until the user changes the field, its value follows NumPy's automatic count
     whenever the displayed configurations change. Once edited, the chosen count
@@ -298,25 +308,35 @@ def _bin_count_control(key_prefix: str, auto_bins: int) -> int:
     returns the field to auto-following behaviour, without adding a separate
     mode selector to the interface.
     """
-    bins_default = int(min(max(auto_bins, _HIST_MIN_BIN_COUNT), _HIST_MAX_BIN_COUNT))
+    bins_default = options.automatic
     key = f"{key_prefix}_hist_bins"
     auto_key = f"_{key}_auto"
     custom_key = f"_{key}_custom"
     warning_key = f"_{key}_warning"
     is_custom = bool(st.session_state.get(custom_key, False))
+    st.session_state[auto_key] = bins_default
     if key not in st.session_state or not is_custom:
         st.session_state[key] = bins_default
         st.session_state.pop(warning_key, None)
-    st.session_state[auto_key] = bins_default
+    elif not options.minimum <= int(st.session_state[key]) <= options.maximum:
+        _validate_bin_count(
+            key, auto_key, custom_key, warning_key, options.minimum, options.maximum,
+        )
+    elif int(st.session_state[key]) == bins_default:
+        st.session_state[custom_key] = False
 
     bins = st.number_input(
         "Bins",
         step=1,
         key=key,
         on_change=_validate_bin_count,
-        args=(key, auto_key, custom_key, warning_key),
+        args=(
+            key, auto_key, custom_key, warning_key,
+            options.minimum, options.maximum,
+        ),
         help=(
-            f"Number of histogram bins ({_HIST_MIN_BIN_COUNT}-{_HIST_MAX_BIN_COUNT}), "
+            f"Number of histogram bins ({options.minimum}-{options.maximum} for the "
+            "current data), "
             "shared by every configuration in the plot and by the ratio panel "
             "below it. Starts at the automatically determined count for the "
             f"current selection ({bins_default}); an edited value is preserved."
@@ -384,7 +404,7 @@ def _reset_histogram_display_state(
 
 def _histogram_display_controls(
     key_prefix: str,
-    auto_bins: int,
+    bin_options: BinCountOptions,
     n_configs: int,
 ) -> tuple[int, str, float, bool, bool]:
     """Render compact advanced histogram options and return their values.
@@ -400,10 +420,10 @@ def _histogram_display_controls(
         palette_key, palette_default, reset_unscoped=True,
     )
     palette_default_name = _PALETTE_NAMES[palette_default]
-    bins_default = int(min(max(auto_bins, _HIST_MIN_BIN_COUNT), _HIST_MAX_BIN_COUNT))
+    bins_default = bin_options.automatic
 
     with st.popover("Display options", icon="👁️", width="content"):
-        bins = _bin_count_control(key_prefix, auto_bins)
+        bins = _bin_count_control(key_prefix, bin_options)
         alpha = _bar_opacity_control(key_prefix)
         show_errors = _error_bars_toggle(key_prefix)
         show_mean_lines = _mean_lines_toggle(key_prefix)

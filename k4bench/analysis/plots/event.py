@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import warnings
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from ._binning import describe_binning, resolve_bin_edges
+from ._binning import MAX_BINS, BinSpec, describe_binning, resolve_bin_edges
 from ._theme import _BLUE, _PALETTE, _TEMPLATE
 from ._traces import _histogram_traces, bin_contents
 from ._utils import (
@@ -93,8 +94,9 @@ def _plot_event_metric(
     labels: list[str] | None = None,
     baseline_label: str | None = None,
     show: str = "both",
-    bins: int | str = "auto",
+    bins: BinSpec = "auto",
     bin_width: float | None = None,
+    bin_origin: float | None = None,
     show_errors: bool = False,
     show_mean_lines: bool = True,
     alpha: float = 0.7,
@@ -133,7 +135,12 @@ def _plot_event_metric(
     n = len(label_list)
     _pal = palette if palette is not None else _PALETTE
 
-    common_edges = resolve_bin_edges(prepared.clipped_all, bins=bins, bin_width=bin_width)
+    common_edges = resolve_bin_edges(
+        prepared.clipped_all,
+        bins=bins,
+        bin_width=bin_width,
+        bin_origin=bin_origin,
+    )
 
     show_ratio = (n >= 2) and (show == "both")
 
@@ -359,6 +366,49 @@ def _plot_event_metric(
 # Public API
 # ---------------------------------------------------------------------------
 
+
+class BinCountOptions(NamedTuple):
+    """Automatic and allowed dashboard bin counts for one data selection."""
+
+    automatic: int
+    minimum: int
+    maximum: int
+
+
+def event_bin_options(
+    source: dict[str, pd.DataFrame] | str | Path | list[str | Path],
+    *,
+    column: str,
+    labels: list[str] | None = None,
+    exclude_events: list[int] | None = None,
+    outlier_threshold: float = 3.5,
+) -> BinCountOptions:
+    """Return automatic and sensible editable bin counts for an event metric.
+
+    The maximum is derived from the current pooled in-range sample: more bins
+    than observations normally add no statistical resolution. If NumPy's
+    automatic rule itself chooses more, that exact automatic count remains
+    selectable. The renderer ceiling remains the absolute upper bound.
+    """
+    if exclude_events is None:
+        exclude_events = list(_DEFAULT_EXCLUDE_EVENTS)
+    all_event_data = _ensure_event_data(source)
+    if labels is None:
+        event_data = all_event_data
+    else:
+        event_data = {
+            key: frame
+            for key, frame in all_event_data.items()
+            if key in labels or any(key.endswith(f"/{wanted}") for wanted in labels)
+        }
+    if not event_data:
+        raise ValueError(f"No event data found for labels={labels}.")
+    prepared = _prepare_event_arrays(event_data, column, exclude_events, outlier_threshold)
+    automatic = len(resolve_bin_edges(prepared.clipped_all)) - 1
+    maximum = min(MAX_BINS, max(automatic, len(prepared.clipped_all), 1))
+    return BinCountOptions(automatic=automatic, minimum=1, maximum=maximum)
+
+
 def auto_bin_count(
     source: dict[str, pd.DataFrame] | str | Path | list[str | Path],
     *,
@@ -388,20 +438,13 @@ def auto_bin_count(
     outlier_threshold : float
         MAD-based modified Z-score threshold for range clipping.
     """
-    if exclude_events is None:
-        exclude_events = list(_DEFAULT_EXCLUDE_EVENTS)
-    all_event_data = _ensure_event_data(source)
-    if labels is None:
-        event_data = all_event_data
-    else:
-        event_data = {
-            k: v for k, v in all_event_data.items()
-            if k in labels or any(k.endswith(f"/{w}") for w in labels)
-        }
-    if not event_data:
-        raise ValueError(f"No event data found for labels={labels}.")
-    prepared = _prepare_event_arrays(event_data, column, exclude_events, outlier_threshold)
-    return len(resolve_bin_edges(prepared.clipped_all)) - 1
+    return event_bin_options(
+        source,
+        column=column,
+        labels=labels,
+        exclude_events=exclude_events,
+        outlier_threshold=outlier_threshold,
+    ).automatic
 
 
 def plot_event_timing(
@@ -410,8 +453,9 @@ def plot_event_timing(
     labels: list[str] | None = None,
     baseline_label: str | None = None,
     show: str = "both",
-    bins: int | str = "auto",
+    bins: BinSpec = "auto",
     bin_width: float | None = None,
+    bin_origin: float | None = None,
     show_errors: bool = False,
     show_mean_lines: bool = True,
     alpha: float = 0.7,
@@ -437,15 +481,17 @@ def plot_event_timing(
         Reference run for the ratio panel (multi-run only).
     show : {"both", "distribution", "sequence"}
         Which panels to display.
-    bins : int or str
-        Bin count or a :func:`numpy.histogram_bin_edges` rule name.  Edges are
-        resolved once from the pooled in-range data of every plotted run, so all
-        runs — and the ratio panel — share exactly the same bins.
+    bins : int, str, or sequence of float
+        Bin count, a :func:`numpy.histogram_bin_edges` rule name, or explicit
+        edges covering the pooled in-range data. Edges are resolved once, so all
+        runs and the ratio panel share exactly the same bins.
     bin_width : float or None
-        Fixed bin width in data units.  Mutually exclusive with ``bins``, and the
-        more directly comparable of the two: the width stays put as runs are
-        added or removed, whereas ``bins="auto"`` re-derives it from the pooled
-        data and so narrows as more runs are shown.
+        Fixed bin width in data units. Mutually exclusive with ``bins``. The
+        width and origin define a stable grid across separate figures, whereas
+        ``bins="auto"`` derives each figure's binning from its pooled data.
+    bin_origin : float or None
+        Origin of the fixed-width grid. Used only with ``bin_width`` and defaults
+        to zero.
     show_errors : bool
         Draw Poisson ``√N`` uncertainties on the bin contents.
     show_mean_lines : bool
@@ -479,6 +525,7 @@ def plot_event_timing(
         show=show,
         bins=bins,
         bin_width=bin_width,
+        bin_origin=bin_origin,
         show_errors=show_errors,
         show_mean_lines=show_mean_lines,
         alpha=alpha,
@@ -495,8 +542,9 @@ def plot_event_memory(
     labels: list[str] | None = None,
     baseline_label: str | None = None,
     show: str = "both",
-    bins: int | str = "auto",
+    bins: BinSpec = "auto",
     bin_width: float | None = None,
+    bin_origin: float | None = None,
     show_errors: bool = False,
     show_mean_lines: bool = True,
     alpha: float = 0.7,
@@ -521,15 +569,17 @@ def plot_event_memory(
         Reference run for the ratio panel (multi-run only).
     show : {"both", "distribution", "sequence"}
         Which panels to display.
-    bins : int or str
-        Bin count or a :func:`numpy.histogram_bin_edges` rule name.  Edges are
-        resolved once from the pooled in-range data of every plotted run, so all
-        runs — and the ratio panel — share exactly the same bins.
+    bins : int, str, or sequence of float
+        Bin count, a :func:`numpy.histogram_bin_edges` rule name, or explicit
+        edges covering the pooled in-range data. Edges are resolved once, so all
+        runs and the ratio panel share exactly the same bins.
     bin_width : float or None
-        Fixed bin width in data units.  Mutually exclusive with ``bins``, and the
-        more directly comparable of the two: the width stays put as runs are
-        added or removed, whereas ``bins="auto"`` re-derives it from the pooled
-        data and so narrows as more runs are shown.
+        Fixed bin width in data units. Mutually exclusive with ``bins``. The
+        width and origin define a stable grid across separate figures, whereas
+        ``bins="auto"`` derives each figure's binning from its pooled data.
+    bin_origin : float or None
+        Origin of the fixed-width grid. Used only with ``bin_width`` and defaults
+        to zero.
     show_errors : bool
         Draw Poisson ``√N`` uncertainties on the bin contents.
     show_mean_lines : bool
@@ -563,6 +613,7 @@ def plot_event_memory(
         show=show,
         bins=bins,
         bin_width=bin_width,
+        bin_origin=bin_origin,
         show_errors=show_errors,
         show_mean_lines=show_mean_lines,
         alpha=alpha,

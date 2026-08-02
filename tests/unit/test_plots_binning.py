@@ -27,8 +27,12 @@ class TestResolveBinEdges:
         assert np.array_equal(edges, np.histogram_bin_edges(sample, bins=17))
 
     def test_explicit_edges_pass_through(self, sample):
-        explicit = np.linspace(5.0, 15.0, 11)
+        explicit = np.linspace(sample.min(), sample.max(), 11)
         assert np.array_equal(resolve_bin_edges(sample, bins=explicit), explicit)
+
+    def test_explicit_edges_must_cover_data(self):
+        with pytest.raises(ValueError, match="do not cover"):
+            resolve_bin_edges(np.array([10.0, 11.0]), bins=[0.0, 1.0, 2.0])
 
     @pytest.mark.parametrize(
         ("edges", "message"),
@@ -52,10 +56,21 @@ class TestResolveBinEdges:
     def test_bin_width_covers_the_maximum(self, sample):
         """The last edge must sit past the data maximum, or entries are dropped."""
         edges = resolve_bin_edges(sample, bin_width=0.3)
-        assert edges[0] == pytest.approx(sample.min())
+        assert edges[0] <= sample.min()
         assert edges[-1] >= sample.max()
         counts, _ = np.histogram(sample, bins=edges)
         assert counts.sum() == len(sample)
+
+    def test_same_width_and_origin_use_the_same_grid(self):
+        first = resolve_bin_edges(np.array([0.1, 0.6, 1.1]), bin_width=0.5)
+        second = resolve_bin_edges(np.array([0.2, 0.7, 1.2]), bin_width=0.5)
+        assert np.array_equal(first, second)
+
+    def test_custom_bin_origin_shifts_the_grid(self):
+        edges = resolve_bin_edges(
+            np.array([0.4, 0.8, 1.2]), bin_width=0.5, bin_origin=0.25,
+        )
+        assert np.allclose(edges, [0.25, 0.75, 1.25])
 
     def test_bin_width_larger_than_span_gives_one_bin(self):
         edges = resolve_bin_edges(np.array([1.0, 1.5, 2.0]), bin_width=100.0)
@@ -75,6 +90,10 @@ class TestResolveBinEdges:
     def test_bins_and_bin_width_together_rejected(self, sample):
         with pytest.raises(ValueError, match="not both"):
             resolve_bin_edges(sample, bins=20, bin_width=0.5)
+
+    def test_bin_origin_without_width_rejected(self, sample):
+        with pytest.raises(ValueError, match="requires bin_width"):
+            resolve_bin_edges(sample, bin_origin=0.0)
 
     def test_too_many_bins_rejected(self, sample):
         with pytest.raises(ValueError, match=f"limit of {MAX_BINS}"):
@@ -118,12 +137,14 @@ class TestDescribeBinning:
         assert info["n_bins"] == 10
         assert info["bin_width"] == pytest.approx(1.0)
         assert info["bin_range"] == (0.0, 10.0)
+        assert info["bin_edges"] == pytest.approx(np.linspace(0.0, 10.0, 11))
         assert info["uniform"] is True
 
     def test_non_uniform_edges_flagged(self):
         info = describe_binning(np.array([0.0, 1.0, 5.0, 6.0]))
         assert info["uniform"] is False
         assert info["bin_width"] == pytest.approx(2.0)
+        assert info["bin_edges"] == [0.0, 1.0, 5.0, 6.0]
 
     @pytest.mark.parametrize("edges", [[], [1.0], [1.0, 1.0], [1.0, np.nan]])
     def test_invalid_edges_rejected(self, edges):

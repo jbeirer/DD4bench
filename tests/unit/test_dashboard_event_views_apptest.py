@@ -13,7 +13,7 @@ from streamlit.testing.v1 import AppTest  # noqa: E402
 _DASHBOARD_DIR = Path(__file__).resolve().parents[2] / "dashboard"
 
 
-def _app(dashboard_dir, view, current_labels, selected_labels):
+def _app(dashboard_dir, view, current_labels, selected_labels, n_events=200):
     import sys as _sys
     if dashboard_dir not in _sys.path:
         _sys.path.insert(0, dashboard_dir)
@@ -25,10 +25,8 @@ def _app(dashboard_dir, view, current_labels, selected_labels):
 
     from tabs import event_memory, event_timing
 
-    # Enough events for the automatic bin count to land above the field's
-    # minimum, so the seeding it does is observable rather than clamped away.
     rng = np.random.default_rng(0)
-    n = 200
+    n = n_events
     frame = pd.DataFrame({
         "event_number": np.arange(n),
         "event_time_s": rng.normal(1.0, 0.1, n),
@@ -46,18 +44,22 @@ def _app(dashboard_dir, view, current_labels, selected_labels):
             "n_bins": kwargs.get("bins", 20),
             "bin_width": 0.25,
             "bin_range": (1.0, 6.0),
+            "bin_edges": [1.0, 6.0],
             "uniform": True,
             "unit": "s" if view == "timing" else "MB",
         })
         return fig
 
-    real_auto_bin_count = tab.auto_bin_count
+    real_bin_options = tab._cached_event_bin_options
 
-    def _record_auto_bins(*args, **kwargs):
-        st.session_state["_auto_bins"] = real_auto_bin_count(*args, **kwargs)
-        return st.session_state["_auto_bins"]
+    def _record_bin_options(*args, **kwargs):
+        options = real_bin_options(*args, **kwargs)
+        st.session_state["_auto_bins"] = options.automatic
+        st.session_state["_bin_min"] = options.minimum
+        st.session_state["_bin_max"] = options.maximum
+        return options
 
-    tab.auto_bin_count = _record_auto_bins
+    tab._cached_event_bin_options = _record_bin_options
     if view == "timing":
         tab.plot_event_timing = _stub
     else:
@@ -65,12 +67,13 @@ def _app(dashboard_dir, view, current_labels, selected_labels):
     tab.render(data, None, selected_labels)
 
 
-def _run(view, current_labels, selected_labels=None):
+def _run(view, current_labels, selected_labels=None, n_events=200):
     return AppTest.from_function(
         _app,
         args=(
             str(_DASHBOARD_DIR), view,
             current_labels, selected_labels or current_labels,
+            n_events,
         ),
         default_timeout=30,
     ).run()
@@ -141,8 +144,8 @@ _VIEWS = [("timing", "evt_timing"), ("memory", "evt_memory")]
 
 
 @pytest.mark.parametrize(("view", "prefix"), _VIEWS)
-def test_histogram_defaults_preserve_the_previous_plot(view, prefix):
-    """Out of the box the tabs must ask for what they always drew."""
+def test_histogram_defaults_use_the_dashboard_style(view, prefix):
+    """The dashboard deliberately uses a low-opacity, outline-forward style."""
     at = _run(view, ["cfg_a", "cfg_b"])
 
     assert not at.exception, at.exception
@@ -163,6 +166,17 @@ def test_bin_field_defaults_to_the_automatic_count(view, prefix):
     expected = at.session_state["_auto_bins"]
     assert at.number_input(key=f"{prefix}_hist_bins").value == expected
     assert at.number_input(key=f"{prefix}_hist_bins").disabled is False
+    assert at.session_state["_captured_plot_kwargs"]["bins"] == expected
+
+
+@pytest.mark.parametrize(("view", "prefix"), _VIEWS)
+def test_small_sample_uses_numpy_count_without_a_ui_floor(view, prefix):
+    at = _run(view, ["cfg_a", "cfg_b"], n_events=3)
+
+    assert not at.exception, at.exception
+    expected = at.session_state["_auto_bins"]
+    assert expected < 5
+    assert at.number_input(key=f"{prefix}_hist_bins").value == expected
     assert at.session_state["_captured_plot_kwargs"]["bins"] == expected
 
 
@@ -210,25 +224,20 @@ def test_manual_bin_count_survives_config_selection_changes(view, prefix):
 @pytest.mark.parametrize(("view", "prefix"), _VIEWS)
 def test_out_of_range_bin_count_is_clamped_and_warned(view, prefix):
     """The field, warning and plot must all agree on the applied boundary."""
-    import sys as _sys
-    if str(_DASHBOARD_DIR) not in _sys.path:
-        _sys.path.insert(0, str(_DASHBOARD_DIR))
-    import ui_utils
-
     at = _run(view, ["cfg_a", "cfg_b"])
     assert not at.exception, at.exception
     assert not at.warning
 
-    at.number_input(key=f"{prefix}_hist_bins").set_value(1).run()
+    at.number_input(key=f"{prefix}_hist_bins").set_value(0).run()
     assert not at.exception, at.exception
-    assert at.number_input(key=f"{prefix}_hist_bins").value == ui_utils._HIST_MIN_BIN_COUNT
-    assert at.session_state["_captured_plot_kwargs"]["bins"] == ui_utils._HIST_MIN_BIN_COUNT
+    assert at.number_input(key=f"{prefix}_hist_bins").value == at.session_state["_bin_min"]
+    assert at.session_state["_captured_plot_kwargs"]["bins"] == at.session_state["_bin_min"]
     assert any("below the minimum" in warning.value for warning in at.warning)
 
     at.number_input(key=f"{prefix}_hist_bins").set_value(9999).run()
     assert not at.exception, at.exception
-    assert at.number_input(key=f"{prefix}_hist_bins").value == ui_utils._HIST_MAX_BIN_COUNT
-    assert at.session_state["_captured_plot_kwargs"]["bins"] == ui_utils._HIST_MAX_BIN_COUNT
+    assert at.number_input(key=f"{prefix}_hist_bins").value == at.session_state["_bin_max"]
+    assert at.session_state["_captured_plot_kwargs"]["bins"] == at.session_state["_bin_max"]
     assert any("above the maximum" in warning.value for warning in at.warning)
 
     at.number_input(key=f"{prefix}_hist_bins").set_value(50).run()
@@ -237,16 +246,36 @@ def test_out_of_range_bin_count_is_clamped_and_warned(view, prefix):
     assert not at.warning
 
 
-def test_max_bin_count_has_a_single_source_of_truth():
-    """The interactive ceiling must be the plotting layer's real MAX_BINS limit,
-    not some smaller number invented on top of it for no independent reason."""
-    import sys as _sys
-    if str(_DASHBOARD_DIR) not in _sys.path:
-        _sys.path.insert(0, str(_DASHBOARD_DIR))
-    import ui_utils
-    from k4bench.analysis.plots._binning import MAX_BINS
+@pytest.mark.parametrize(("view", "prefix"), _VIEWS)
+def test_max_bin_count_is_derived_from_current_sample(view, prefix):
+    at = _run(view, ["cfg_a", "cfg_b"], n_events=8)
 
-    assert ui_utils._HIST_MAX_BIN_COUNT == MAX_BINS
+    assert not at.exception, at.exception
+    # Event zero is excluded, leaving seven pooled events per displayed config.
+    assert at.session_state["_bin_max"] == 14
+    assert "1-14 for the current data" in at.number_input(
+        key=f"{prefix}_hist_bins"
+    ).help
+
+
+@pytest.mark.parametrize(("view", "prefix"), _VIEWS)
+def test_custom_count_is_revalidated_when_dynamic_range_shrinks(view, prefix):
+    labels = [f"cfg_{i:02d}" for i in range(6)]
+    at = _run(view, labels)
+    all_extras = list(at.multiselect(key=f"{prefix}_configs").options)
+    at.multiselect(key=f"{prefix}_configs").set_value(all_extras).run()
+    assert at.session_state["_bin_max"] == 500
+
+    at.number_input(key=f"{prefix}_hist_bins").set_value(450).run()
+    assert not at.exception, at.exception
+    assert not at.warning
+
+    at.multiselect(key=f"{prefix}_configs").set_value(all_extras[:1]).run()
+    expected_max = at.session_state["_bin_max"]
+    assert expected_max < 450
+    assert at.number_input(key=f"{prefix}_hist_bins").value == expected_max
+    assert at.session_state["_captured_plot_kwargs"]["bins"] == expected_max
+    assert any("current data" in warning.value for warning in at.warning)
 
 
 @pytest.mark.parametrize(("view", "prefix"), _VIEWS)
