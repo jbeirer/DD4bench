@@ -12,6 +12,7 @@ import streamlit as st
 
 from k4bench.analysis.plots._theme import _TEMPLATE  # noqa: F401 (kept for consistency)
 from ui_chrome import _drop_stale_selection
+from ui_utils import _display_options, _DisplayControl
 
 # ── Metrics ───────────────────────────────────────────────────────────────────
 _METRICS = [
@@ -26,6 +27,36 @@ _LOWER_IS_BETTER = {"wall_time_s", "peak_rss_mb", "user_cpu_s"}
 # We sample at 0.15 / 0.5 / 0.85 (not the extreme ends) so colours stay pastel
 # and dark text is always legible — no contrast flip needed.
 _CMAP_NAMES = ["PiYG", "PRGn", "BrBG", "RdBu", "RdYlGn", "Spectral"]
+
+#: The diverging map the heat map opens with — green/purple, colour-blind safe.
+_CMAP_DEFAULT = "PRGn"
+
+
+def _cmap_control(key: str) -> _DisplayControl:
+    """Declare this tab's "Colour palette" selectbox.
+
+    Deliberately not :func:`~ui_utils._palette_control`: that one offers
+    *qualitative* palettes for telling series apart, while every cell here is a
+    signed distance from the baseline and needs a **diverging** map with a
+    neutral midpoint. The two option lists have nothing in common, so they stay
+    separate declarations sharing only the popover they sit in.
+    """
+
+    def render() -> str:
+        return st.selectbox(
+            "Colour palette",
+            options=_CMAP_NAMES,
+            index=_CMAP_NAMES.index(_CMAP_DEFAULT),
+            key=key,
+            help=(
+                "Diverging colour map for the heat map. 100 % (the baseline) is "
+                "always the neutral midpoint; better and worse diverge to either end."
+            ),
+        )
+
+    return _DisplayControl(
+        name="palette", key=key, default=_CMAP_DEFAULT, render=render,
+    )
 
 
 def _palette(cmap_name: str) -> tuple[str, str, str]:
@@ -141,7 +172,9 @@ def render(results_df: pd.DataFrame | None, selected_labels: list[str]) -> None:
         "100 % is always the neutral midpoint."
     )
 
-    ctrl_bl, ctrl_sort, ctrl_pal, _ = st.columns([2, 2, 2, 3])
+    ctrl_bl, ctrl_sort, ctrl_display = st.columns(
+        [2, 2, 5], vertical_alignment="bottom",
+    )
     with ctrl_bl:
         _drop_stale_selection("impact_baseline", snap_labels)
         baseline_label = st.selectbox(
@@ -162,12 +195,13 @@ def render(results_df: pd.DataFrame | None, selected_labels: list[str]) -> None:
         sort_by = st.selectbox(
             "Sort rows by", options=metric_labels, index=wall_default, key="impact_sort"
         )
-    with ctrl_pal:
-        palette_name = st.selectbox(
-            "Colour palette", options=_CMAP_NAMES, index=_CMAP_NAMES.index("PRGn"), key="impact_palette"
-        )
+    display = _display_options(
+        _cmap_control("impact_palette"),
+        key_prefix="impact_display",
+        slot=ctrl_display.empty(),
+    )
 
-    bad_hex, mid_hex, good_hex = _palette(palette_name)
+    bad_hex, mid_hex, good_hex = _palette(display["palette"])
 
     # ── Build percentage DataFrame ────────────────────────────────────────────
     pct_df = pd.DataFrame(index=snap_labels, columns=metric_labels, dtype=float)

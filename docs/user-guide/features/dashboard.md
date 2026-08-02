@@ -81,12 +81,34 @@ names the run directory instead.
 | **Machine info** | the host the benchmark ran on (CPU, RAM, governor, throttling) | `machine_info.json` |
 | **Logs** | the raw `ddsim` log for the selected run | `*.log` |
 
+### Display options
+
+Anything that changes *how* a figure is drawn — colour palette, opacity, style
+cycling, smoothing, histogram bins, error bars, mean lines, how many detectors
+a ranking keeps — lives in a **👁️ Display options** popover at the right-hand
+end of the view's control row. It looks and behaves the same in every view that
+has one (Config Impact, Event Timing, Event Memory, Region Timing's four views
+and Run Trends), and each popover ends with **Reset to defaults**, which
+restores every control inside it in one click.
+
+What stays on the page is everything that changes *what* you are looking at:
+baseline, configuration, attribution, metric, view, report night, the
+reliability toggle and the regression flag pills. Overview's Log/Linear/Relative
+% scale stays out on the page for the same reason — it changes what the numbers
+mean, not how they are painted.
+
+Palette defaults follow the data: a figure picks the smallest Matplotlib tab-N
+palette that colours every series without repeating a colour, and re-picks it
+when the number of series crosses a boundary. An explicit choice sticks until
+that happens.
+
 ### Region timing tab
 
 The richest tab. It mirrors the [region plugin's](timing-plugins.md#per-region-timing)
 two attribution views (`at_location` and `by_birth`) and adds:
 
-- **Current run** — per-detector time for the selected run.
+- **Current run** — per-detector time for the selected run; **Top N detectors**
+  (in Display options) sets how many of the most expensive regions it ranks.
 - **Attribution analysis** — the gap between the two views (intrinsic vs
   imported cost).
 - **Step analysis** — timer-interval counts per detector.
@@ -123,7 +145,9 @@ means exactly what it means there. Flags appear on the metrics the engine judges
 verdict since throughput is exactly `n_events / wall_time_s` (the same
 regression, inverted); CPU efficiency and context switches carry none. Runs that
 failed the host-reliability check are excluded by default with the same
-warning/toggle as every other historical view.
+warning/toggle as every other historical view. Palette, style cycling, opacity
+and line smoothing sit in this tab's [Display options](#display-options)
+popover, alongside the pills on the same row.
 
 !!! tip "Warmup is excluded"
     Trend and summary statistics drop event 0 (warmup), matching the
@@ -378,7 +402,7 @@ tab — whose verdicts carry the raw nightly value of every run and per-event
 metric for all detectors — so the whole comparison loads from one small JSON
 per night, with no per-detector run downloads.
 
-Four views, dispatched by the same View radio as the other multi-view tabs
+Four views, dispatched by the same View switcher as the other multi-view tabs
 (one colour per detector, consistent across the figures). The selected view
 rides in the URL as `?view=`, so a copied link reopens the view it came from
 along with the parameters only that view reads:
@@ -390,9 +414,11 @@ along with the parameters only that view reads:
   so cross-detector gaps can be tracked over time. Nights the
   regression detector **confirmed** a step are ringed in red on the lines, and
   nights it flagged but hasn't confirmed are ringed as ⚠️ watch points — both
-  on by default, each behind its own toggle. A *relative* toggle
-  rescales each line to its first night = 100 %, making drift comparable
-  across detectors of very different absolute cost. Any scoped detector the
+  on by default, each behind its own toggle. The **Scale** switcher's
+  *Relative %* option rescales each line to its first night = 100 %, making
+  drift comparable across detectors of very different absolute cost; it sits on
+  the page rather than in Display options because it changes what the numbers
+  mean. Any scoped detector the
   chart has **no line for** is named with the reason — every run excluded as
   unreliable · no value for the selected metrics · ran but produced no
   comparable metrics (a hard-failed config) · no run in the window, with the
@@ -479,9 +505,9 @@ the marker and says why rather than moving it.
 The landscape is the one chart that is a *run*, not a tag: its point comes from
 a single run of the detector's newest tag, so the two coordinates are always the
 same measurement even when a rerun re-measured only one of them. Value
-axes are logarithmic by default (a toggle switches to linear) — the detectors
-span more than a decade in both time and memory, so a linear scale squashes
-the small ones into an unreadable cluster.
+axes are logarithmic by default (the **Scale** switcher offers Linear as well)
+— the detectors span more than a decade in both time and memory, so a linear
+scale squashes the small ones into an unreadable cluster.
 
 Detectors are only compared like-for-like: anything not benchmarked with the
 selected sample/platform is listed as excluded instead of silently plotted

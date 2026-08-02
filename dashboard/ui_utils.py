@@ -6,6 +6,9 @@ imports from one place rather than duplicating the same definitions.
 from __future__ import annotations
 
 import math
+from contextlib import nullcontext
+from dataclasses import dataclass
+from typing import Any, Callable
 
 import numpy as np
 import pandas as pd
@@ -235,16 +238,11 @@ def _config_selector_control(
     return [baseline_label, *selected_extra]
 
 
-# ── Histogram display controls ─────────────────────────────────────────────────
-# The Event Timing and Event Memory tabs share these controls verbatim, so the
+# ── Histogram binning ──────────────────────────────────────────────────────────
+# The Event Timing and Event Memory tabs share these helpers verbatim, so the
 # two views cannot drift apart: they differ only in *key_prefix* (widget state
 # is per-tab, since a bin count for timing means nothing for memory) and the
-# metric column.  Any future histogram view should call these helpers rather
-# than growing its own controls.
-#
-# The primary page keeps only Baseline and Configurations visible. These
-# specialist histogram controls are composed into one compact Display options
-# popover by :func:`_histogram_display_controls` below.
+# metric column.
 
 #: Default bar opacity — low enough that overlapping fills stay out of the way
 #: of the (always fully opaque) outlines, without the user having to reach for
@@ -295,8 +293,237 @@ def _validate_bin_count(
     st.session_state[custom_key] = bins != int(st.session_state[auto_key])
 
 
-def _bin_count_control(key_prefix: str, options: BinCountOptions) -> int:
-    """Render the bin-count field, seeded automatically until the user edits it.
+# ── Display options ────────────────────────────────────────────────────────────
+# Every view whose figures can be restyled collects those knobs into one
+# "Display options" popover. The page flow then carries only the controls that
+# change *what* you are looking at — baseline, configuration, attribution,
+# metric, view, report night — and the controls that change *how it is drawn*
+# read identically everywhere instead of teaching a new layout per tab.
+#
+# A control is declared once, as a :class:`_DisplayControl` that carries its own
+# default, and :func:`_display_options` derives the "Reset to defaults" button
+# from those declarations. A second, hand-maintained copy of the defaults would
+# be free to drift from what the widgets actually do — and would have to be
+# written out again for every view that adopts the popover.
+
+
+@dataclass(frozen=True)
+class _DisplayControl:
+    """One appearance control: where its state lives, and how to draw it.
+
+    Attributes
+    ----------
+    name : str
+        Key under which :func:`_display_options` returns this control's value,
+        so callers read results by name rather than by position and reordering
+        a declaration list cannot silently rebind them.
+    key : str
+        The widget's ``session_state`` key.
+    default : Any
+        The value "Reset to defaults" writes back under *key*.
+    render : callable
+        Draws the widget inside the popover and returns its value. Anything the
+        widget needs done to ``session_state`` first — a
+        :func:`_reset_widget_on_scope` call, seeding an automatic value —
+        belongs in here rather than in the factory, so constructing a control
+        stays free of side effects and the order a caller declares them in
+        cannot matter.
+    on_reset : callable or None
+        Extra bookkeeping the reset click performs, for a control that keeps
+        companion state beside its widget key.
+    """
+
+    name: str
+    key: str
+    default: Any
+    render: Callable[[], Any]
+    on_reset: Callable[[], None] | None = None
+
+
+def _reset_display_controls(controls: tuple[_DisplayControl, ...]) -> None:
+    """Restore every control in *controls* to the default it declared."""
+    for control in controls:
+        st.session_state[control.key] = control.default
+        if control.on_reset is not None:
+            control.on_reset()
+
+
+def _display_options(
+    *controls: _DisplayControl,
+    key_prefix: str,
+    slot=None,
+) -> dict[str, Any]:
+    """Render the shared "Display options" popover; return ``{name: value}``.
+
+    The controls are stacked vertically in the order they are declared, so their
+    labels do not collapse at narrower desktop widths, with the reset button
+    last.
+
+    *slot* is where the trigger goes: a placeholder (:func:`streamlit.empty`) or
+    a column reserved on the view's control row. Several views can only size
+    their palette once the figure's series are known, which is well after that
+    row has been laid out — reserving the slot first keeps the trigger on the
+    row regardless. The trigger is wrapped in a right-aligned horizontal
+    container so it sits at the end of the row in every view. Without a *slot*
+    it renders wherever the cursor is.
+    """
+    placement = (
+        slot.container(horizontal=True, horizontal_alignment="right")
+        if slot is not None
+        else nullcontext()
+    )
+    with placement, st.popover("Display options", icon="👁️", width="content"):
+        values = {control.name: control.render() for control in controls}
+        st.button(
+            "Reset to defaults",
+            key=f"{key_prefix}_reset",
+            width="stretch",
+            on_click=_reset_display_controls,
+            args=(controls,),
+        )
+    return values
+
+
+def _palette_control(key: str, n_items: int | None = None) -> _DisplayControl:
+    """Declare the qualitative "Colour palette" selectbox.
+
+    *n_items* is how many series the figure will colour: the default is the
+    smallest Matplotlib tab-N that covers them without cycling
+    (:func:`_auto_palette_index`), and that automatic choice is re-applied
+    whenever the series count crosses a palette boundary.
+
+    Pass ``None`` when the view has no data to size the palette from — an empty
+    configuration filter, a run missing the requested attribution. The widget is
+    still registered, so a stored selection survives the empty render rather
+    than being garbage-collected as stale, but **no scope is recorded**: an
+    empty render would record a palette size of 0, which the next render with
+    data reads as a size change and answers by discarding the palette the user
+    picked.
+    """
+    index = 0 if n_items is None else _auto_palette_index(n_items)
+
+    def render() -> str:
+        if n_items is not None:
+            _reset_widget_on_scope(key, index, reset_unscoped=True)
+        return st.selectbox(
+            "Colour palette", options=_PALETTE_NAMES, index=index, key=key,
+        )
+
+    return _DisplayControl(
+        name="palette", key=key, default=_PALETTE_NAMES[index], render=render,
+    )
+
+
+#: Style-cycling modes, ordered by how much visual separation each adds.
+_STYLE_CYCLING_OPTIONS = [
+    "Colour only", "Colour + Dash", "Colour + Marker", "Colour + Dash + Marker",
+]
+
+_STYLE_CYCLING_HELP = (
+    "When the number of series exceeds the palette size, additional visual "
+    "cues are layered on top of colour — dash pattern and/or marker shape — so "
+    "every line stays distinguishable even with 20+ of them."
+)
+
+
+def _style_cycling_control(key: str) -> _DisplayControl:
+    """Declare the "Style cycling" selectbox for multi-line trend figures."""
+
+    def render() -> str:
+        return st.selectbox(
+            "Style cycling",
+            options=_STYLE_CYCLING_OPTIONS,
+            index=0,
+            key=key,
+            help=_STYLE_CYCLING_HELP,
+        )
+
+    return _DisplayControl(
+        name="style", key=key, default=_STYLE_CYCLING_OPTIONS[0], render=render,
+    )
+
+
+def _style_cycling_flags(style_cycling: str) -> tuple[bool, bool]:
+    """Split a "Style cycling" choice into ``(use_dash, use_marker)``."""
+    return (
+        style_cycling in ("Colour + Dash", "Colour + Dash + Marker"),
+        style_cycling in ("Colour + Marker", "Colour + Dash + Marker"),
+    )
+
+
+def _opacity_control(
+    key: str,
+    *,
+    label: str = "Opacity",
+    default: float = 0.85,
+    minimum: float = 0.1,
+    help: str | None = None,
+) -> _DisplayControl:
+    """Declare an opacity slider.
+
+    Bounds and default are per-view rather than shared: a histogram's fills
+    start far more transparent than a trend line, and a trend line has a floor
+    below which it stops being traceable at all.
+    """
+
+    def render() -> float:
+        return st.slider(
+            label,
+            min_value=minimum,
+            max_value=1.0,
+            value=default,
+            step=0.05,
+            key=key,
+            help=help,
+        )
+
+    return _DisplayControl(name="alpha", key=key, default=default, render=render)
+
+
+def _smooth_lines_control(key: str) -> _DisplayControl:
+    """Declare the "Smooth lines" toggle (spline instead of straight segments)."""
+
+    def render() -> bool:
+        return st.toggle(
+            "Smooth lines",
+            value=False,
+            key=key,
+            help=(
+                "Draw each series as a spline through its points. Purely "
+                "cosmetic — the measured points themselves do not move."
+            ),
+        )
+
+    return _DisplayControl(name="smooth", key=key, default=False, render=render)
+
+
+#: How many detector regions the current-run region timing chart ranks.
+_TOP_N_DEFAULT = 8
+
+
+def _top_n_control(key: str) -> _DisplayControl:
+    """Declare the "Top N detectors" slider — a plot-density knob like *bins*."""
+
+    def render() -> int:
+        return st.slider(
+            "Top N detectors",
+            min_value=3,
+            max_value=15,
+            value=_TOP_N_DEFAULT,
+            key=key,
+            help=(
+                "How many of the most expensive detector regions the chart "
+                "ranks; the remainder are left out of the figure."
+            ),
+        )
+
+    return _DisplayControl(
+        name="top_n", key=key, default=_TOP_N_DEFAULT, render=render,
+    )
+
+
+def _bin_count_control(key: str, options: BinCountOptions) -> _DisplayControl:
+    """Declare the bin-count field, seeded automatically until the user edits it.
 
     *options.automatic* is the count the plot would have picked on its own.
     The allowed maximum is derived from the current pooled sample rather than
@@ -306,141 +533,127 @@ def _bin_count_control(key_prefix: str, options: BinCountOptions) -> int:
     whenever the displayed configurations change. Once edited, the chosen count
     is preserved across those changes. Entering the current automatic count
     returns the field to auto-following behaviour, without adding a separate
-    mode selector to the interface.
+    mode selector to the interface. That behaviour is tracked in companion
+    ``session_state`` entries beside the widget key, which is why this is the
+    one control with an *on_reset* hook: writing the default count back without
+    also clearing the "custom" flag would leave the field pinned to a count the
+    user is no longer choosing.
     """
     bins_default = options.automatic
-    key = f"{key_prefix}_hist_bins"
     auto_key = f"_{key}_auto"
     custom_key = f"_{key}_custom"
     warning_key = f"_{key}_warning"
-    is_custom = bool(st.session_state.get(custom_key, False))
-    st.session_state[auto_key] = bins_default
-    if key not in st.session_state or not is_custom:
-        st.session_state[key] = bins_default
+
+    def render() -> int:
+        is_custom = bool(st.session_state.get(custom_key, False))
+        st.session_state[auto_key] = bins_default
+        if key not in st.session_state or not is_custom:
+            st.session_state[key] = bins_default
+            st.session_state.pop(warning_key, None)
+        elif not options.minimum <= int(st.session_state[key]) <= options.maximum:
+            _validate_bin_count(
+                key, auto_key, custom_key, warning_key,
+                options.minimum, options.maximum,
+            )
+
+        bins = st.number_input(
+            "Bins",
+            step=1,
+            key=key,
+            on_change=_validate_bin_count,
+            args=(
+                key, auto_key, custom_key, warning_key,
+                options.minimum, options.maximum,
+            ),
+            help=(
+                f"Number of histogram bins ({options.minimum}-{options.maximum} "
+                "for the current data), "
+                "shared by every configuration in the plot and by the ratio panel "
+                "below it. Starts at the automatically determined count for the "
+                f"current selection ({bins_default}); an edited value is preserved."
+            ),
+        )
+        if warning := st.session_state.get(warning_key):
+            st.warning(warning, icon="⚠️")
+        return int(bins)
+
+    def on_reset() -> None:
+        st.session_state[auto_key] = bins_default
+        st.session_state[custom_key] = False
         st.session_state.pop(warning_key, None)
-    elif not options.minimum <= int(st.session_state[key]) <= options.maximum:
-        _validate_bin_count(
-            key, auto_key, custom_key, warning_key, options.minimum, options.maximum,
+
+    return _DisplayControl(
+        name="bins", key=key, default=bins_default,
+        render=render, on_reset=on_reset,
+    )
+
+
+def _error_bars_control(key: str) -> _DisplayControl:
+    """Declare the "Histogram error bars" toggle."""
+
+    def render() -> bool:
+        return st.toggle(
+            "Histogram error bars",
+            value=False,
+            key=key,
+            help="Poisson √N error bars on the bin contents.",
         )
 
-    bins = st.number_input(
-        "Bins",
-        step=1,
-        key=key,
-        on_change=_validate_bin_count,
-        args=(
-            key, auto_key, custom_key, warning_key,
-            options.minimum, options.maximum,
-        ),
-        help=(
-            f"Number of histogram bins ({options.minimum}-{options.maximum} for the "
-            "current data), "
-            "shared by every configuration in the plot and by the ratio panel "
-            "below it. Starts at the automatically determined count for the "
-            f"current selection ({bins_default}); an edited value is preserved."
-        ),
+    return _DisplayControl(name="errors", key=key, default=False, render=render)
+
+
+def _mean_lines_control(key: str) -> _DisplayControl:
+    """Declare the "Histogram mean lines" toggle."""
+
+    def render() -> bool:
+        return st.toggle(
+            "Histogram mean lines",
+            value=True,
+            key=key,
+            help="Dashed vertical line at each configuration's mean.",
+        )
+
+    return _DisplayControl(
+        name="mean_lines", key=key, default=True, render=render,
     )
-    if warning := st.session_state.get(warning_key):
-        st.warning(warning, icon="⚠️")
-    return int(bins)
-
-
-def _bar_opacity_control(key_prefix: str) -> float:
-    """Render the "Bar opacity" slider and return its value."""
-    return st.slider(
-        "Bar opacity",
-        min_value=0.0,
-        max_value=1.0,
-        value=_HIST_DEFAULT_ALPHA,
-        step=0.05,
-        key=f"{key_prefix}_hist_alpha",
-        help=(
-            "Opacity of the filled bars. The step outline over each histogram "
-            "stays fully opaque, so turning this down un-clutters overlapping "
-            "configurations without hiding any of them — at 0 only the outlines "
-            "remain."
-        ),
-    )
-
-
-def _error_bars_toggle(key_prefix: str) -> bool:
-    """Render the "Histogram error bars" toggle and return its value."""
-    return st.toggle(
-        "Histogram error bars",
-        value=False,
-        key=f"{key_prefix}_hist_errors",
-        help="Poisson √N error bars on the bin contents.",
-    )
-
-
-def _mean_lines_toggle(key_prefix: str) -> bool:
-    """Render the "Histogram mean lines" toggle and return its value."""
-    return st.toggle(
-        "Histogram mean lines",
-        value=True,
-        key=f"{key_prefix}_hist_mean_lines",
-        help="Dashed vertical line at each configuration's mean.",
-    )
-
-
-def _reset_histogram_display_state(
-    key_prefix: str,
-    bins_default: int,
-    palette_name: str,
-) -> None:
-    """Restore every event-histogram display control to its current default."""
-    bins_key = f"{key_prefix}_hist_bins"
-    st.session_state[bins_key] = bins_default
-    st.session_state[f"_{bins_key}_auto"] = bins_default
-    st.session_state[f"_{bins_key}_custom"] = False
-    st.session_state.pop(f"_{bins_key}_warning", None)
-    st.session_state[f"{key_prefix}_hist_alpha"] = _HIST_DEFAULT_ALPHA
-    st.session_state[f"{key_prefix}_hist_errors"] = False
-    st.session_state[f"{key_prefix}_hist_mean_lines"] = True
-    st.session_state[f"{key_prefix}_palette"] = palette_name
 
 
 def _histogram_display_controls(
     key_prefix: str,
     bin_options: BinCountOptions,
     n_configs: int,
+    slot=None,
 ) -> tuple[int, str, float, bool, bool]:
-    """Render compact advanced histogram options and return their values.
+    """Render the event-histogram Display options and return their values.
 
-    The popover keeps the two task-level choices (baseline and displayed
-    configurations) in the page flow while moving appearance and statistical
-    details out of the way. Its controls are stacked vertically so labels do
-    not collapse at narrower desktop widths.
+    Shared by the Event Timing and Event Memory current-run views so the two
+    cannot drift apart; they differ only in *key_prefix*, since a bin count for
+    timing means nothing for memory.
     """
-    palette_default = _auto_palette_index(n_configs)
-    palette_key = f"{key_prefix}_palette"
-    _reset_widget_on_scope(
-        palette_key, palette_default, reset_unscoped=True,
+    values = _display_options(
+        _bin_count_control(f"{key_prefix}_hist_bins", bin_options),
+        _opacity_control(
+            f"{key_prefix}_hist_alpha",
+            label="Bar opacity",
+            default=_HIST_DEFAULT_ALPHA,
+            minimum=0.0,
+            help=(
+                "Opacity of the filled bars. The step outline over each histogram "
+                "stays fully opaque, so turning this down un-clutters overlapping "
+                "configurations without hiding any of them — at 0 only the outlines "
+                "remain."
+            ),
+        ),
+        _error_bars_control(f"{key_prefix}_hist_errors"),
+        _mean_lines_control(f"{key_prefix}_hist_mean_lines"),
+        _palette_control(f"{key_prefix}_palette", n_configs),
+        key_prefix=f"{key_prefix}_hist",
+        slot=slot,
     )
-    palette_default_name = _PALETTE_NAMES[palette_default]
-    bins_default = bin_options.automatic
-
-    with st.popover("Display options", icon="👁️", width="content"):
-        bins = _bin_count_control(key_prefix, bin_options)
-        alpha = _bar_opacity_control(key_prefix)
-        show_errors = _error_bars_toggle(key_prefix)
-        show_mean_lines = _mean_lines_toggle(key_prefix)
-
-        palette_name = st.selectbox(
-            "Colour palette",
-            options=_PALETTE_NAMES,
-            index=palette_default,
-            key=palette_key,
-        )
-        st.button(
-            "Reset to defaults",
-            key=f"{key_prefix}_hist_reset",
-            width="stretch",
-            on_click=_reset_histogram_display_state,
-            args=(key_prefix, bins_default, palette_default_name),
-        )
-
-    return bins, palette_name, alpha, show_errors, show_mean_lines
+    return (
+        values["bins"], values["palette"], values["alpha"],
+        values["errors"], values["mean_lines"],
+    )
 
 
 # ── Metric metadata ────────────────────────────────────────────────────────────
@@ -576,6 +789,7 @@ def _render_historical_trends(
     unit: str,
     key_prefix: str,
     no_data_msg: str = "",
+    display_options_slot=None,
 ) -> None:
     """Render a multi-panel (Median | Mean | Std) historical trend figure.
 
@@ -601,45 +815,28 @@ def _render_historical_trends(
         Prefix for all Streamlit widget keys (must be unique per tab).
     no_data_msg : str
         Warning shown when the filtered DataFrame is empty after deduplication.
+    display_options_slot :
+        Placeholder for the Display options trigger, reserved by the tab on the
+        row that carries its View selector, so the popover sits in the same
+        place in this view as in the tab's current-run view.
     """
-    # ── Style controls ────────────────────────────────────────────────────────
-    ctrl_l, ctrl_m, ctrl_r = st.columns(3, vertical_alignment="bottom")
-    with ctrl_l:
-        palette_default = _auto_palette_index(len(filtered_labels))
-        palette_key = f"{key_prefix}_palette"
-        _reset_widget_on_scope(
-            palette_key, palette_default, reset_unscoped=True,
-        )
-        palette_name = st.selectbox(
-            "Colour palette",
-            options=_PALETTE_NAMES,
-            index=palette_default,
-            key=palette_key,
-        )
-    with ctrl_m:
-        style_cycling = st.selectbox(
-            "Style cycling",
-            options=["Colour only", "Colour + Dash", "Colour + Marker", "Colour + Dash + Marker"],
-            index=0,
-            key=f"{key_prefix}_style",
-            help=(
-                "When the number of configurations exceeds the palette size, "
-                "additional visual cues are layered on top of colour — "
-                "dash pattern and/or marker shape — so every line stays "
-                "distinguishable even with 20+ configs."
-            ),
-        )
-    with ctrl_r:
-        alpha = st.slider(
-            "Opacity",
-            min_value=0.1, max_value=1.0,
-            value=0.85, step=0.05,
-            key=f"{key_prefix}_alpha",
-        )
-
-    palette    = _PALETTES[palette_name]
-    use_dash   = style_cycling in ("Colour + Dash",   "Colour + Dash + Marker")
-    use_marker = style_cycling in ("Colour + Marker", "Colour + Dash + Marker")
+    # ── Display options ───────────────────────────────────────────────────────
+    # The opacity slider is keyed ``…_line_alpha`` rather than ``…_alpha``: the
+    # tab passes *key_prefix* ``evt_timing_hist``, and the current-run view's
+    # "Bar opacity" slider is ``evt_timing`` + ``_hist_alpha`` — the same string.
+    # Sharing one slot would carry each view's value into the other on a view
+    # switch, where the two sliders mean different things and start at different
+    # defaults.
+    values = _display_options(
+        _palette_control(f"{key_prefix}_palette", len(filtered_labels)),
+        _style_cycling_control(f"{key_prefix}_style"),
+        _opacity_control(f"{key_prefix}_line_alpha"),
+        key_prefix=f"{key_prefix}_display",
+        slot=display_options_slot,
+    )
+    palette = _PALETTES[values["palette"]]
+    alpha = values["alpha"]
+    use_dash, use_marker = _style_cycling_flags(values["style"])
 
     # ── Data prep ─────────────────────────────────────────────────────────────
     df = trend_df[trend_df["label"].isin(filtered_labels)].copy()

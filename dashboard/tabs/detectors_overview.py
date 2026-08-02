@@ -80,7 +80,7 @@ _METRIC_ORDER: list[str] = [*_TIME_METRICS, *_MEMORY_METRICS]
 #: mid-edit custom range) — keeps the fallback from downloading years of nights.
 _FALLBACK_NIGHTS = 30
 
-#: The tab's views, dispatched by the same radio pattern as Region Timing and
+#: The tab's views, dispatched by the same View switcher as Region Timing and
 #: Machine Info: the two figure views, then a night's verdicts, then that
 #: night's report in the form the e-group received it. Only the first three
 #: read the sidebar's platform/sample scope, so the mail is dispatched ahead of
@@ -90,7 +90,7 @@ _VIEWS = [
     "Nightly Report",
 ]
 
-#: Session key of the view radio, seeded from and written back to ``?view=`` so
+#: Session key of the View switcher, seeded from and written back to ``?view=`` so
 #: a copied URL reopens the view it was copied from — along with the parameters
 #: only that view reads (``?report=``, ``?tmetric=``/``?mmetric=``).
 _VIEW_KEY = "det_ov_view_mode"
@@ -993,7 +993,7 @@ def _render_flag_trend(
     Runs the same filter-before-collapse pipeline as the other historical views,
     on the same widget key: a chart of raw nightly measurements has to honour the
     unreliable-run exclusion, and honouring it in one Overview sub-view but not
-    another would make the tab's answer depend on which radio button is held."""
+    another would make the tab's answer depend on which view is open."""
     choices = _flag_choices(groups)
     if not choices:
         return
@@ -1391,8 +1391,8 @@ def render(
     data_url: str, dashboard_url: str, platform: str, sample: str,
     window: tuple[date, date] | None,
 ) -> None:
-    """The tab's four views (:data:`_VIEWS`), dispatched by a radio like the
-    other multi-view tabs. *platform* and *sample* are the sidebar's
+    """The tab's four views (:data:`_VIEWS`), dispatched by a View switcher like
+    the other multi-view tabs. *platform* and *sample* are the sidebar's
     selections, the same scoping as Run Trends. *window* is the sidebar's
     shared Trend window (``None`` only when the sidebar hasn't resolved one
     yet, e.g. a mid-edit custom range) — in that case
@@ -1606,9 +1606,14 @@ def render(
         # which both Regression Status and Nightly Report speak — would be
         # carried in the URL with no picker on screen to seed from them.
         seed_query_param(_VIEW_KEY, "view", _VIEWS)
-        view = st.radio(
-            "View", _VIEWS, horizontal=True, key=_VIEW_KEY,
-            label_visibility="collapsed",
+        # Seeding through session_state rules out ``default=`` (Streamlit
+        # rejects both in one call), so the opening view is written the same
+        # way — otherwise the bar would render with nothing selected. Same
+        # pattern as the Regressions night picker.
+        if _VIEW_KEY not in st.session_state:
+            st.session_state[_VIEW_KEY] = _VIEWS[0]
+        view = st.segmented_control(
+            "**View**", _VIEWS, required=True, key=_VIEW_KEY,
         ) or _VIEWS[0]
         st.query_params["view"] = view
         if view == "Nightly Report":

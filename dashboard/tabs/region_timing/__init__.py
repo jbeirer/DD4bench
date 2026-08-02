@@ -49,8 +49,15 @@ def render(
     if trends_enabled:
         view_options.append("Historical Trends")
 
+    # ``required=True`` keeps the selected option from being clicked off. The
+    # ``or`` guard is load-bearing here rather than defensive: *view_options* is
+    # dynamic, and a segmented control whose stored value is no longer on offer
+    # returns None — which would match no branch below and render an empty tab.
     view = (
-        st.radio("View", options=view_options, horizontal=True, key="region_view_mode")
+        st.segmented_control(
+            "**View**", options=view_options, default=view_options[0],
+            required=True, key="region_view_mode",
+        ) or view_options[0]
         if len(view_options) > 1
         else view_options[0]
     )

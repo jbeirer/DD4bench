@@ -5,10 +5,11 @@ import streamlit as st
 
 from k4bench.analysis.plots import plot_region_timing
 from ui_utils import (
-    _auto_palette_index,
-    _PALETTE_NAMES,
+    _display_options,
+    _palette_control,
     _PALETTES,
-    _reset_widget_on_scope,
+    _top_n_control,
+    _TOP_N_DEFAULT,
 )
 
 from ._common import _ATTRIBUTION_HELP
@@ -21,7 +22,7 @@ def _render_current_run(region_data: dict, selected_labels: list[str]) -> None:
         st.info("No region timing data available for any of the selected configurations.")
         return
 
-    col_cfg, col_attr = st.columns([2, 2])
+    col_cfg, col_attr, col_display = st.columns([2, 2, 1], vertical_alignment="bottom")
     with col_cfg:
         config = st.selectbox("Configuration", filtered_labels, key="region_config")
     with col_attr:
@@ -33,20 +34,19 @@ def _render_current_run(region_data: dict, selected_labels: list[str]) -> None:
             help=_ATTRIBUTION_HELP,
         )
 
-    col_topn, col_pal = st.columns([2, 2])
-    with col_topn:
-        top_n = st.slider("Top N detectors", min_value=3, max_value=15, value=8, key="region_topn")
-    with col_pal:
-        palette_default = _auto_palette_index(top_n)
-        _reset_widget_on_scope(
-            "region_cur_palette", palette_default, reset_unscoped=True,
-        )
-        palette_name = st.selectbox(
-            "Colour palette",
-            options=_PALETTE_NAMES,
-            index=palette_default,
-            key="region_cur_palette",
-        )
+    # Top N and the palette live in the same popover, and the palette's automatic
+    # size has to be known before either is drawn. Streamlit has already restored
+    # the slider's stored value by this point, so reading it back is the count the
+    # slider is about to show.
+    top_n_stored = int(st.session_state.get("region_topn", _TOP_N_DEFAULT))
+    display = _display_options(
+        _top_n_control("region_topn"),
+        _palette_control("region_cur_palette", top_n_stored),
+        key_prefix="region_cur_display",
+        slot=col_display.empty(),
+    )
+    top_n = display["top_n"]
+    palette_name = display["palette"]
 
     fig = plot_region_timing(
         region_data,

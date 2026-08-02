@@ -31,6 +31,10 @@ _HIST_STATS = [
     ("std_rss_mb",    "Std dev (MB)"),
 ]
 
+#: Sub-views, in dispatch order; the first is the fallback when the tab has no
+#: history to offer and the guard for the optional segmented-control return.
+_VIEWS = ["Current Run", "Historical Trends"]
+
 
 def _render_current_run(
     event_data: dict,
@@ -54,15 +58,11 @@ def _render_current_run(
     bin_options = _cached_event_bin_options(
         event_data, "rss_end_mb", tuple(display_labels)
     )
-    if display_options_slot is None:
-        bins, palette_name, alpha, show_errors, show_mean_lines = (
-            _histogram_display_controls("evt_memory", bin_options, len(display_labels))
+    bins, palette_name, alpha, show_errors, show_mean_lines = (
+        _histogram_display_controls(
+            "evt_memory", bin_options, len(display_labels), display_options_slot,
         )
-    else:
-        with display_options_slot.container(horizontal=True, horizontal_alignment="right"):
-            bins, palette_name, alpha, show_errors, show_mean_lines = (
-                _histogram_display_controls("evt_memory", bin_options, len(display_labels))
-            )
+    )
 
     fig = plot_event_memory(
         event_data,
@@ -100,6 +100,7 @@ def _render_historical(
     trend_event_df: pd.DataFrame,
     selected_labels: list[str],
     reliability: dict[str, bool | None] | None = None,
+    display_options_slot=None,
 ) -> None:
     """Render the historical event memory trends view (3-panel: Median | Mean | Std)."""
     if not _is_valid_df(trend_event_df):
@@ -133,6 +134,7 @@ def _render_historical(
         unit="MB",
         key_prefix="evt_memory_hist",
         no_data_msg="No event memory trend data for the selected configurations.",
+        display_options_slot=display_options_slot,
     )
 
 
@@ -157,14 +159,17 @@ def render(
     )
     with view_col:
         if trends_enabled:
-            view = st.radio(
-                "View",
-                options=["Current Run", "Historical Trends"],
-                horizontal=True,
+            # ``required=True`` keeps the selected option from being clicked
+            # off; the widget still types as optional, hence the fallback.
+            view = st.segmented_control(
+                "**View**",
+                options=_VIEWS,
+                default=_VIEWS[0],
+                required=True,
                 key="evt_memory_view_mode",
-            )
+            ) or _VIEWS[0]
         else:
-            view = "Current Run"
+            view = _VIEWS[0]
     display_options_slot = display_options_col.empty()
 
     if view == "Current Run":
@@ -173,7 +178,9 @@ def render(
         else:
             _render_current_run(event_data, selected_labels, display_options_slot)
         return None
-    _render_historical(trend_event_df, selected_labels, reliability)
+    _render_historical(
+        trend_event_df, selected_labels, reliability, display_options_slot,
+    )
     # The trends span the window's releases, not the sidebar's one — reported
     # so the scope note above stops naming it.
     return TREND_WINDOW_SCOPE
