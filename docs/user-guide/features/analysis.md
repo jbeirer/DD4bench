@@ -90,6 +90,45 @@ plot_region_timing("logs/ALLEGRO_o1_v03").show()
 The shared colour palette is exported as `k4bench.analysis.plots.PALETTE` so
 custom plots can match the built-in ones.
 
+### Histogram display
+
+`plot_event_timing` and `plot_event_memory` draw one histogram per run in a
+single distribution panel. Each run gets a filled bar at opacity `alpha` **and**
+a fully opaque step outline over it. That pairing is what keeps a dozen overlaid
+runs readable: turn `alpha` down and the fills that would occlude one another
+fade while every distribution stays sharply traced, with `alpha=0` leaving
+outlines only. The dashboard exposes this and the other specialist histogram
+controls in **Display options** on the Event Timing and Event Memory tabs.
+
+```python
+plot_event_timing(
+    "logs/ALLEGRO_o1_v03",
+    bins=40,               # shared by every run and by the ratio panel
+    alpha=0.2,             # fade the fills, keep the outlines
+    show_errors=True,      # Poisson √N on the bin contents
+).show()
+```
+
+Every run in a figure is binned on one shared set of edges, which the ratio
+panel reuses, so the overlaid histograms are always directly comparable. Those
+edges come either from `bins` (a count or a
+[NumPy rule name](https://numpy.org/doc/stable/reference/generated/numpy.histogram_bin_edges.html))
+or from `bin_width`; the two are mutually exclusive. Prefer `bin_width` when
+comparing figures against each other: `bins="auto"` re-derives the width from
+the pooled data of whichever runs are shown, so it narrows as runs are added.
+The resolved binning is reported back on `fig.layout.meta`. In the dashboard,
+the **Bins** field under **Display options** starts at the current automatic
+count; editing it keeps that custom count as configurations change.
+
+The automatic count is computed from the same prepared data the plotting
+functions use. It is also available directly through `auto_bin_count`:
+
+```python
+from k4bench.analysis.plots import auto_bin_count
+
+auto_bin_count("logs/ALLEGRO_o1_v03", column="event_time_s")
+```
+
 ## Warmup events
 
 The **first event (event 0) is consistently slower** — caches are cold, lazy

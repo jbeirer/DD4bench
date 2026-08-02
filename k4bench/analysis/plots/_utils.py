@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 import pandas as pd
@@ -161,6 +162,75 @@ def _compute_core_range(
     x_min = max(0.0, x_min - margin)
     x_max = x_max + margin
     return (x_min, x_max), n_clipped
+
+
+class _EventArrays(NamedTuple):
+    """Per-run event values prepared for plotting, on one shared core range."""
+
+    label_list: list[str]
+    filtered: dict[str, pd.DataFrame]
+    arrays: dict[str, np.ndarray]
+    hist_arrays: dict[str, np.ndarray]
+    core_range: tuple[float, float]
+    clipped_all: np.ndarray
+
+
+def _prepare_event_arrays(
+    event_data: dict[str, pd.DataFrame],
+    column: str,
+    exclude_events: list[int],
+    outlier_threshold: float = 3.5,
+) -> _EventArrays:
+    """Validate *event_data* and clip every run to one shared core range.
+
+    The core range is the union of the per-run ranges from
+    :func:`_compute_core_range`, so it covers every run being plotted.
+    ``clipped_all`` is the pooled in-range data the bin edges are derived from,
+    which is what makes the resulting histograms comparable.
+
+    Kept here rather than inline in the plotting code so that the bin count a
+    figure would choose can be derived without building the figure.
+    """
+    label_list = list(event_data.keys())
+
+    filtered = {
+        lbl: df[~df["event_number"].isin(exclude_events)]
+        for lbl, df in event_data.items()
+    }
+    empty_labels = [lbl for lbl, df in filtered.items() if df.empty]
+    if empty_labels:
+        raise ValueError(
+            "No events left after applying exclude_events for: "
+            + ", ".join(empty_labels)
+        )
+
+    required_cols = {column, "event_number"}
+    for lbl, df in filtered.items():
+        missing = required_cols - set(df.columns)
+        if missing:
+            raise ValueError(f"'{lbl}': missing columns {missing}")
+        if df["event_number"].duplicated().any():
+            dups = df.loc[df["event_number"].duplicated(keep=False), "event_number"].unique().tolist()
+            raise ValueError(
+                f"'{lbl}': duplicate event_number values detected: {dups[:5]}"
+                + (" ..." if len(dups) > 5 else "")
+            )
+
+    arrays = {lbl: filtered[lbl][column].to_numpy() for lbl in label_list}
+    all_data = np.concatenate(list(arrays.values()))
+
+    per_run_ranges = [_compute_core_range(arr, threshold=outlier_threshold)[0] for arr in arrays.values()]
+    core_range = (min(r[0] for r in per_run_ranges), max(r[1] for r in per_run_ranges))
+    clipped_all = all_data[(all_data >= core_range[0]) & (all_data <= core_range[1])]
+    if len(clipped_all) == 0:
+        clipped_all = all_data
+        core_range = (float(all_data.min()), float(all_data.max()))
+
+    hist_arrays = {
+        lbl: arr[(arr >= core_range[0]) & (arr <= core_range[1])]
+        for lbl, arr in arrays.items()
+    }
+    return _EventArrays(label_list, filtered, arrays, hist_arrays, core_range, clipped_all)
 
 
 def _region_top_n(

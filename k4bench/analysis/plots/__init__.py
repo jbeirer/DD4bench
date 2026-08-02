@@ -12,7 +12,7 @@ Typical notebook usage::
     plot_event_timing("logs/")
 """
 
-from .event import plot_event_memory, plot_event_timing
+from .event import auto_bin_count, plot_event_memory, plot_event_timing
 from .overview import plot_run_overview
 from .region import plot_region_timing
 from ._theme import PALETTE
@@ -23,6 +23,7 @@ __all__ = [
     "plot_event_timing",
     "plot_event_memory",
     "plot_region_timing",
+    "auto_bin_count",
     "PALETTE",
     "_compute_core_range",
 ]

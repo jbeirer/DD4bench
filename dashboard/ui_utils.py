@@ -15,7 +15,10 @@ import streamlit as st
 from plotly.colors import qualitative as _ql
 from plotly.subplots import make_subplots
 
+from k4bench.analysis.plots._binning import MAX_BINS
 from k4bench.analysis.plots._theme import PALETTE, _TEMPLATE
+from k4bench.analysis.plots._utils import _default_baseline
+from stats import select_top_n_by_ratio
 
 
 # ── Data-validation helpers ────────────────────────────────────────────────────
@@ -134,6 +137,293 @@ def _auto_palette_index(n: int) -> int:
         return _PALETTE_NAMES.index(name)
     except ValueError:
         return 0
+
+
+# ── Configuration selector ─────────────────────────────────────────────────────
+# Shared by the Event Timing and Event Memory tabs so their "which runs get
+# plotted" behaviour cannot drift apart.
+
+#: How many configurations (including the baseline) the selector pre-checks.
+_DEFAULT_N_CONFIGS = 2
+
+
+def _baseline_selector_control(key_prefix: str, current_labels: list[str]) -> str:
+    """Render the "Baseline" selectbox and return the chosen label.
+
+    Defaults to :func:`~k4bench.analysis.plots._utils._default_baseline`
+    (alphabetically first — the same fallback the plotting layer itself uses
+    when no explicit baseline is given), but any available run can be picked
+    instead, for full control over what the ratio panel and Statistics table
+    are measured against.
+    """
+    default_label = _default_baseline(current_labels)
+    key = f"{key_prefix}_baseline"
+    # The sidebar is the overall availability filter. Adding or removing an
+    # unrelated configuration must not silently change a still-valid reference
+    # and therefore reinterpret every ratio on the page. Only discard the
+    # stored choice when the filter actually removes that baseline.
+    if key in st.session_state and st.session_state[key] not in current_labels:
+        st.session_state.pop(key, None)
+    return st.selectbox(
+        "Baseline",
+        options=current_labels,
+        index=current_labels.index(default_label),
+        key=key,
+        help=(
+            "The configuration used as the reference. The ratio panel and the "
+            "Statistics table's ratio column measure every other configuration "
+            "relative to this one."
+        ),
+    )
+
+
+def _config_selector_control(
+    key_prefix: str,
+    event_data: dict,
+    current_labels: list[str],
+    baseline_label: str,
+    column: str,
+    unit: str,
+) -> list[str]:
+    """Render the "Configurations" multiselect and return the labels to plot.
+
+    Pre-checks the baseline plus the ``_DEFAULT_N_CONFIGS - 1`` runs with the
+    largest ratio deviation from it (:func:`~stats.select_top_n_by_ratio`), but
+    any of *current_labels* can be added or removed freely. The primary plot and
+    Statistics table follow this selection so their colours and rows stay
+    aligned; the full sidebar-filtered table remains available in a collapsed
+    expander below it.
+
+    The baseline itself is not one of the selectable options: it is always
+    included in what gets plotted, so the ratio panel it anchors can never be
+    left without a reference by an incidental deselection. Changing the
+    baseline (in :func:`_baseline_selector_control`) resets this selection back
+    to the fresh top-N-by-ratio default for the new reference, rather than
+    keeping a manual pick that was made relative to the old one.
+    """
+    selectable = [lbl for lbl in current_labels if lbl != baseline_label]
+    key = f"{key_prefix}_configs"
+    # A baseline change deliberately refreshes the comparison default: the new
+    # baseline moves out of the options and the old one moves in. Changes to the
+    # sidebar's broader availability filter do not reset still-valid in-tab
+    # choices; Streamlit drops values that disappear from ``options`` itself.
+    _reset_widget_on_scope(
+        key, baseline_label, reset_unscoped=True,
+    )
+
+    default_n = min(_DEFAULT_N_CONFIGS, len(current_labels))
+    default_all = select_top_n_by_ratio(
+        event_data, current_labels, column, unit, baseline_label, True, default_n,
+    )
+    default_extra = [lbl for lbl in default_all if lbl != baseline_label]
+
+    n_extra = max(default_n - 1, 0)
+    noun = "configuration" if n_extra == 1 else "configurations"
+    selected_extra = st.multiselect(
+        "Configurations",
+        options=selectable,
+        default=default_extra,
+        key=key,
+        help=(
+            f"`{baseline_label}` (the baseline) is always plotted. Pick which "
+            "other configurations to compare it against — defaults to the "
+            f"{n_extra} {noun} with the largest deviation from it. The "
+            "primary Statistics table follows this selection; all configurations "
+            "allowed by the sidebar filter remain available below it."
+        ),
+    )
+    return [baseline_label, *selected_extra]
+
+
+# ── Histogram display controls ─────────────────────────────────────────────────
+# The Event Timing and Event Memory tabs share these controls verbatim, so the
+# two views cannot drift apart: they differ only in *key_prefix* (widget state
+# is per-tab, since a bin count for timing means nothing for memory) and the
+# metric column.  Any future histogram view should call these helpers rather
+# than growing its own controls.
+#
+# The primary page keeps only Baseline and Configurations visible. These
+# specialist histogram controls are composed into one compact Display options
+# popover by :func:`_histogram_display_controls` below.
+
+#: Interactive bin-count bounds. The ceiling is exactly the plotting layer's
+#: :data:`MAX_BINS` — not some smaller number layered on top of it — since that
+#: is the one real constraint here: Plotly renders every bin of every shown
+#: configuration as its own vertex, so a large enough count can freeze the tab.
+_HIST_MAX_BIN_COUNT = MAX_BINS
+_HIST_MIN_BIN_COUNT = 5
+
+#: Default bar opacity — low enough that overlapping fills stay out of the way
+#: of the (always fully opaque) outlines, without the user having to reach for
+#: the slider first.
+_HIST_DEFAULT_ALPHA = 0.25
+
+
+def _validate_bin_count(
+    key: str,
+    auto_key: str,
+    custom_key: str,
+    warning_key: str,
+) -> None:
+    """Clamp an edited bin count, retain a warning, and track custom state."""
+    raw = int(st.session_state[key])
+    bins = min(max(raw, _HIST_MIN_BIN_COUNT), _HIST_MAX_BIN_COUNT)
+    if raw < _HIST_MIN_BIN_COUNT:
+        st.session_state[warning_key] = (
+            f"{raw} is below the minimum of {_HIST_MIN_BIN_COUNT}; "
+            f"the value was reset to {_HIST_MIN_BIN_COUNT}."
+        )
+    elif raw > _HIST_MAX_BIN_COUNT:
+        st.session_state[warning_key] = (
+            f"{raw} is above the maximum of {_HIST_MAX_BIN_COUNT}; "
+            f"the value was reset to {_HIST_MAX_BIN_COUNT}."
+        )
+    else:
+        st.session_state.pop(warning_key, None)
+    st.session_state[key] = bins
+    st.session_state[custom_key] = bins != int(st.session_state[auto_key])
+
+
+def _bin_count_control(key_prefix: str, auto_bins: int) -> int:
+    """Render the bin-count field, seeded automatically until the user edits it.
+
+    *auto_bins* is the count the plot would have picked on its own — from
+    :func:`~k4bench.analysis.plots.auto_bin_count`, which prepares the data
+    exactly as the plotting functions do.  It seeds the field so the first
+    render shows the binning that is actually on screen.
+
+    Until the user changes the field, its value follows NumPy's automatic count
+    whenever the displayed configurations change. Once edited, the chosen count
+    is preserved across those changes. Entering the current automatic count
+    returns the field to auto-following behaviour, without adding a separate
+    mode selector to the interface.
+    """
+    bins_default = int(min(max(auto_bins, _HIST_MIN_BIN_COUNT), _HIST_MAX_BIN_COUNT))
+    key = f"{key_prefix}_hist_bins"
+    auto_key = f"_{key}_auto"
+    custom_key = f"_{key}_custom"
+    warning_key = f"_{key}_warning"
+    is_custom = bool(st.session_state.get(custom_key, False))
+    if key not in st.session_state or not is_custom:
+        st.session_state[key] = bins_default
+        st.session_state.pop(warning_key, None)
+    st.session_state[auto_key] = bins_default
+
+    bins = st.number_input(
+        "Bins",
+        step=1,
+        key=key,
+        on_change=_validate_bin_count,
+        args=(key, auto_key, custom_key, warning_key),
+        help=(
+            f"Number of histogram bins ({_HIST_MIN_BIN_COUNT}-{_HIST_MAX_BIN_COUNT}), "
+            "shared by every configuration in the plot and by the ratio panel "
+            "below it. Starts at the automatically determined count for the "
+            f"current selection ({bins_default}); an edited value is preserved."
+        ),
+    )
+    if warning := st.session_state.get(warning_key):
+        st.warning(warning, icon="⚠️")
+    return int(bins)
+
+
+def _bar_opacity_control(key_prefix: str) -> float:
+    """Render the "Bar opacity" slider and return its value."""
+    return st.slider(
+        "Bar opacity",
+        min_value=0.0,
+        max_value=1.0,
+        value=_HIST_DEFAULT_ALPHA,
+        step=0.05,
+        key=f"{key_prefix}_hist_alpha",
+        help=(
+            "Opacity of the filled bars. The step outline over each histogram "
+            "stays fully opaque, so turning this down un-clutters overlapping "
+            "configurations without hiding any of them — at 0 only the outlines "
+            "remain."
+        ),
+    )
+
+
+def _error_bars_toggle(key_prefix: str) -> bool:
+    """Render the "Histogram error bars" toggle and return its value."""
+    return st.toggle(
+        "Histogram error bars",
+        value=False,
+        key=f"{key_prefix}_hist_errors",
+        help="Poisson √N error bars on the bin contents.",
+    )
+
+
+def _mean_lines_toggle(key_prefix: str) -> bool:
+    """Render the "Histogram mean lines" toggle and return its value."""
+    return st.toggle(
+        "Histogram mean lines",
+        value=True,
+        key=f"{key_prefix}_hist_mean_lines",
+        help="Dashed vertical line at each configuration's mean.",
+    )
+
+
+def _reset_histogram_display_state(
+    key_prefix: str,
+    bins_default: int,
+    palette_name: str,
+) -> None:
+    """Restore every event-histogram display control to its current default."""
+    bins_key = f"{key_prefix}_hist_bins"
+    st.session_state[bins_key] = bins_default
+    st.session_state[f"_{bins_key}_auto"] = bins_default
+    st.session_state[f"_{bins_key}_custom"] = False
+    st.session_state.pop(f"_{bins_key}_warning", None)
+    st.session_state[f"{key_prefix}_hist_alpha"] = _HIST_DEFAULT_ALPHA
+    st.session_state[f"{key_prefix}_hist_errors"] = False
+    st.session_state[f"{key_prefix}_hist_mean_lines"] = True
+    st.session_state[f"{key_prefix}_palette"] = palette_name
+
+
+def _histogram_display_controls(
+    key_prefix: str,
+    auto_bins: int,
+    n_configs: int,
+) -> tuple[int, str, float, bool, bool]:
+    """Render compact advanced histogram options and return their values.
+
+    The popover keeps the two task-level choices (baseline and displayed
+    configurations) in the page flow while moving appearance and statistical
+    details out of the way. Its controls are stacked vertically so labels do
+    not collapse at narrower desktop widths.
+    """
+    palette_default = _auto_palette_index(n_configs)
+    palette_key = f"{key_prefix}_palette"
+    _reset_widget_on_scope(
+        palette_key, palette_default, reset_unscoped=True,
+    )
+    palette_default_name = _PALETTE_NAMES[palette_default]
+    bins_default = int(min(max(auto_bins, _HIST_MIN_BIN_COUNT), _HIST_MAX_BIN_COUNT))
+
+    with st.popover("Display options", icon="👁️", width="content"):
+        bins = _bin_count_control(key_prefix, auto_bins)
+        alpha = _bar_opacity_control(key_prefix)
+        show_errors = _error_bars_toggle(key_prefix)
+        show_mean_lines = _mean_lines_toggle(key_prefix)
+
+        palette_name = st.selectbox(
+            "Colour palette",
+            options=_PALETTE_NAMES,
+            index=palette_default,
+            key=palette_key,
+        )
+        st.button(
+            "Reset to defaults",
+            key=f"{key_prefix}_hist_reset",
+            width="stretch",
+            on_click=_reset_histogram_display_state,
+            args=(key_prefix, bins_default, palette_default_name),
+        )
+
+    return bins, palette_name, alpha, show_errors, show_mean_lines
+
 
 # ── Metric metadata ────────────────────────────────────────────────────────────
 # Shared by the report-based tabs (Regressions, Detectors Overview), covering
