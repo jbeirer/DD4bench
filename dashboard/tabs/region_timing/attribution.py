@@ -47,11 +47,7 @@ def _attribution_explainer() -> None:
     st.write("")
 
 
-def _render_attribution_analysis(
-    region_data: dict,
-    selected_labels: list[str],
-    display_options_slot=None,
-) -> None:
+def _render_attribution_analysis(region_data: dict, display_options_slot=None) -> None:
     """Attribution analysis: scatter (at location vs by birth) + diverging asymmetry bar.
 
     Key implementation note
@@ -62,14 +58,14 @@ def _render_attribution_analysis(
     mode, silently dropping all bar labels — that was the root cause of the
     previously empty bar panel.
     """
-    filtered_labels = [lbl for lbl in selected_labels if lbl in region_data and region_data[lbl]]
-    if not filtered_labels:
-        st.info("No region timing data available for any of the selected configurations.")
+    labels = [lbl for lbl in sorted(region_data) if region_data[lbl]]
+    if not labels:
+        st.info("No region timing data available for any configuration in this run.")
         return
 
     # ── Controls — no Top N slider; all detectors are shown ───────────────────
     config = st.selectbox(
-        "Configuration", filtered_labels, key="ss_config", width=420,
+        "Configuration", labels, key="ss_config", width=420,
     )
 
     def _display_controls(n_detectors: int | None) -> dict:

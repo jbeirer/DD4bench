@@ -17,11 +17,7 @@ from ui_utils import (
 )
 
 
-def _render_step_analysis(
-    region_data: dict,
-    selected_labels: list[str],
-    display_options_slot=None,
-) -> None:
+def _render_step_analysis(region_data: dict, display_options_slot=None) -> None:
     """Step count decomposition: scatter (steps vs µs/step) + ranked bar panels.
 
     Answers: *why* is a region expensive?
@@ -31,14 +27,14 @@ def _render_step_analysis(
     Uses ``interval_counts`` from the regions JSON, which the loader exposes
     as ``region_data[label]["steps"]`` (a DataFrame indexed by event_number).
     """
-    filtered_labels = [lbl for lbl in selected_labels if lbl in region_data and region_data[lbl]]
-    if not filtered_labels:
-        st.info("No region timing data available for any of the selected configurations.")
+    labels = [lbl for lbl in sorted(region_data) if region_data[lbl]]
+    if not labels:
+        st.info("No region timing data available for any configuration in this run.")
         return
 
     # ── Controls — config first, then data, then the popover (palette needs n) ─
     config = st.selectbox(
-        "Configuration", filtered_labels, key="sa_config", width=420,
+        "Configuration", labels, key="sa_config", width=420,
     )
 
     def _display_controls(n_detectors: int | None) -> dict:

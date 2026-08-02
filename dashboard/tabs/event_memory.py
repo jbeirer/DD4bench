@@ -39,13 +39,12 @@ _VIEWS = ["Current Run", "Historical Trends"]
 
 def _render_current_run(
     event_data: dict,
-    selected_labels: list[str],
     display_options_slot=None,
 ) -> None:
     """Render the current-run per-event memory view."""
-    current_labels = [label for label in selected_labels if label in event_data]
+    current_labels = sorted(event_data)
     if not current_labels:
-        st.info("No event memory data available for the selected configurations in this run.")
+        st.info("No event memory data available in this run.")
         return
 
     col_baseline, col_configs = st.columns([1, 3], gap="medium", vertical_alignment="bottom")
@@ -89,7 +88,7 @@ def _render_current_run(
         st.info("No valid statistics available (missing or empty data).")
 
     if set(display_labels) != set(current_labels):
-        with st.expander(f"All filtered configurations ({len(current_labels)})"):
+        with st.expander(f"All configurations ({len(current_labels)})"):
             all_stats = build_event_stats_table(
                 event_data, current_labels, "rss_end_mb", "MB", baseline_label, True
             )
@@ -99,7 +98,6 @@ def _render_current_run(
 
 def _render_historical(
     trend_event_df: pd.DataFrame,
-    selected_labels: list[str],
     reliability: dict[str, bool | None] | None = None,
     reliability_slot=None,
     display_options_slot=None,
@@ -112,14 +110,12 @@ def _render_historical(
         )
         return
     avail_labels = sorted(trend_event_df["label"].unique())
-    filtered_labels = [lbl for lbl in selected_labels if lbl in avail_labels]
-    if not filtered_labels:
-        st.info("No historical event memory data available for the selected configurations.")
+    if not avail_labels:
+        st.info("No historical event memory data in the selected window.")
         return
 
     trend_event_df = render_reliability_filter(
-        trend_event_df[trend_event_df["label"].isin(filtered_labels)],
-        reliability, key="evt_memory_hist_exclude_unreliable",
+        trend_event_df, reliability, key="evt_memory_hist_exclude_unreliable",
         slot=reliability_slot,
     )
     if trend_event_df.empty:
@@ -131,12 +127,12 @@ def _render_historical(
         return
 
     _render_historical_trends(
-        trend_event_df, filtered_labels, present_stats,
+        trend_event_df, avail_labels, present_stats,
         std_col="std_rss_mb",
         n_col_candidates=["n_events_rss", "n_events"],
         unit="MB",
         key_prefix="evt_memory_hist",
-        no_data_msg="No event memory trend data for the selected configurations.",
+        no_data_msg="No event memory trend data in the selected window.",
         display_options_slot=display_options_slot,
     )
 
@@ -144,15 +140,11 @@ def _render_historical(
 def render(
     event_data: dict | None,
     trend_event_df: pd.DataFrame | None,
-    selected_labels: list[str],
     trends_enabled: bool = False,
     reliability: dict[str, bool | None] | None = None,
 ) -> SectionScope | None:
     if event_data is None and not trends_enabled:
         st.info("No event memory data available in the selected directory.")
-        return None
-    if not selected_labels:
-        st.info("Select at least one run in the sidebar.")
         return None
 
     # The "Historical Trends" option is gated on remote mode (not on the current
@@ -165,10 +157,10 @@ def render(
         if event_data is None:
             st.info("No event memory data available in the selected directory.")
         else:
-            _render_current_run(event_data, selected_labels, display_options_slot)
+            _render_current_run(event_data, display_options_slot)
         return None
     _render_historical(
-        trend_event_df, selected_labels, reliability,
+        trend_event_df, reliability,
         reliability_slot=reliability_slot,
         display_options_slot=display_options_slot,
     )

@@ -708,23 +708,6 @@ def _render_scope_reset(dropped: str | None, current: str, reason: str) -> None:
         st.caption(f"⚠️ `{dropped}` {reason} — showing `{current}`.")
 
 
-def _drop_stale_multiselect(key: str, options: list[str]) -> None:
-    """Clear a keyed multiselect's stored value when it holds an option that's
-    no longer valid.
-
-    Same rationale as :func:`_drop_stale_selection`, adapted for a list-valued
-    widget: an upstream selection change (e.g. detector) can leave labels from
-    the old option set in ``session_state``. Streamlit would silently filter
-    those out of the widget's *value* on its own, but doesn't re-seed a fresh
-    default in their place — so a filter meant to mean "everything" quietly
-    shrinks. Dropping the key first lets the caller's own seed-if-absent logic
-    run again, exactly as it does for a fresh session. A no-op when every
-    stored value is still present in *options*.
-    """
-    if key in st.session_state and any(v not in options for v in st.session_state[key]):
-        del st.session_state[key]
-
-
 def seed_query_param(key: str, param: str, options: list[str]) -> None:
     """Seed a keyed widget's initial value from ``?param=...`` in the page
     URL, e.g. a nightly regression email's "view in dashboard" link (see

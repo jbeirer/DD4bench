@@ -193,7 +193,7 @@ def _tab_note(dashboard_dir, section, platform, release):
     # is beside the point here — the scope they claim is the view's, not the
     # data's.
     if section == "Event Timing":
-        override = event_timing.render(None, None, ["cfg"], trends_enabled=True)
+        override = event_timing.render(None, None, trends_enabled=True)
     else:
         override = machine_info.render(None, trends_enabled=True)
 
