@@ -41,6 +41,17 @@ the Overview tab is scoped by platform and sample *across all detectors*:
 without it, a sample that quietly moved would look like detectors vanishing
 from its charts.
 
+Not every tab honours the whole hierarchy, so a single muted line directly
+under the section bar names the slice the tab in front of you actually uses —
+for example `Showing CLD · x86_64-almalinux9-gcc14.2.0-opt · single_e ·
+key4hep-2026-07-10`. Where a tab deliberately ignores a level it says so
+instead of quietly dropping it: Overview reads **all detectors**, Run Trends
+reads **all releases**, and Stack Changes reads **platform-wide package diff**,
+because a Key4hep release is the same stack whatever benchmarked it. The line
+never repeats a date range, report night or run date — each tab prints its own,
+in its own words. In local mode there is no hierarchy to show, so it names the
+run directory instead.
+
 !!! note "Example detectors"
     A couple of detectors (currently: `SiD`) come from a simulation toolkit's
     own reference/tutorial geometry rather than a maintained FCC/Key4hep

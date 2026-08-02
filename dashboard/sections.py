@@ -1,13 +1,15 @@
-"""The dashboard's section bar: which sections exist, in what order, and which
-need remote data.
+"""The dashboard's section bar: which sections exist, in what order, which
+need remote data, and which slice of the sidebar each one actually honours.
 
-Two independent lists, deliberately. :data:`SECTION_NAMES` is a presentation
-choice — broadest first (across detectors, over time), then narrowing into one
-run's internals, then the forensics for judging a number, which is the order
-the questions are actually asked in. :data:`REMOTE_ONLY` is a statement of
-fact about data sources. Deriving one from the other — hiding a positional
-prefix, say — would couple them, so reordering the bar or inserting a section
-could silently strand a tab with no data behind it, or hide a working one.
+Three independent registries, deliberately. :data:`SECTION_NAMES` is a
+presentation choice — broadest first (across detectors, over time), then
+narrowing into one run's internals, then the forensics for judging a number,
+which is the order the questions are actually asked in. :data:`REMOTE_ONLY` is
+a statement of fact about data sources. :data:`SECTION_SCOPE` is a statement of
+fact about scoping. Deriving one from another — hiding a positional prefix,
+say, or assuming every section reads the whole sidebar — would couple them, so
+reordering the bar or inserting a section could silently strand a tab with no
+data behind it, hide a working one, or label it with a scope it never applies.
 
 Kept out of ``app.py`` because that module ends in a bare ``main()`` call (a
 Streamlit script is exec'd, not imported), so reading the registry from there
@@ -15,6 +17,8 @@ would run the entire app — including its network fetches — as a side effect.
 """
 
 from __future__ import annotations
+
+from dataclasses import dataclass
 
 #: Every section, in display order.
 SECTION_NAMES = [
@@ -40,6 +44,108 @@ REMOTE_ONLY = frozenset({
     "Regressions",
     "Stack Changes",
 })
+
+
+class _Scoped:
+    """Sentinel for "this section follows the sidebar here"; see :data:`SCOPED`."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # keeps registry diffs and test failures readable
+        return "SCOPED"
+
+
+#: Marks a dimension the section is genuinely scoped by, so the scope note
+#: prints the sidebar's current value for it.
+SCOPED = _Scoped()
+
+
+@dataclass(frozen=True)
+class SectionScope:
+    """What one section does with each of the four sidebar dimensions.
+
+    Every field takes one of three kinds of value:
+
+    * :data:`SCOPED` — the section is scoped by the sidebar's selection, and
+      the note shows that selection.
+    * a string — the section deliberately ignores the sidebar here, and the
+      note says so in those words ("all detectors") rather than dropping the
+      dimension, which would read as if the sidebar still applied.
+    * ``None`` — the dimension is meaningless for this section, so the note
+      omits it entirely.
+    """
+
+    detector: "_Scoped | str | None"
+    platform: "_Scoped | str | None"
+    sample:   "_Scoped | str | None"
+    release:  "_Scoped | str | None"
+
+
+#: The sidebar slice each section honours, one entry per :data:`SECTION_NAMES`
+#: name. Read by :func:`ui_chrome.render_scope_note`, which renders the single
+#: muted line under the section bar.
+#:
+#: No section declares a *time* reference here, on purpose: every section that
+#: has one already prints it in its own words and in the right place, and a
+#: second copy in the chrome line would either duplicate it or — on the tabs
+#: whose sub-views switch between the latest run and the trend window — contradict
+#: it. Run Trends and Machine Info print a "Data range"; Overview prints "Latest
+#: night · trend window" and, off the newest night, "Historical view · report
+#: night"; Regressions prints the night on its picker and blame cards; Logs
+#: prints the run's release, date and commit. The sidebar itself captions the
+#: trend window. So the note carries the hierarchy and nothing else.
+SECTION_SCOPE: dict[str, SectionScope] = {
+    # Cross-detector by construction: it compares every detector benchmarked
+    # for the selected platform/sample on a nightly report, and reports are
+    # per-night rather than per-release, so the sidebar release does not apply.
+    "Overview": SectionScope(
+        detector="all detectors", platform=SCOPED, sample=SCOPED, release=None,
+    ),
+    # Plots the full history of the sidebar triple across every release in the
+    # trend window — the sidebar release picks the single-run tabs' run only.
+    "Run Trends": SectionScope(
+        detector=SCOPED, platform=SCOPED, sample=SCOPED, release="all releases",
+    ),
+    # The release selects which report nights are on offer; the tab's picker
+    # then chooses one of them.
+    "Regressions": SectionScope(
+        detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED,
+    ),
+    # A Key4hep release is one stack whatever benchmarked it, so the package
+    # diff — the section's headline content — is scoped by the platform alone,
+    # and the sample does not enter it. The sidebar release only seeds the
+    # newer end of the comparison; the pair is picked in the tab.
+    "Stack Changes": SectionScope(
+        detector="platform-wide package diff",
+        platform=SCOPED,
+        sample=None,
+        release="release pair chosen below",
+    ),
+    # The sections built on the sidebar's own selection: all four dimensions
+    # come straight from it. Config Impact and Logs read that one run and
+    # nothing else; the four below them open on it too, and their historical
+    # sub-views then widen to the trend window's runs across every release —
+    # a sub-view the note cannot see from here, which is the other reason it
+    # states the hierarchy rather than a time reference.
+    "Config Impact": SectionScope(
+        detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED,
+    ),
+    "Region Timing": SectionScope(
+        detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED,
+    ),
+    "Event Timing": SectionScope(
+        detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED,
+    ),
+    "Event Memory": SectionScope(
+        detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED,
+    ),
+    "Machine Info": SectionScope(
+        detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED,
+    ),
+    "Logs": SectionScope(
+        detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED,
+    ),
+}
 
 
 def visible_sections(trends_enabled: bool) -> list[str]:

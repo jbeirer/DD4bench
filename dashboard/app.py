@@ -45,6 +45,7 @@ from ui_chrome import (
     render_example_detector_badge,
     render_logs_tab,
     render_run_status,
+    render_scope_note,
     resource_link_card,
     seed_query_param,
 )
@@ -154,6 +155,14 @@ def main() -> None:
     selected_run_meta: dict | None = None
     sidebar_window: tuple[date, date] | None = None
     trend_results_df: pd.DataFrame | None = None
+    # The EOS hierarchy exists in remote mode only; local mode has a single run
+    # directory and no detector/platform/sample/release above it. Bound to None
+    # up here so anything outside the remote branch below — the scope note under
+    # the section bar — can read them without a NameError.
+    detector: str | None = None
+    platform: str | None = None
+    sample:   str | None = None
+    stack:    str | None = None
 
     with st.sidebar:
         st.header("Data Source")
@@ -507,6 +516,16 @@ def main() -> None:
         key="active_section", label_visibility="collapsed", width="stretch",
     ) or section_names[0]
     st.query_params["tab"] = active_section
+
+    # One muted line naming what the active section is actually showing. Driven
+    # by sections.SECTION_SCOPE, so it states only the dimensions that section
+    # honours — Overview spans every detector, Stack Changes' diff is
+    # platform-wide — and never the time reference, which each tab prints itself.
+    render_scope_note(
+        active_section,
+        detector=detector, platform=platform, sample=sample, release=stack,
+        data_dir=data_dir,
+    )
 
     # Trends (remote only) — uses all stacks so history is complete
     if active_section == "Run Trends":

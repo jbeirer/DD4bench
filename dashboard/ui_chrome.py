@@ -13,6 +13,8 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from sections import SECTION_SCOPE
+
 
 def _failed_labels(results: "pd.DataFrame") -> list[str]:
     """Return the labels of configs whose returncode is non-zero (or missing)."""
@@ -240,6 +242,67 @@ def render_run_status(results: "pd.DataFrame | None", run_meta: dict | None) -> 
             "comparisons between configs may be noisy: "
             + ", ".join(f"`{m}`" for m in machines)
         )
+
+
+def render_scope_note(
+    section: str,
+    *,
+    detector: str | None = None,
+    platform: str | None = None,
+    sample: str | None = None,
+    release: str | None = None,
+    data_dir: str | None = None,
+) -> None:
+    """One muted line under the section bar naming what *section* is showing.
+
+    Answers "what am I looking at?" without the reader having to reconstruct it
+    from four sidebar selectboxes — while staying chrome rather than content:
+    an ``st.caption``, so it takes the theme's small muted text colour, on one
+    line, with no box, background or icon.
+
+    What it may claim comes entirely from :data:`sections.SECTION_SCOPE`, never
+    from the arguments: the sections honour genuinely different slices of the
+    sidebar, so a uniform breadcrumb would misdescribe several of them. A
+    section the registry does not know renders nothing rather than a guess.
+
+    The note carries the hierarchy only. Time references are each tab's own —
+    see the registry for where every one of them is printed — and repeating
+    them here would duplicate or, on the tabs that switch between the latest
+    run and the trend window, contradict them.
+
+    In local mode the hierarchy does not exist (there is no EOS tree to walk,
+    just one run directory), so every dimension arrives as ``None`` and the
+    note names *data_dir* instead.
+    """
+    scope = SECTION_SCOPE.get(section)
+    if scope is None:
+        return
+
+    parts: list[str] = []
+    scoped_any = False
+    for declared, value in (
+        (scope.detector, detector),
+        (scope.platform, platform),
+        (scope.sample, sample),
+        (scope.release, release),
+    ):
+        if declared is None:
+            continue
+        if isinstance(declared, str):
+            parts.append(declared)
+            continue
+        # SCOPED: show the sidebar's selection, or nothing when it is unset —
+        # a scoped dimension with no value is local mode, handled below.
+        if value:
+            parts.append(str(value))
+            scoped_any = True
+
+    if not scoped_any:
+        if data_dir:
+            st.caption(f"Showing local run directory `{data_dir}`")
+        return
+
+    st.caption("Showing " + " · ".join(parts))
 
 
 def render_logs_tab(
