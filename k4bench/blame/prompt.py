@@ -192,6 +192,26 @@ def sample_line(sample: str, *, prefix: str = "- Sample: ") -> str:
     return f"{prefix}{sample}" + (f" — {pretty}" if pretty != sample else "")
 
 
+def window_phrase(base: str | None, onset: str) -> str:
+    """The release window as both prompts state it.
+
+    A same-release window is the one shape a bare ``X → X`` under-reads: it
+    looks like a typo rather than like the strongest fact the window carries —
+    the stack could not have changed, so the phrase says that outright.
+    Written once, here, because the second pass revises the first's judgement
+    of the same window and must be describing the same thing."""
+    if base and base == onset:
+        return (
+            f"within release {onset} — both runs sourced the SAME Key4hep "
+            f"release, so the upstream simulation stack is identical by "
+            f"construction; only the benchmark harness, the host or noise can "
+            f"differ between them"
+        )
+    if base:
+        return f"{base} → {onset}"
+    return onset
+
+
 def platform_line(platform: str, *, prefix: str = "- Platform: ") -> str:
     """``"- Platform: <slug> — x86_64 · AlmaLinux 9 · GCC 14.2.0 (optimized)"``.
 

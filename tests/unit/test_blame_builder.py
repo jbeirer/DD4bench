@@ -105,7 +105,12 @@ def test_bounded_window_collects_candidates(monkeypatch):
     assert cand.score == 0.0 and cand.description == ""
 
 
-def test_same_stack_window_is_skipped(monkeypatch):
+def test_same_stack_window_without_a_harness_lookup_is_skipped(monkeypatch):
+    # A same-release window is attributable only through the harness's own
+    # commits — the stack is identical by construction. With no harness lookup
+    # injected nobody can look, so the window is dropped rather than recorded
+    # as a window where nothing moved. (Injected, it is attributed: see
+    # test_a_same_release_window_is_attributed_to_the_harness_alone.)
     _stub_resolve(monkeypatch, lambda *a, **k: RepoResolution())
     provenance = _provenance({(_PLAT, "2026-07-04"): {"k4geo": _pkgs("a" * 40)}})
     blame = build_blame_report(
@@ -1254,20 +1259,119 @@ def test_each_group_reads_its_own_runs_provenance(monkeypatch):
     assert ranges["CLD_o2_v07"].head_commit == "4" * 40
 
 
+_UPSTREAM_RUN = "https://github.com/key4hep/k4Bench/actions/runs/1"
+_FORK_RUN = "https://github.com/myfork/k4Bench/actions/runs/2"
+
+
 def test_a_window_spanning_two_repositories_is_not_attributed(monkeypatch, caplog):
     # A base run produced by one fork and an onset run by another have no
     # meaningful compare range between their commits — no entry, never a
-    # wrong one.
+    # wrong one. A *missing* workflow URL means the default repository (that is
+    # the documented fallback), so it must be resolved before the comparison
+    # rather than treated as a wildcard matching whatever the other end says:
+    # otherwise an upstream base paired with a fork onset silently becomes a
+    # fork-only range and both commits are looked for in the wrong repository.
+    for base_url, onset_url in (
+        (_UPSTREAM_RUN, _FORK_RUN),   # both recorded, and they disagree
+        (None, _FORK_RUN),            # base defaults to upstream, onset a fork
+        (_FORK_RUN, None),            # fork base, onset defaults to upstream
+    ):
+        caplog.clear()
+        _stub_resolve(monkeypatch, lambda *a, **k: RepoResolution())
+        lookup = _commits({
+            _hkey("2026-07-03", "2026-07-03"): ("1" * 40, base_url),
+            _hkey("2026-07-04", "2026-07-04"): ("2" * 40, onset_url),
+        })
+        blame = build_blame_report(
+            _report([_verdict()]), packages_for_release=_MOVED,
+            k4bench_commit_for_run=lookup, github=GitHubClient(),
+        )
+        assert [r.package for r in blame.entries[0].repos] == ["k4geo"]
+        assert "different harness repositories" in caplog.text
+
+
+def test_both_ends_missing_a_url_stay_on_the_default_repository(monkeypatch):
+    # Two pre-``github_run_url`` runs agree: both are the default repository,
+    # so the window is attributed rather than rejected as cross-repository.
     _stub_resolve(monkeypatch, lambda *a, **k: RepoResolution())
     lookup = _commits({
-        _hkey("2026-07-03", "2026-07-03"):
-            ("1" * 40, "https://github.com/key4hep/k4Bench/actions/runs/1"),
-        _hkey("2026-07-04", "2026-07-04"):
-            ("2" * 40, "https://github.com/myfork/k4Bench/actions/runs/2"),
+        _hkey("2026-07-03", "2026-07-03"): ("1" * 40, None),
+        _hkey("2026-07-04", "2026-07-04"): ("2" * 40, None),
     })
     blame = build_blame_report(
         _report([_verdict()]), packages_for_release=_MOVED,
         k4bench_commit_for_run=lookup, github=GitHubClient(),
     )
-    assert [r.package for r in blame.entries[0].repos] == ["k4geo"]
-    assert "different harness repositories" in caplog.text
+    harness = next(r for r in blame.entries[0].repos if r.package == "k4bench")
+    assert harness.repo == "key4hep/k4Bench"
+
+
+# ── Same-release windows ──────────────────────────────────────────────────────
+
+def test_a_same_release_window_is_attributed_to_the_harness_alone(monkeypatch):
+    # Two runs of one release: the upstream stack is identical by construction,
+    # so the harness's own commits are the only thing a diff can name — the
+    # reviewer's canonical case (PR #132's n_events bump: 719 flags, window
+    # 2026-07-29 → 2026-07-29, previously discarded by the gate).
+    _stub_resolve(monkeypatch, lambda *a, **k: RepoResolution())
+    v = dataclasses.replace(
+        _verdict(base="2026-07-04", onset="2026-07-04"),
+        last_accepted_run_id="2026-07-04", onset_run_id="2026-07-05",
+    )
+    lookup = _commits({
+        _hkey("2026-07-04", "2026-07-04"): ("1" * 40, _RUN_URL),
+        _hkey("2026-07-04", "2026-07-05"): ("2" * 40, _RUN_URL),
+    })
+    provenance = _provenance({
+        (_PLAT, "2026-07-04"): {"k4geo": _pkgs("a" * 40),
+                                "dd4hep": _pkgs("d" * 40, _GH)},
+    })
+    blame = build_blame_report(
+        _report([v]), packages_for_release=provenance,
+        k4bench_commit_for_run=lookup, github=GitHubClient(),
+    )
+    entry = blame.entries[0]
+    assert entry.base_release == entry.onset_release == "2026-07-04"
+    assert [r.package for r in entry.repos] == ["k4bench"]
+    harness = entry.repos[0]
+    assert (harness.base_commit, harness.head_commit) == ("1" * 40, "2" * 40)
+    # Every tracked package stood still — by construction, and counted.
+    assert entry.n_unchanged == 2
+
+
+def test_a_same_release_window_without_a_harness_move_stays_unattributed(monkeypatch):
+    _stub_resolve(monkeypatch, lambda *a, **k: RepoResolution())
+    v = dataclasses.replace(
+        _verdict(base="2026-07-04", onset="2026-07-04"),
+        last_accepted_run_id="2026-07-04", onset_run_id="2026-07-05",
+    )
+    parked = _commits({
+        _hkey("2026-07-04", "2026-07-04"): ("1" * 40, _RUN_URL),
+        _hkey("2026-07-04", "2026-07-05"): ("1" * 40, _RUN_URL),
+    })
+    blame = build_blame_report(
+        _report([v]), packages_for_release=_MOVED,
+        k4bench_commit_for_run=parked, github=GitHubClient(),
+    )
+    assert blame.entries == ()
+
+
+def test_a_same_release_window_survives_unreadable_stack_provenance(monkeypatch):
+    # Unlike a cross-release window, the stack's stillness is not a claim that
+    # needs provenance to back it — the release is the same directory. An
+    # unreadable package map costs only the unchanged count.
+    _stub_resolve(monkeypatch, lambda *a, **k: RepoResolution())
+    v = dataclasses.replace(
+        _verdict(base="2026-07-04", onset="2026-07-04"),
+        last_accepted_run_id="2026-07-04", onset_run_id="2026-07-05",
+    )
+    lookup = _commits({
+        _hkey("2026-07-04", "2026-07-04"): ("1" * 40, _RUN_URL),
+        _hkey("2026-07-04", "2026-07-05"): ("2" * 40, _RUN_URL),
+    })
+    blame = build_blame_report(
+        _report([v]), packages_for_release=_provenance({}),
+        k4bench_commit_for_run=lookup, github=GitHubClient(),
+    )
+    assert [r.package for r in blame.entries[0].repos] == ["k4bench"]
+    assert blame.entries[0].n_unchanged == 0

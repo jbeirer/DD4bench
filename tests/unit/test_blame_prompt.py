@@ -342,3 +342,17 @@ def test_the_harness_note_explains_the_mechanisms_a_harness_change_can_use():
     assert "geometry" in HARNESS_PACKAGE_NOTE
     assert "how many events are simulated" in HARNESS_PACKAGE_NOTE
     assert "not comparable across the window" in HARNESS_PACKAGE_NOTE
+
+
+def test_a_same_release_window_states_that_the_stack_cannot_have_moved():
+    # A bare "X → X" reads as a typo rather than as the strongest fact the
+    # window carries: the stack is identical by construction, so only the
+    # harness, the host or noise can differ between the two runs.
+    from k4bench.blame.prompt import window_phrase
+    same = window_phrase("2026-07-29", "2026-07-29")
+    assert "within release 2026-07-29" in same
+    assert "SAME Key4hep release" in same
+    assert "benchmark harness" in same
+    # A genuine interval and an open window keep their existing wording.
+    assert window_phrase("2026-07-03", "2026-07-04") == "2026-07-03 → 2026-07-04"
+    assert window_phrase(None, "2026-07-04") == "2026-07-04"

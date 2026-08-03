@@ -3,9 +3,12 @@
 Build the blame sidecar for a nightly report and write it as ``blame.json``.
 
 Thin CLI over :func:`k4bench.blame.builder.build_blame_report`: reads the
-already-built ``report.json``, and for each confirmed regression with a real
-``(baseline, onset]`` release window, diffs the two releases' package maps and
-asks GitHub which pull requests landed in each changed repo — writing
+already-built ``report.json``, and for each confirmed regression with a
+bounded blame window, diffs the two releases' package maps (plus k4Bench's own
+commit range between the window's runs — a same-release window, where the
+stack is identical by construction, is attributed exactly when the harness
+moved) and asks GitHub which pull requests landed in each changed repo —
+writing
 
     {output-dir}/blame.json   — the sidecar the dashboard/email read back
 

@@ -83,6 +83,7 @@ from k4bench.blame.prompt import (
     platform_line,
     region_lines,
     sample_line,
+    window_phrase,
 )
 from k4bench.regression.models import RegionDelta
 
@@ -706,14 +707,12 @@ def _run_context_lines(request: RankRequest) -> str:
     ranked in its own call, and a terse header is too easy to under-weight
     against a large diff — the answer must be about *this* run, not the most
     prominent detector in the diff."""
-    window = request.onset_release
-    if request.base_release:
-        window = f"{request.base_release} → {request.onset_release}"
     lines = [
         f"- Detector: {request.detector}",
         sample_line(request.sample),
         platform_line(request.platform),
-        f"- Release window: {window}",
+        f"- Release window: "
+        f"{window_phrase(request.base_release, request.onset_release)}",
         *_step_lines(request),
         *_history_lines(request),
     ]

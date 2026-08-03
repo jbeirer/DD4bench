@@ -1200,10 +1200,18 @@ def _html_ranking_body(section: WindowSection, dashboard_url: str | None) -> str
         )
     if card is None or not card.complete:
         if section.same_release:
+            # The stack is identical by construction; the compare links (when a
+            # blame build recorded any) can only name the benchmark harness.
+            note = (
+                "No tracked Key4hep package changed within this release; the "
+                "benchmark harness itself moved between its runs."
+                if compares else
+                "No tracked Key4hep package changed within this release — check "
+                "benchmark code/config, inputs, runner environment, or noise."
+            )
             return (
                 f'<p style="margin:0;font-size:13px;color:{_C_MUTED};">'
-                "No tracked Key4hep package changed within this release — check "
-                "benchmark code/config, inputs, runner environment, or noise.</p>"
+                f"{note}</p>{compares}"
             )
         return (
             f'<p style="margin:0;font-size:13px;color:{_C_MUTED};">'
@@ -1586,10 +1594,20 @@ def _md_window_section(
         compare_line = f"  Package changes: {' · '.join(items)}"
     if card is None or not card.complete:
         if section.same_release:
-            lines.append(
-                "  No tracked Key4hep package changed within this release — "
-                "check benchmark code/config, inputs, runner environment, or noise."
-            )
+            if compare_line:
+                # The stack is identical by construction; the compare links can
+                # only name the benchmark harness.
+                lines.append(
+                    "  No tracked Key4hep package changed within this release; "
+                    "the benchmark harness itself moved between its runs."
+                )
+                lines.append(compare_line)
+            else:
+                lines.append(
+                    "  No tracked Key4hep package changed within this release — "
+                    "check benchmark code/config, inputs, runner environment, "
+                    "or noise."
+                )
             return lines
         stack_url = _stack_changes_href(dashboard_url, section)
         review = (

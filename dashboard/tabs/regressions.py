@@ -572,9 +572,30 @@ def _render_blame_card(data_url: str, attribution: _WindowAttribution) -> None:
         if kind is _blame.WindowKind.SAME_STACK:
             st.caption(
                 f"Change entered within release **{v.onset_run_date}** · {scope} · "
-                "no tracked Key4hep package changed. Check benchmark "
-                "code/config, inputs, runner environment, or noise."
+                "no tracked Key4hep package changed."
             )
+            # The stack is identical by construction, so the sidecar can only
+            # name the benchmark harness itself — render its commit range and
+            # ranking when the blame build recorded one.
+            entry = (
+                attribution.blame.entry_for(v)
+                if attribution.blame is not None else None
+            )
+            if entry is not None:
+                moved = [
+                    f"[`{r.package}` ↗]({r.compare_url})" if r.compare_url
+                    else f"`{r.package}`"
+                    for r in entry.repos
+                ]
+                if moved:
+                    st.markdown(
+                        "**Changed between these runs:** " + " · ".join(moved)
+                    )
+            if not render_candidate_ranking(v, attribution.blame) and entry is None:
+                st.caption(
+                    "Check benchmark code/config, inputs, runner environment, "
+                    "or noise."
+                )
             return
         onset = v.onset_run_date
         baseline = v.last_accepted_run_date if kind is _blame.WindowKind.BOUNDED else None

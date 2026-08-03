@@ -25,10 +25,13 @@ module offline-testable and lets CI reuse work it has already done:
   anything about it.
 
 Windows that cannot be attributed are dropped, not recorded empty: an open-ended
-window (no settled baseline), a same-release window (nothing upstream moved), and
-a window whose provenance is missing are all handled live by the dashboard from
-``report.json`` alone. ``blame.json`` exists only to carry the one thing the
-dashboard cannot compute itself — the ranked PRs.
+window (no settled baseline), a window whose provenance is missing, and a window
+where nothing at all moved are handled live by the dashboard from ``report.json``
+alone. A *same-release* window is attributed exactly when the harness's own
+commits moved between its two runs — the upstream stack is identical by
+construction, so the harness is the only thing a diff can name. ``blame.json``
+exists only to carry the one thing the dashboard cannot compute itself — the
+ranked PRs.
 """
 
 from __future__ import annotations
@@ -143,11 +146,17 @@ class _CallableProvider:
 
 
 def _attributable(v: MetricVerdict) -> bool:
-    """True for a confirmed regression with a real ``(base, onset]`` release
-    window — the only kind ``blame.json`` carries. An open window (no baseline)
-    or a same-release window has nothing upstream to diff."""
+    """True for a confirmed regression whose window can name a change.
+
+    A ``(base, onset]`` window spanning two releases can be diffed upstream; a
+    *same-release* window (``base == onset``) proves the upstream stack did not
+    move at all — which makes it the highest-signal case for the harness's own
+    commits, the one thing that varies between two runs of one release. Both
+    are admitted; a same-release window still produces an entry only when the
+    harness actually moved (see the loop below). An open window (no settled
+    baseline) has nothing to anchor either end on and is dropped."""
     base, onset = v.last_accepted_run_date, v.onset_run_date
-    return bool(onset and base and base < onset)
+    return bool(onset and base and base <= onset)
 
 
 def build_blame_report(
@@ -419,9 +428,18 @@ def build_blame_report(
     for v in verdicts:
         window = (v.platform, v.last_accepted_run_date, v.onset_run_date)
         if window not in diff_cache:
-            diff_cache[window], unchanged_cache[window] = _diff_window(
-                packages_for_release, *window
-            )
+            if window[1] == window[2]:
+                # A same-release window: both runs sourced the same immutable
+                # stack, so the upstream diff is ``[]`` *by construction* — no
+                # provenance read can change that answer, and an unreadable
+                # package map costs only the unchanged count, never the entry.
+                packages = packages_for_release(v.platform, v.onset_run_date)
+                diff_cache[window] = []
+                unchanged_cache[window] = len(packages) if packages else 0
+            else:
+                diff_cache[window], unchanged_cache[window] = _diff_window(
+                    packages_for_release, *window
+                )
         changes = diff_cache[window]
         if changes is None:
             # Upstream provenance is unreadable. Skip even when the harness is
@@ -579,9 +597,11 @@ def _harness_change(
     the step was already measured — and the disagreement is logged.
 
     ``None`` — no lookup injected, an endpoint that cannot be read, a harness
-    that did not move, or two endpoints recorded by different repositories
-    (a compare range across two forks would be meaningless) — must leave the
-    report exactly as it was before this lookup existed."""
+    that did not move, or two endpoints belonging to different repositories
+    (a compare range across two forks would be meaningless; an end with no
+    recorded workflow URL counts as the default repository, not as a wildcard
+    matching whatever the other end says) — must leave the report exactly as
+    it was before this lookup existed."""
     if k4bench_commit_for_run is None:
         return None
     v = verdicts[0]
@@ -609,9 +629,15 @@ def _harness_change(
     onset_sha, onset_url = onset
     if not base_sha or not onset_sha or base_sha == onset_sha:
         return None
-    base_repo = _repo_url_from_run_url(base_url)
-    onset_repo = _repo_url_from_run_url(onset_url)
-    if base_repo and onset_repo and base_repo != onset_repo:
+    # A run with no recorded workflow URL *means* the default repository (see
+    # :data:`_K4BENCH_REPO_URL`), so each end is resolved to a concrete
+    # repository before they are compared. Comparing the raw parses instead
+    # would skip the check whenever one end lacked a URL and then resolve both
+    # commits in the other end's repository — a fork's onset paired with an
+    # upstream base would silently become a fork-only range.
+    base_repo = _repo_url_from_run_url(base_url) or _K4BENCH_REPO_URL
+    onset_repo = _repo_url_from_run_url(onset_url) or _K4BENCH_REPO_URL
+    if base_repo != onset_repo:
         _log.warning(
             "blame: %s/%s %s..%s — the window's runs were produced by "
             "different harness repositories (%s vs %s); a compare range "
@@ -626,7 +652,7 @@ def _harness_change(
         base_commit=base_sha,
         head_commit=onset_sha,
         version="",  # the harness has no stack version string
-        repo_url=onset_repo or base_repo or _K4BENCH_REPO_URL,
+        repo_url=onset_repo,  # == base_repo, checked above
     )
 
 
