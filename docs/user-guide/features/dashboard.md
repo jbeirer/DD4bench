@@ -427,7 +427,9 @@ Info pointer live in the control's help instead of a separate banner. The rows
 wrap naturally on narrow screens, with no CSS override. Each detector family
 has its own vertical legend below the figure: the family is the heading and its
 versions sit directly beneath it, while every version remains individually
-toggleable.
+toggleable. Legend columns are centre-anchored and move into additional rows
+when there are many families or unusually long labels, keeping the plot usable
+at narrower dashboard widths.
 
 - **Performance Trends** — the two selected metrics side by side (CPU,
   Memory), one line per detector across every nightly tag in the sidebar's

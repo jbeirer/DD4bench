@@ -590,20 +590,43 @@ def _detector_legend_columns(
 
     font_size = 12
     row_h = font_size + 8
-    max_rows = max(
-        len(members) + any(detector_family(d)[1] for d in members)
-        for members in by_family.values()
-    )
-    legend_h = max_rows * row_h + 12
+    families = list(by_family.items())
+    display_labels = []
+    for family, members in families:
+        versioned = any(detector_family(d)[1] for d in members)
+        if versioned:
+            display_labels.append(family)
+        display_labels.extend(
+            detector_family(detector)[1] if versioned else detector
+            for detector in members
+        )
+    longest_label = max(map(len, display_labels), default=0)
+    max_columns = 2 if longest_label > 28 else 3 if longest_label > 18 else 4
+    family_rows = [
+        families[start:start + max_columns]
+        for start in range(0, len(families), max_columns)
+    ]
+    row_gap = 12
+    legend_row_heights = [
+        max(
+            len(members) + any(detector_family(d)[1] for d in members)
+            for _, members in family_row
+        ) * row_h + 12
+        for family_row in family_rows
+    ]
     offset = tick_clearance + 75
+    legend_h = sum(legend_row_heights) + row_gap * (len(family_rows) - 1)
     b_margin = max(160, offset + legend_h)
     total_h = plot_h + t_margin + b_margin
-    y = (b_margin - offset) / total_h
 
     trace_specs: dict[str, tuple[str, str]] = {}
     layout_legends: dict[str, dict] = {}
-    families = list(by_family.items())
     for idx, (family, members) in enumerate(families):
+        row_idx, col_idx = divmod(idx, max_columns)
+        columns_in_row = len(family_rows[row_idx])
+        preceding_height = (
+            sum(legend_row_heights[:row_idx]) + row_gap * row_idx
+        )
         legend_ref = "legend" if idx == 0 else f"legend{idx + 1}"
         versioned = any(detector_family(d)[1] for d in members)
         for detector in members:
@@ -617,13 +640,13 @@ def _detector_legend_columns(
             title=dict(text=family if versioned else ""),
             yref="container",
             yanchor="top",
-            y=y,
+            y=(b_margin - offset - preceding_height) / total_h,
             # Paper-referenced x positions keep the plotting area full-width;
             # container-referenced vertical legends make Plotly reserve side
             # margins for every family and squeeze the chart between them.
             xref="paper",
-            xanchor="left",
-            x=idx / len(families),
+            xanchor="center",
+            x=(col_idx + 0.5) / columns_in_row,
             tracegroupgap=0,
             font=dict(size=font_size),
             groupclick="togglegroup",

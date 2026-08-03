@@ -327,7 +327,8 @@ def _trends_body(
     # everything that only changes how the lines are drawn lives in the popover,
     # in the same right-hand position every other view puts it.
     controls = st.container(
-        horizontal=True, vertical_alignment="bottom", width="stretch", gap="medium",
+        border=True, horizontal=True, vertical_alignment="bottom",
+        width="stretch", gap="medium",
     )
     with controls:
         flags = st.container(width="content")
@@ -337,8 +338,8 @@ def _trends_body(
             horizontal=True, horizontal_alignment="right",
             vertical_alignment="bottom", width="stretch", gap="small",
         )
-        reliability_slot = actions.empty()
-        display_options_slot = actions.empty()
+        reliability_slot = actions.container(width="content").empty()
+        display_options_slot = actions.container(width="content").empty()
     display = _display_options(
         _palette_control("trends_palette", len(selected_labels)),
         _style_cycling_control("trends_style"),

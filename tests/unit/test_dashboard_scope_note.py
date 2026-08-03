@@ -213,13 +213,13 @@ def test_a_historical_sub_view_stops_the_note_naming_one_release(section):
     # The view these tabs open on is the selected run, so the note names it.
     assert "2026-07-10" in _line(at)
 
-    # Switched through session state rather than the widget, so this stays about
-    # the scope the tab reports and not about which control it switches with.
-    at.session_state[
+    view_key = (
         "evt_timing_view_mode" if section == "Event Timing"
         else "machine_info_view_mode"
-    ] = "Historical Trends"
-    at.run()
+    )
+    view = at.radio(key=view_key)
+    assert "Historical Trends" in view.options
+    view.set_value("Historical Trends").run()
     assert not at.exception, at.exception
     line = _line(at)
     # ... but the trends below span the window's releases, so naming the

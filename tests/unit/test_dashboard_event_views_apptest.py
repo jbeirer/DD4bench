@@ -347,6 +347,28 @@ def test_reset_restores_current_display_defaults(view, prefix):
 
 
 @pytest.mark.parametrize(("view", "prefix"), _VIEWS)
+def test_histogram_reset_clears_bin_count_companion_state(view, prefix):
+    at = _run(view, ["cfg_a", "cfg_b"])
+    bins_key = f"{prefix}_hist_bins"
+    auto_key = f"_{bins_key}_auto"
+    custom_key = f"_{bins_key}_custom"
+    warning_key = f"_{bins_key}_warning"
+    automatic = at.session_state[auto_key]
+
+    at.number_input(key=bins_key).set_value(9999).run()
+    assert not at.exception, at.exception
+    assert at.session_state[custom_key] is True
+    assert at.session_state[warning_key]
+
+    at.button(key=f"{prefix}_hist_reset").click().run()
+    assert not at.exception, at.exception
+    assert at.session_state[auto_key] == automatic
+    assert at.session_state[custom_key] is False
+    with pytest.raises(KeyError):
+        at.session_state[warning_key]
+
+
+@pytest.mark.parametrize(("view", "prefix"), _VIEWS)
 def test_exactly_four_histogram_controls(view, prefix):
     """One field, one slider and two toggles — nothing else crept in."""
     at = _run(view, ["cfg_a", "cfg_b"])

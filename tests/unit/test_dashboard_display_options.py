@@ -9,6 +9,7 @@ default is written down once, in its declaration, and both the widget and the
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,10 @@ pytest.importorskip("streamlit")
 from streamlit.testing.v1 import AppTest  # noqa: E402
 
 _DASHBOARD_DIR = Path(__file__).resolve().parents[2] / "dashboard"
+if str(_DASHBOARD_DIR) not in sys.path:
+    sys.path.insert(0, str(_DASHBOARD_DIR))
+
+from ui_utils import _DisplayControl, _display_options  # noqa: E402
 
 
 def _app(dashboard_dir, n_items):
@@ -50,6 +55,30 @@ def _run(n_items):
     return AppTest.from_function(
         _app, args=(str(_DASHBOARD_DIR), n_items), default_timeout=30,
     ).run()
+
+
+def _control(name: str, key: str) -> _DisplayControl:
+    return _DisplayControl(
+        name=name, key=key, default=None, render=lambda: None,
+    )
+
+
+def test_duplicate_control_names_fail_before_rendering_widgets():
+    with pytest.raises(ValueError, match="control names must be unique: alpha"):
+        _display_options(
+            _control("alpha", "first"),
+            _control("alpha", "second"),
+            key_prefix="duplicate_names",
+        )
+
+
+def test_duplicate_control_keys_fail_before_streamlits_duplicate_key_error():
+    with pytest.raises(ValueError, match="widget keys must be unique: shared"):
+        _display_options(
+            _control("alpha", "shared"),
+            _control("beta", "shared"),
+            key_prefix="duplicate_keys",
+        )
 
 
 def test_every_declared_control_is_returned_under_its_name():

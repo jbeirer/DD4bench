@@ -681,8 +681,33 @@ def test_detector_legend_columns_stack_family_variants_structurally():
     assert legends["legend4"]["title"]["text"] == ""
     assert all(legend["orientation"] == "v" for legend in legends.values())
     assert all(legend["xref"] == "paper" for legend in legends.values())
-    assert [legend["x"] for legend in legends.values()] == [0, 0.25, 0.5, 0.75]
+    assert all(legend["xanchor"] == "center" for legend in legends.values())
+    assert [legend["x"] for legend in legends.values()] == [
+        0.125, 0.375, 0.625, 0.875,
+    ]
     assert bottom >= 160
+
+
+def test_detector_legends_use_fewer_columns_for_long_labels():
+    detectors = [
+        f"VeryLongDetectorFamily{idx}_o1_v03" for idx in range(8)
+    ]
+    _, legends, bottom = ov._detector_legend_columns(
+        detectors, plot_h=380, t_margin=50, tick_clearance=75,
+    )
+
+    assert len(legends) == 8
+    assert [legend["x"] for legend in legends.values()] == [
+        1 / 6, 0.5, 5 / 6,
+        1 / 6, 0.5, 5 / 6,
+        0.25, 0.75,
+    ]
+    y_positions = [legend["y"] for legend in legends.values()]
+    assert len(set(y_positions[:3])) == 1
+    assert len(set(y_positions[3:6])) == 1
+    assert len(set(y_positions[6:])) == 1
+    assert y_positions[0] > y_positions[3] > y_positions[6]
+    assert bottom > 250
 
 
 # ── The two figures (smoke tests) ───────────────────────────────────────────────

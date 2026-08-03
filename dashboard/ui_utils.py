@@ -303,23 +303,26 @@ def _view_control_row(
     lets callers compute their data before deciding whether either control is
     needed without changing the row where it appears.
     """
-    controls = st.container(
-        horizontal=True, vertical_alignment="bottom", width="stretch", gap="medium",
+    view_col, options_col = st.columns(
+        [5, 3], gap="medium", vertical_alignment="bottom",
     )
-    with controls:
-        view_group = st.container(width="content")
-        with view_group:
-            view = (
-                st.radio("**View**", options=options, horizontal=True, key=key)
-                if len(options) > 1
-                else options[0]
-            )
-        actions = st.container(
-            horizontal=True, horizontal_alignment="right",
-            vertical_alignment="bottom", width="stretch", gap="small",
+    with view_col:
+        view = (
+            st.radio("**View**", options=options, horizontal=True, key=key)
+            if len(options) > 1
+            else options[0]
         )
-        reliability_slot = actions.empty()
-        display_options_slot = actions.empty()
+    with options_col:
+        option_alignment = st.container(
+            horizontal=True, horizontal_alignment="right",
+            vertical_alignment="bottom", width="stretch",
+        )
+        actions = option_alignment.container(
+            border=True, horizontal=True, vertical_alignment="bottom",
+            width="content", gap="small",
+        )
+        reliability_slot = actions.container(width="content").empty()
+        display_options_slot = actions.container(width="content").empty()
     return view, reliability_slot, display_options_slot
 
 
@@ -397,6 +400,19 @@ def _display_options(
     container so it sits at the end of the row in every view. Without a *slot*
     it renders wherever the cursor is.
     """
+    names = [control.name for control in controls]
+    duplicate_names = sorted({name for name in names if names.count(name) > 1})
+    if duplicate_names:
+        raise ValueError(
+            "Display control names must be unique: " + ", ".join(duplicate_names)
+        )
+    keys = [control.key for control in controls]
+    duplicate_keys = sorted({key for key in keys if keys.count(key) > 1})
+    if duplicate_keys:
+        raise ValueError(
+            "Display control widget keys must be unique: " + ", ".join(duplicate_keys)
+        )
+
     placement = (
         slot.container(horizontal=True, horizontal_alignment="right")
         if slot is not None
