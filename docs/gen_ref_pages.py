@@ -41,6 +41,12 @@ for path in sorted((SRC_ROOT / PACKAGE).rglob("*.py")):
         full_doc_path = full_doc_path.with_name("index.md")
         if not parts:
             continue
+    elif doc_path.name == "index.md":
+        # Package ``__init__.py`` files already own ``index.md``. Keep a
+        # literal ``index.py`` module distinct so the generated navigation
+        # never contains two references to the same page.
+        doc_path = doc_path.with_name("index-module.md")
+        full_doc_path = full_doc_path.with_name("index-module.md")
 
     identifier = ".".join(parts)
     nav_parts = parts[1:] if len(parts) > 1 else (PACKAGE,)
