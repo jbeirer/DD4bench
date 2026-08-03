@@ -1178,10 +1178,7 @@ def _html_window_section(
 #: under every ranking saying "yes, this moved" is a line every reader learns to
 #: skip — which is how the one that matters gets skipped too.
 _ASSESSMENT_NOTE = {
-    "likely_noise": (
-        "The ranker reads this step as likely measurement noise — these "
-        "candidates are context, not suspects"
-    ),
+    "likely_noise": "The ranker reads this step as likely measurement noise",
     "insufficient_evidence": (
         "The ranker found too little history to judge whether this step is real"
     ),
@@ -1200,8 +1197,8 @@ def _assessment_note(card: RankingCard | None) -> str:
     note = _ASSESSMENT_NOTE.get(assessment.verdict)
     if note is None:
         return ""
-    reason = f" — {assessment.reason}" if assessment.reason else ""
-    return f"{note}{reason}."
+    reason = assessment.reason_sentence
+    return f"{note} — {reason}" if reason else f"{note}."
 
 
 def _html_ranking_body(section: WindowSection, dashboard_url: str | None) -> str:

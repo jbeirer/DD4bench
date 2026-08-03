@@ -24,6 +24,7 @@ crash.
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, field, fields
 from typing import Any
 
@@ -239,6 +240,13 @@ ASSESSMENT_VERDICTS = frozenset({
 })
 
 
+#: A reason that already ends in a sentence. The punctuation need not be the
+#: last character: the model habitually closes on a quoted phrase, a
+#: parenthesis, or a bolded metric name, and a stop appended behind any of those
+#: is the doubled stop this pattern exists to prevent.
+_TERMINATED = re.compile(r"[.!?…][\"'”’)\]}*_`]*$")
+
+
 @dataclass(frozen=True)
 class StepAssessment:
     """What the ranker made of the *movement* itself, before any question of who
@@ -263,6 +271,19 @@ class StepAssessment:
     def likely_noise(self) -> bool:
         """The one reading with consequences: the comment bot withholds on it."""
         return self.verdict == "likely_noise"
+
+    @property
+    def reason_sentence(self) -> str:
+        """:attr:`reason` as one terminated sentence, empty when there is none.
+
+        The model writes this line, and whether it ends in a full stop is its
+        own choice from one night to the next. Terminating it here — once, for
+        every surface that quotes it — is what keeps a reader from meeting
+        either a sentence that trails off or one that ends in two dots."""
+        reason = self.reason.strip()
+        if not reason:
+            return ""
+        return reason if _TERMINATED.search(reason) else reason + "."
 
     def to_dict(self) -> dict[str, Any]:
         return {"verdict": self.verdict, "reason": self.reason}
