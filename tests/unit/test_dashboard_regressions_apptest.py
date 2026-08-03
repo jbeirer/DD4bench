@@ -681,6 +681,38 @@ def test_listing_failure_still_attributes_from_the_loaded_night():
     assert "may be incomplete" in captions
 
 
+def test_unloadable_history_night_marks_attribution_incomplete():
+    # The run listing names an earlier report night for the release, but that
+    # report cannot be loaded — the windows on screen may then be missing what
+    # it confirmed, and the view must say so even though the listing itself
+    # worked.
+    at = _run(
+        reports_map={
+            NIGHT: None,
+            "2026-07-11": _report([_group(verdicts=[_windowed_confirmed()])]),
+        },
+        dates=("2026-07-11", NIGHT),
+        stacks_dates={STACK: [NIGHT, "2026-07-11"]},
+    )
+    captions = " ".join(c.value for c in at.caption)
+    assert "Change entered: **2026-07-01 → 2026-07-04**" in captions
+    assert "may be incomplete" in captions
+
+
+def test_quiet_night_with_unloadable_history_says_attribution_may_be_missing():
+    # The worst silence: the loaded night is quiet and the night that would
+    # carry the release's confirmed windows cannot be loaded, so no card can
+    # render at all — "no attribution" must not pass for "nothing confirmed".
+    at = _run(
+        reports_map={NIGHT: None, "2026-07-11": _quiet_report()},
+        dates=("2026-07-11", NIGHT),
+        stacks_dates={STACK: [NIGHT, "2026-07-11"]},
+    )
+    assert not any("What changed upstream" in str(m.value) for m in at.markdown)
+    captions = " ".join(c.value for c in at.caption)
+    assert "may be incomplete" in captions
+
+
 def test_group_without_a_release_skips_attribution_with_a_notice():
     # ``k4h_release`` can be empty (a night that wrote no result CSV and whose
     # run_info names no stack) — then there is no release to attribute against,

@@ -177,11 +177,13 @@ def render(
             "This run group records no Key4hep release, so upstream "
             "attribution is unavailable for this night."
         )
-    elif not complete and attributions:
+    elif not complete:
+        # Rendered whether or not any window card survived: an absent card is
+        # exactly where "no attribution" must not read as "nothing confirmed"
+        # when it may mean "the confirming night could not be loaded".
         st.caption(
-            "❔ This release's report history could not be listed, so the "
-            "change windows above reflect only the loaded night(s) and may be "
-            "incomplete."
+            "❔ This release's full report history could not be loaded, so "
+            "the upstream change windows may be incomplete or missing."
         )
     if effective and effective != stack:
         return regressions_derived_release(effective)
@@ -287,8 +289,9 @@ def _attribution_reports(
     Attribution is release-level — a window is pinned to the earliest report
     night of the release that recorded it — so judging it from one night would
     drop the windows an earlier night of the same release confirmed. Incomplete
-    when the run-date listing is unavailable or names no runs for *release*:
-    the windows then describe only the nights on hand, which the view says.
+    when the run-date listing is unavailable, names no runs for *release*, or
+    one of the listed nights could not be fetched or parsed: the windows then
+    describe only the nights on hand, which the view says.
     """
     run_dates = (stacks_dates or {}).get(release)
     if not run_dates:
@@ -297,8 +300,8 @@ def _attribution_reports(
     missing = [n for n in wanted if n not in loaded]
     if not missing:
         return loaded, True
-    fetched, _ = _load_reports(data_url, missing)
-    return {**loaded, **fetched}, True
+    fetched, unavailable = _load_reports(data_url, missing)
+    return {**loaded, **fetched}, not unavailable
 
 
 def _night_group(
