@@ -106,7 +106,8 @@ def _app(dashboard_dir, reports_map, blame_map, dates, stacks_dates,
     # The forward blame card's live provenance lookup; stubbed to avoid the
     # network so a windowed verdict's card renders without a real EOS fetch.
     _tab.packages_for_release = lambda data_url, platform, release: None
-    _tab.render(
+    import streamlit as _st
+    _st.session_state["_scope_override"] = _tab.render(
         "https://example.invalid", "/tmp/cache", detector, platform, sample, stack,
     )
 
@@ -554,43 +555,47 @@ def test_pinned_report_that_cannot_be_loaded_warns():
     assert {m.label: m.value for m in at.metric}["🔴 Regressed"] == "2"
 
 
+def _listing_failure_app(dashboard_dir, report_json, night, platform, stack):
+    """The tab with the run-date listing raising on its first call only; the
+    trend preview's own (unrelated) history fetch, triggered by the same
+    auto-opened drilldown, must still be free to run and come up empty on its
+    own terms. Closes over nothing, like ``_app``."""
+    import sys as _sys
+    if dashboard_dir not in _sys.path:
+        _sys.path.insert(0, dashboard_dir)
+    import requests as _requests
+    from tabs import regressions as _tab
+
+    _tab._cached_list_report_dates = lambda url: [night]
+    # Production batch-fetches candidate nights; patch that path, not the
+    # removed singular fetch, so this test is hermetic (independent of what
+    # a prior test left on the shared module).
+    _tab._cached_fetch_reports = lambda url, nights: {n: report_json for n in nights}
+    _tab._cached_fetch_blame = lambda url, n: None
+
+    calls = {"n": 0}
+    def _raise_once(url, det, plat, samp):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise _requests.ConnectionError("EOS unreachable")
+        return {}
+    _tab._cached_list_run_dates = _raise_once
+    _tab._cached_fetch_runs_windowed = lambda *a, **k: ()
+    _tab.packages_for_release = lambda *a, **k: None
+    import streamlit as _st
+    _st.session_state["_scope_override"] = _tab.render(
+        "https://example.invalid", "/tmp/cache", "CLD", platform, "single_e",
+        stack,
+    )
+
+
 def test_run_listing_failure_falls_back_with_a_visible_warning():
     # A network/listing failure must not silently swap in the latest report
     # under an old-release selection without saying so.
-    def _app(dashboard_dir, report_json, night, platform):
-        import sys as _sys
-        if dashboard_dir not in _sys.path:
-            _sys.path.insert(0, dashboard_dir)
-        import requests as _requests
-        from tabs import regressions as _tab
-
-        _tab._cached_list_report_dates = lambda url: [night]
-        # Production batch-fetches candidate nights; patch that path, not the
-        # removed singular fetch, so this test is hermetic (independent of what
-        # a prior test left on the shared module).
-        _tab._cached_fetch_reports = lambda url, nights: {n: report_json for n in nights}
-
-        # Only the report-night resolution (the first call) should fail here;
-        # the trend preview's own (unrelated) history fetch, triggered by the
-        # same auto-opened drilldown, must still be free to run and come up
-        # empty on its own terms.
-        calls = {"n": 0}
-        def _raise_once(url, det, plat, samp):
-            calls["n"] += 1
-            if calls["n"] == 1:
-                raise _requests.ConnectionError("EOS unreachable")
-            return {}
-        _tab._cached_list_run_dates = _raise_once
-        _tab._cached_fetch_runs_windowed = lambda *a, **k: ()
-        import streamlit as _st
-        _st.session_state["_scope_override"] = _tab.render(
-            "https://example.invalid", "/tmp/cache", "CLD", platform, "single_e",
-            f"key4hep-{night}",
-        )
-
     at = AppTest.from_function(
-        _app,
-        args=(str(_DASHBOARD_DIR), _report([_group(verdicts=_FLAGGED)]), NIGHT, PLAT),
+        _listing_failure_app,
+        args=(str(_DASHBOARD_DIR), _report([_group(verdicts=_FLAGGED)]), NIGHT,
+              PLAT, "key4hep-2026-06-15"),
         default_timeout=30,
     )
     at.run()
@@ -602,7 +607,75 @@ def test_run_listing_failure_falls_back_with_a_visible_warning():
     # the selected release as the one on screen.
     override = at.session_state["_scope_override"]
     assert override is not None
-    assert override.release == "the latest report, which may not be the selected release"
+    assert override.release == f"{NIGHT} — the selected report night's release"
+
+
+# ── attribution follows the selected night's release, not the sidebar's ──────
+
+def test_foreign_release_night_attributes_against_that_nights_release():
+    # The sidebar release has no run listing, so the tab falls back to the
+    # latest report — benchmarked by a different release. Attribution must
+    # follow the release the verdicts on screen describe, and the scope note
+    # override must name it.
+    at = _run(
+        _report([_group(verdicts=[_windowed_confirmed()])]),
+        stacks_dates={STACK: [NIGHT]},
+        stack="key4hep-2026-06-15",
+    )
+    assert any("What changed upstream" in str(m.value) for m in at.markdown)
+    captions = " ".join(c.value for c in at.caption)
+    assert "Change entered: **2026-07-01 → 2026-07-04**" in captions
+    override = at.session_state["_scope_override"]
+    assert override is not None
+    assert override.release == f"{NIGHT} — the selected report night's release"
+
+
+def test_foreign_release_quiet_rerun_loads_that_releases_history():
+    # The fallback offers only the latest report — a quiet rerun of a release
+    # whose earlier night confirmed a windowed regression. Attribution must
+    # load that release's other report nights rather than judge from the one
+    # night on hand, so the window card still renders and names the confirming
+    # night.
+    at = _run(
+        reports_map={
+            NIGHT: _report([_group(verdicts=[_windowed_confirmed()])]),
+            "2026-07-11": _quiet_report(),
+        },
+        dates=("2026-07-11", NIGHT),
+        stacks_dates={STACK: [NIGHT, "2026-07-11"]},
+        stack="key4hep-2026-06-15",
+    )
+    captions = " ".join(c.value for c in at.caption)
+    assert "Change entered: **2026-07-01 → 2026-07-04**" in captions
+    assert f"first confirmed on report night **{NIGHT}**" in captions
+
+
+def test_listing_failure_still_attributes_from_the_loaded_night():
+    # With the run-date listing down, the release's report history cannot be
+    # loaded — attribution still renders from the night on hand, with a caption
+    # saying the windows may be incomplete.
+    at = AppTest.from_function(
+        _listing_failure_app,
+        args=(str(_DASHBOARD_DIR), _report([_group(verdicts=[_windowed_confirmed()])]),
+              NIGHT, PLAT, STACK),
+        default_timeout=30,
+    )
+    at.run()
+    assert not at.exception, at.exception
+    assert any("What changed upstream" in str(m.value) for m in at.markdown)
+    captions = " ".join(c.value for c in at.caption)
+    assert "Change entered: **2026-07-01 → 2026-07-04**" in captions
+    assert "may be incomplete" in captions
+
+
+def test_group_without_a_release_skips_attribution_with_a_notice():
+    # ``k4h_release`` can be empty (a night that wrote no result CSV and whose
+    # run_info names no stack) — then there is no release to attribute against,
+    # and the tab must say so rather than raise or attribute silently.
+    group = dataclasses.replace(_group(verdicts=[_windowed_confirmed()]), k4h_release="")
+    at = _run(_report([group]), stacks_dates={STACK: [NIGHT]})
+    assert any("records no Key4hep release" in c.value for c in at.caption)
+    assert not any("What changed upstream" in str(m.value) for m in at.markdown)
 
 
 def test_release_older_than_the_first_report_says_so():

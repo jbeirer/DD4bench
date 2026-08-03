@@ -20,6 +20,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from k4bench.labels import pretty_release
+
 #: Every section, in display order.
 SECTION_NAMES = [
     "Overview",
@@ -116,9 +118,10 @@ SECTION_SCOPE: dict[str, SectionScope] = {
         release="all releases in the trend window",
     ),
     # The release selects which report nights are on offer; the tab's picker
-    # then chooses one of them. When EOS cannot say which nights belong to the
-    # release, the tab falls back to the latest report and says so by returning
-    # :data:`REGRESSIONS_LATEST_REPORT`.
+    # then chooses one of them. When the night on screen was benchmarked by a
+    # different release (the fallback when EOS cannot tie any night to the
+    # sidebar's), the tab says which by returning
+    # :func:`regressions_derived_release`.
     "Regressions": SectionScope(
         detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED,
     ),
@@ -168,13 +171,14 @@ TREND_WINDOW_SCOPE = SectionScope(
     release="all releases in the trend window",
 )
 
-#: Regressions when EOS could not list the release's runs. The tab then shows
-#: the latest report, which need not be the selected release's — it warns about
-#: that in the view, and the note must not contradict the warning.
-REGRESSIONS_LATEST_REPORT = SectionScope(
-    detector=SCOPED, platform=SCOPED, sample=SCOPED,
-    release="the latest report, which may not be the selected release",
-)
+def regressions_derived_release(release: str) -> SectionScope:
+    """Regressions when the night on screen belongs to a release other than the
+    sidebar's: the note names the release the verdicts and attribution actually
+    describe, since the sidebar's is not what was rendered."""
+    return SectionScope(
+        detector=SCOPED, platform=SCOPED, sample=SCOPED,
+        release=f"{pretty_release(release)} — the selected report night's release",
+    )
 
 #: Stack Changes while its reverse view's "Whole platform" toggle is on: the
 #: regressions listed there then span every detector and sample benchmarked on

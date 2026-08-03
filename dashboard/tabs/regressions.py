@@ -12,6 +12,9 @@ though nights can still differ (WATCH → CONFIRMED progression, marginal OK
 nights, pre-backfill reports). The default night is therefore the most
 attention-worthy one, a picker exposes the release's other nights, and
 ``?report=`` pins one directly (the deep link emitted in alert emails). The
+verdicts and the release-level upstream attribution follow the *selected
+night's* run group: on the fallback nights that group's release need not be
+the sidebar's, and the tab then names the release actually on screen. The
 cross-detector at-a-glance picture lives in the Overview tab. Only the trend
 preview downloads run data, and only for the series being inspected.
 """
@@ -31,7 +34,7 @@ from k4bench.regression.models import (
     Severity,
 )
 from k4bench.labels import pretty_sample
-from sections import REGRESSIONS_LATEST_REPORT, SectionScope
+from sections import SectionScope, regressions_derived_release
 from k4bench.regression.render import (
     WINDOW_WATCH_TOKEN,
     _detector_badge,
@@ -69,9 +72,11 @@ def render(
 ) -> SectionScope | None:
     """Render the tab; return the scope note's override when one applies.
 
-    The override is the fallback case only: when EOS cannot say which nights
-    belong to the selected release, the night on screen is the latest report
-    rather than that release's, and the note must say so too.
+    The override applies when the selected night's run group belongs to a
+    release other than the sidebar's — the fallback nights are the latest
+    report, whichever release ran it — and names the release the verdicts and
+    attribution on screen actually describe (see
+    :func:`sections.regressions_derived_release`).
     """
     dates = _cached_list_report_dates(data_url)
     if not dates:
@@ -81,10 +86,9 @@ def render(
         )
         return None
 
-    nights, is_release = _candidate_nights(
+    nights, _, stacks_dates = _candidate_nights(
         data_url, detector, platform, sample, stack, dates,
     )
-    override = None if is_release else REGRESSIONS_LATEST_REPORT
     if nights is None:
         st.info(
             f"No nightly report covers release **{_release(stack)}**'s runs — "
@@ -116,35 +120,60 @@ def render(
     default_night = _pick_night(reports, detector, platform, sample)
     night = _select_night(reports, default_night, detector, platform, sample, stack)
     st.query_params["report"] = night
-    if night != max(dates):
-        st.caption(
-            f"Historical view · release **{_release(stack)}** · report night "
-            f"**{night}**"
-        )
     report = reports[night]
 
     # A (detector, platform, sample) triple is one run group — the report's
-    # unit of judgement — so the sidebar scope selects at most one.
+    # unit of judgement — so the sidebar scope selects at most one. Its release
+    # is the one the verdicts on screen actually describe, which on the
+    # fallback nights (see :func:`_candidate_nights`) need not be the
+    # sidebar's; empty when the run group records no release at all.
     group = _night_group(report, detector, platform, sample)
+    effective = group.k4h_release if group is not None else ""
+    if night != max(dates):
+        st.caption(
+            f"Historical view · release **{_release(effective or stack)}** · "
+            f"report night **{night}**"
+        )
     if group is None:
         _render_no_group_notice(report, detector, sample, night)
-        return override
+        return None
 
     # Package/PR attribution belongs to the change window, not to whichever
     # repeat measurement is open in the night picker: each window is pinned to
-    # the release's first report that recorded it, so no packages appear to
-    # move between measurements of one release.
-    attributions = _window_attributions(
-        reports, detector, platform, sample, stack, group, data_url,
-    )
+    # the earliest report night of the *night's* release that recorded it, so
+    # no packages appear to move between measurements of one release — and a
+    # quiet rerun on screen still shows the windows an earlier night confirmed.
+    if not effective:
+        attributions: list[_WindowAttribution] = []
+        complete = True
+    else:
+        attr_reports, complete = _attribution_reports(
+            data_url, reports, effective, stacks_dates, dates,
+        )
+        attributions = _window_attributions(
+            attr_reports, detector, platform, sample, effective, group, data_url,
+        )
 
     _render_banner(group)
     _render_group(
         group, data_url, cache_dir, attributions=attributions,
         key=f"{detector}_{platform}_{sample}",
-        scope=(stack, night),
+        scope=(effective or stack, night),
     )
-    return override
+    if not effective:
+        st.caption(
+            "This run group records no Key4hep release, so upstream "
+            "attribution is unavailable for this night."
+        )
+    elif not complete and attributions:
+        st.caption(
+            "❔ This release's report history could not be listed, so the "
+            "change windows above reflect only the loaded night(s) and may be "
+            "incomplete."
+        )
+    if effective and effective != stack:
+        return regressions_derived_release(effective)
+    return None
 
 
 def _load_reports(
@@ -176,13 +205,17 @@ def _load_reports(
 def _candidate_nights(
     data_url: str, detector: str, platform: str, sample: str, stack: str,
     dates: list[str],
-) -> tuple[list[str] | None, bool]:
+) -> tuple[list[str] | None, bool, dict[str, list[str]] | None]:
     """Report nights on offer for the sidebar's release, newest first.
 
     Returned with a flag for whether those nights are known to *be* the
-    release's. It is false on the two fallbacks below, where the nights are the
-    latest report rather than anything EOS confirmed belongs to the release —
-    the tab says so in the view, and the scope note must not claim otherwise.
+    release's, and with the run-date listing itself (``None`` when it could not
+    be fetched — the caller reuses it for attribution, and re-listing on the
+    failing branch would re-hit the network, since ``st.cache_data`` does not
+    cache raised exceptions). The flag is false on the two fallbacks below,
+    where the nights are the latest report rather than anything EOS confirmed
+    belongs to the release — the tab then reports the release the rendered
+    night actually carries.
 
     A report is written per *run*, under ``_reports/{run_date}`` — so several
     nights routinely re-benchmark one fixed release, and while the engine
@@ -196,7 +229,7 @@ def _candidate_nights(
     than the release's last run, the night whose "no run uploaded" failure must
     stay visible.
 
-    ``None`` when the release's runs all predate the first report;
+    ``None`` nights when the release's runs all predate the first report;
     ``[max(dates)]`` (the latest report) on a run-history listing failure or an
     empty listing — the only sensible fallback left.
     """
@@ -213,12 +246,12 @@ def _candidate_nights(
             "latest report; it may not match the sidebar's selected release.",
             icon="⚠️",
         )
-        return [max(dates)], False
+        return [max(dates)], False, None
     run_dates = stacks_dates.get(stack) or ()
     if not run_dates:
         # No run listing for this release — the latest report is the only
         # sensible answer left.
-        return [max(dates)], False
+        return [max(dates)], False, stacks_dates
     dateset = set(dates)
     nights = {d for d in run_dates if d in dateset}
     newest_any = max(d for ds in stacks_dates.values() for d in ds)
@@ -228,8 +261,32 @@ def _candidate_nights(
         # visible even though it isn't one of the release's own run dates.
         nights.add(max(dates))
     if not nights:
-        return None, True
-    return sorted(nights, reverse=True), True
+        return None, True, stacks_dates
+    return sorted(nights, reverse=True), True, stacks_dates
+
+
+def _attribution_reports(
+    data_url: str, loaded: dict[str, NightlyReport], release: str,
+    stacks_dates: dict[str, list[str]] | None, dates: list[str],
+) -> tuple[dict[str, NightlyReport], bool]:
+    """Every already-loaded report plus the rest of *release*'s report nights,
+    and whether that history is known to be complete.
+
+    Attribution is release-level — a window is pinned to the earliest report
+    night of the release that recorded it — so judging it from one night would
+    drop the windows an earlier night of the same release confirmed. Incomplete
+    when the run-date listing is unavailable or names no runs for *release*:
+    the windows then describe only the nights on hand, which the view says.
+    """
+    run_dates = (stacks_dates or {}).get(release)
+    if not run_dates:
+        return loaded, False
+    wanted = sorted(set(run_dates) & set(dates))
+    missing = [n for n in wanted if n not in loaded]
+    if not missing:
+        return loaded, True
+    fetched, _ = _load_reports(data_url, missing)
+    return {**loaded, **fetched}, True
 
 
 def _night_group(
@@ -294,9 +351,13 @@ def _blame_for_night(data_url: str, night: str) -> BlameReport | None:
 
 def _window_attributions(
     reports: dict[str, NightlyReport], detector: str, platform: str,
-    sample: str, stack: str, group: RunGroupReport, data_url: str,
+    sample: str, release: str, group: RunGroupReport, data_url: str,
 ) -> list[_WindowAttribution]:
     """One attribution per distinct change window on the selected night.
+
+    *release* is the selected night's — the release *group* carries, which the
+    verdicts on screen describe — and *reports* its report history (see
+    :func:`_attribution_reports`), not merely the nights the picker offers.
 
     A release can confirm more than one change: metrics already elevated when
     the release was first measured carry the window their change entered in,
@@ -306,7 +367,7 @@ def _window_attributions(
 
     What must *not* move between reruns is a window's attribution: no package
     changed between measurements of one release, so each window is pinned to
-    the earliest report night of *stack* that recorded it, and that night's
+    the earliest report night of *release* that recorded it, and that night's
     sidecar supplies its ranking. The set of windows is release-level for the
     same reason — a rerun where every metric happened to fall back inside the
     band still belongs to a release that confirmed these changes, so its cards
@@ -319,7 +380,7 @@ def _window_attributions(
     by_window: dict[tuple, dict[tuple, MetricVerdict]] = {}
     for night in sorted(reports):
         night_group = _night_group(reports[night], detector, platform, sample)
-        if night_group is None or night_group.k4h_release != stack:
+        if night_group is None or night_group.k4h_release != release:
             continue
         for v in night_group.verdicts:
             if _blame.has_window(v):
