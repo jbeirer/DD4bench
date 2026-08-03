@@ -30,8 +30,6 @@ def _render_historical(
     trend_region_df: pd.DataFrame,
     selected_labels: list[str],
     reliability: dict[str, bool | None] | None = None,
-    reliability_slot=None,
-    display_options_slot=None,
 ) -> None:
     """Render the historical region timing trends view."""
     if not _is_valid_df(trend_region_df):
@@ -46,18 +44,24 @@ def _render_historical(
         st.info("No historical region timing data available for the selected configurations.")
         return
 
-    trend_region_df = render_reliability_filter(
-        trend_region_df[trend_region_df["label"].isin(filtered_labels)],
-        reliability, key="region_hist_exclude_unreliable",
-        slot=reliability_slot,
+    # Keep the selectors and their view-level actions on one baseline.  The
+    # reliability and display controls are populated later, after their data is
+    # known, so reserve their positions here rather than placing them beside the
+    # View selector above this row.
+    config_host, attribution_host, actions_host = st.columns(
+        [1, 1, 1.5], gap="medium", vertical_alignment="bottom",
     )
-    if trend_region_df.empty:
-        return
+    with actions_host:
+        actions = st.container(
+            horizontal=True, horizontal_alignment="right",
+            vertical_alignment="bottom", width="stretch", gap="small",
+        )
+        reliability_slot = actions.container(width="content").empty()
+        display_options_slot = actions.container(width="content").empty()
 
-    col_cfg, col_attr = st.columns([1, 1], vertical_alignment="bottom")
-    with col_cfg:
+    with config_host:
         config = st.selectbox("Configuration", filtered_labels, key="region_hist_config")
-    with col_attr:
+    with attribution_host:
         attribution = st.radio(
             "Attribution",
             options=["at_location", "by_birth"],
@@ -66,6 +70,15 @@ def _render_historical(
             key="region_hist_attr",
             help=_ATTRIBUTION_HELP,
         )
+
+    trend_region_df = render_reliability_filter(
+        trend_region_df[trend_region_df["label"].isin(filtered_labels)],
+        reliability, key="region_hist_exclude_unreliable",
+        slot=reliability_slot,
+    )
+    if trend_region_df.empty:
+        return
+
     def _display_controls(n_detectors: int | None) -> dict:
         """Draw the popover, sizing the palette for *n_detectors* lines.
 

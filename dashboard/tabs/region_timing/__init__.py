@@ -70,8 +70,6 @@ def render(
     elif view == "Historical Trends":
         _render_historical(
             trend_region_df, selected_labels, reliability,
-            reliability_slot=reliability_slot,
-            display_options_slot=display_options_slot,
         )
         # The trends span the window's releases, not the sidebar's one —
         # reported so the scope note above stops naming it. The other three

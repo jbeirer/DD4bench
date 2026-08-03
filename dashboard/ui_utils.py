@@ -318,7 +318,7 @@ def _view_control_row(
             vertical_alignment="bottom", width="stretch",
         )
         actions = option_alignment.container(
-            border=True, horizontal=True, vertical_alignment="bottom",
+            border=False, horizontal=True, vertical_alignment="bottom",
             width="content", gap="small",
         )
         reliability_slot = actions.container(width="content").empty()
