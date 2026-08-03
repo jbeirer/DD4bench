@@ -398,9 +398,11 @@ def test_excluding_the_flagged_run_takes_its_markers_off_the_chart():
     # the on-by-default filter — so its markers go with it. The flag is evidence
     # about that measurement, and the measurement is no longer plotted.
     at = _run(_reports_stub(confirmed=True), {"2026-05-21": False})
-    assert at.toggle(key="trends_exclude_unreliable").value is True
+    runs = at.segmented_control(key="trends_exclude_unreliable")
+    assert runs.label == "Runs · ⚠️ 1 unreliable"
+    assert runs.value == "Reliable only"
     assert "markers" not in _marker_modes(at)
     # Keeping the run puts them back, rather than the flag being lost for good.
-    at.toggle(key="trends_exclude_unreliable").set_value(False).run()
+    runs.set_value("All runs").run()
     assert not at.exception, at.exception
     assert _marker_modes(at).count("markers") == 4

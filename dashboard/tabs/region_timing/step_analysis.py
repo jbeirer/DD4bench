@@ -8,19 +8,20 @@ from plotly.subplots import make_subplots
 
 from k4bench.analysis.plots._theme import _TEMPLATE
 from ui_utils import (
-    _auto_palette_index,
+    _display_options,
     _legend_below,
-    _PALETTE_NAMES,
+    _palette_control,
     _PALETTES,
-    _reset_widget_on_scope,
     _SYMBOLS,
     _to_rgba,
 )
 
-from ._common import _palette_placeholder
 
-
-def _render_step_analysis(region_data: dict, selected_labels: list[str]) -> None:
+def _render_step_analysis(
+    region_data: dict,
+    selected_labels: list[str],
+    display_options_slot=None,
+) -> None:
     """Step count decomposition: scatter (steps vs µs/step) + ranked bar panels.
 
     Answers: *why* is a region expensive?
@@ -35,21 +36,34 @@ def _render_step_analysis(region_data: dict, selected_labels: list[str]) -> None
         st.info("No region timing data available for any of the selected configurations.")
         return
 
-    # ── Controls — config first, then data, then palette (needs n) ───────────
-    col_cfg, col_pal = st.columns([3, 1])
-    with col_cfg:
-        config = st.selectbox("Configuration", filtered_labels, key="sa_config")
+    # ── Controls — config first, then data, then the popover (palette needs n) ─
+    config = st.selectbox(
+        "Configuration", filtered_labels, key="sa_config", width=420,
+    )
+
+    def _display_controls(n_detectors: int | None) -> dict:
+        """Draw the popover, sizing the palette for *n_detectors* points.
+
+        ``None`` means this render has no ranking to size against, which keeps
+        the palette's stored value alive without letting an empty render
+        re-default it (see :func:`~ui_utils._palette_control`).
+        """
+        return _display_options(
+            _palette_control("sa_palette", n_detectors),
+            key_prefix="sa_display",
+            slot=display_options_slot,
+        )
 
     data     = region_data.get(config, {})
     al_df    = data.get("at_location")
     steps_df = data.get("steps")
 
     if al_df is None:
-        _palette_placeholder(col_pal, "sa_palette")
+        _display_controls(None)
         st.info("No timing data available for this configuration.")
         return
     if steps_df is None:
-        _palette_placeholder(col_pal, "sa_palette")
+        _display_controls(None)
         st.info(
             "Step count data (`interval_counts`) is not available in this run's regions JSON. "
             "Regenerate the benchmark output with a newer k4bench version."
@@ -71,22 +85,13 @@ def _render_step_analysis(region_data: dict, selected_labels: list[str]) -> None
     ranked = al_means[al_means > 1e-9].sort_values(ascending=False)
     det_list = ranked.index.tolist()
     if not det_list:
-        _palette_placeholder(col_pal, "sa_palette")
+        _display_controls(None)
         st.info("No detector data to show.")
         return
 
     n = len(det_list)
 
-    with col_pal:
-        palette_default = _auto_palette_index(n)
-        _reset_widget_on_scope(
-            "sa_palette", palette_default, reset_unscoped=True,
-        )
-        palette_name = st.selectbox(
-            "Colour palette", options=_PALETTE_NAMES,
-            index=palette_default, key="sa_palette",
-        )
-    palette    = _PALETTES[palette_name]
+    palette    = _PALETTES[_display_controls(n)["palette"]]
     total_time    = np.array([float(al_means[d])             for d in det_list])  # s
     raw_step_cnt  = np.array([float(steps_means.get(d, 0.0)) for d in det_list])  # steps
     plot_step_cnt = np.maximum(raw_step_cnt, 0.1)            # floored for the log x-axis only

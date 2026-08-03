@@ -15,6 +15,7 @@ from ui_utils import (
     _is_valid_df,
     _PALETTES,
     _render_historical_trends,
+    _view_control_row,
 )
 
 
@@ -29,6 +30,10 @@ _HIST_STATS = [
     ("mean_time_s",   "Mean time (s)"),
     ("std_time_s",    "Std dev (s)"),
 ]
+
+#: Sub-views, in dispatch order; the first is the fallback when the tab has no
+#: history to offer.
+_VIEWS = ["Current Run", "Historical Trends"]
 
 
 def _render_current_run(
@@ -53,15 +58,11 @@ def _render_current_run(
     bin_options = _cached_event_bin_options(
         event_data, "event_time_s", tuple(display_labels)
     )
-    if display_options_slot is None:
-        bins, palette_name, alpha, show_errors, show_mean_lines = (
-            _histogram_display_controls("evt_timing", bin_options, len(display_labels))
+    bins, palette_name, alpha, show_errors, show_mean_lines = (
+        _histogram_display_controls(
+            "evt_timing", bin_options, len(display_labels), display_options_slot,
         )
-    else:
-        with display_options_slot.container(horizontal=True, horizontal_alignment="right"):
-            bins, palette_name, alpha, show_errors, show_mean_lines = (
-                _histogram_display_controls("evt_timing", bin_options, len(display_labels))
-            )
+    )
 
     fig = plot_event_timing(
         event_data,
@@ -99,6 +100,8 @@ def _render_historical(
     trend_event_df: pd.DataFrame,
     selected_labels: list[str],
     reliability: dict[str, bool | None] | None = None,
+    reliability_slot=None,
+    display_options_slot=None,
 ) -> None:
     """Render the historical event timing trends view (3-panel: Median | Mean | Std)."""
     if not _is_valid_df(trend_event_df):
@@ -116,6 +119,7 @@ def _render_historical(
     trend_event_df = render_reliability_filter(
         trend_event_df[trend_event_df["label"].isin(filtered_labels)],
         reliability, key="evt_timing_hist_exclude_unreliable",
+        slot=reliability_slot,
     )
     if trend_event_df.empty:
         return
@@ -132,6 +136,7 @@ def _render_historical(
         unit="s",
         key_prefix="evt_timing_hist",
         no_data_msg="No event timing trend data for the selected configurations.",
+        display_options_slot=display_options_slot,
     )
 
 
@@ -151,20 +156,9 @@ def render(
 
     # The "Historical Trends" option is gated on remote mode (not on the current
     # window's data) so the view selector stays put when the trend window changes.
-    view_col, display_options_col = st.columns(
-        [2, 1], gap="medium", vertical_alignment="bottom",
+    view, reliability_slot, display_options_slot = _view_control_row(
+        _VIEWS if trends_enabled else [_VIEWS[0]], key="evt_timing_view_mode",
     )
-    with view_col:
-        if trends_enabled:
-            view = st.radio(
-                "View",
-                options=["Current Run", "Historical Trends"],
-                horizontal=True,
-                key="evt_timing_view_mode",
-            )
-        else:
-            view = "Current Run"
-    display_options_slot = display_options_col.empty()
 
     if view == "Current Run":
         if event_data is None:
@@ -172,7 +166,11 @@ def render(
         else:
             _render_current_run(event_data, selected_labels, display_options_slot)
         return None
-    _render_historical(trend_event_df, selected_labels, reliability)
+    _render_historical(
+        trend_event_df, selected_labels, reliability,
+        reliability_slot=reliability_slot,
+        display_options_slot=display_options_slot,
+    )
     # The trends span the window's releases, not the sidebar's one — reported
     # so the scope note above stops naming it.
     return TREND_WINDOW_SCOPE

@@ -13,6 +13,66 @@ import streamlit as st
 from k4bench.results.reliability_evidence import reliability_verdict as _reliability_verdict
 
 
+_RUN_SCOPE_OPTIONS = ("Reliable only", "All runs")
+
+
+def render_reliability_scope(
+    n_unreliable: int,
+    dates: list[str],
+    *,
+    key: str,
+    inline: bool = False,
+    slot=None,
+) -> bool:
+    """Render the dashboard-wide run-quality scope selector.
+
+    Returns ``True`` for **Reliable only** and ``False`` for **All runs**. The
+    affected count is attached to the control label and the dates live in its
+    help, so every historical view presents the same state, consequence, and
+    explanation as one unit.
+
+    The boolean migration preserves live sessions created by the former
+    ``Exclude unreliable runs`` toggle without changing the existing widget
+    keys shared by callers and Overview sub-views. Callers reserve *slot* on
+    their existing controls line when the unreliable count is only known later;
+    the selector then fills that position without creating another row.
+    """
+    stored = st.session_state.get(key)
+    if isinstance(stored, bool):
+        st.session_state[key] = (
+            _RUN_SCOPE_OPTIONS[0] if stored else _RUN_SCOPE_OPTIONS[1]
+        )
+    elif stored is None and key in st.session_state:
+        st.session_state[key] = _RUN_SCOPE_OPTIONS[0]
+    elif stored not in (None, *_RUN_SCOPE_OPTIONS):
+        st.session_state[key] = _RUN_SCOPE_OPTIONS[0]
+
+    affected = ", ".join(dates) if dates else "dates unavailable"
+    if slot is not None:
+        host = slot
+    elif inline:
+        host = st
+    else:
+        host = st.container(
+            horizontal=True, horizontal_alignment="right",
+            vertical_alignment="bottom", width="stretch",
+        )
+    runs = host.segmented_control(
+        f"Runs · ⚠️ {n_unreliable} unreliable",
+        _RUN_SCOPE_OPTIONS,
+        default=(
+            _RUN_SCOPE_OPTIONS[0] if key not in st.session_state else None
+        ),
+        required=True,
+        key=key,
+        help=f"Affected nightly tags: {affected}. Reliable only excludes "
+             "runs that failed the conservative host-condition check; All "
+             "runs includes them. See Machine Info for the per-run verdict.",
+        width="content",
+    ) or _RUN_SCOPE_OPTIONS[0]
+    return runs == _RUN_SCOPE_OPTIONS[0]
+
+
 def render_sidebar_run_quality(
     machine_info: dict | None,
     results: pd.DataFrame | None,
@@ -73,29 +133,33 @@ def resolve_reliability_filter(
     *,
     key: str,
     date_col: str = "x_date",
+    slot=None,
 ) -> tuple[pd.DataFrame, set[str]]:
-    """Render the unreliable-run warning + "Exclude unreliable runs" toggle, and
-    return ``(frame, excluded_run_ids)``.
+    """Render the shared reliable-only/all-runs choice and filter the frame.
 
-    Shared by every tab that plots historical (multi-run) data so the warning text
-    and the toggle behave identically everywhere. *df* must carry a ``run_id``
+    Shared by every tab that plots historical (multi-run) data so the run-scope
+    choice behaves identically everywhere. *df* must carry a ``run_id``
     column; *reliability* is the per-run verdict map from :func:`run_reliability_map`
     (``{run_id: reliable}``). When no run in *df* is flagged unreliable — including
     when *reliability* is empty/``None`` (e.g. local mode, or no machine info) — *df*
     is returned unchanged and nothing is drawn.
 
-    The toggle defaults to *on*: runs that failed the conservative reliability check
-    are dropped unless the user disables it. If that empties the frame, an
+    **Reliable only** is the default: runs that failed the conservative reliability
+    check are dropped unless the user chooses **All runs**. If that empties the frame, an
     explanatory warning is shown and the empty frame is returned, so the caller can
     ``return`` without plotting.
 
-    *date_col* is the column whose dates are listed in the warning text; it defaults
-    to ``x_date`` (the nightly tag) so the dates match the plot x-axis and the
+    *date_col* is the column whose dates are listed in the selector's help; it
+    defaults to ``x_date`` (the nightly tag) so the dates match the plot x-axis and the
     Machine Info tab, rather than the CI run date.
 
+    *slot* is an optional placeholder already positioned in the caller's control
+    row. It is intentionally passed through to :func:`render_reliability_scope`
+    only when a selector is needed, so reliable-only views leave no empty chrome.
+
     The returned set is empty whenever nothing was dropped — no unreliable run, or
-    the toggle switched off — so a caller can treat it as "the runs that are no
-    longer on the chart" without also reading the widget's state. Callers that plot
+    **All runs** selected — so a caller can treat it as "the runs that are no
+    longer on the chart" without also reading the widget state. Callers that plot
     a *reduction* over several runs need it: a flag earned by one run must not
     survive on a sibling run of the same nightly tag once its own run is excluded,
     and the reduction can only honour that if it knows which runs are still
@@ -112,32 +176,17 @@ def resolve_reliability_filter(
         return df, set()
 
     n = len(unreliable_ids)
-    # List the affected dates when the column is present; degrade to a count-only
-    # message for any future caller whose frame lacks it, rather than raising.
+    # List the affected dates when the column is present; degrade to count-only
+    # for any future caller whose frame lacks it, rather than raising.
     if date_col in df.columns:
         flagged = df.loc[df["run_id"].isin(unreliable_ids), date_col]
         dates = sorted(
             pd.to_datetime(flagged, errors="coerce")
             .dt.strftime("%Y-%m-%d").fillna("unknown").unique()
         )
-        where = f": {', '.join(dates)}"
     else:
-        where = ""
-    warn_col, toggle_col = st.columns([3, 1], vertical_alignment="center")
-    with warn_col:
-        st.warning(
-            f"⚠️ {n} unreliable run{'s' if n != 1 else ''} detected in this "
-            "window — likely affected by host contention (see the Machine "
-            f"Info tab for the per-run verdict){where}."
-        )
-    with toggle_col:
-        exclude = st.toggle(
-            "Exclude unreliable runs",
-            value=True,
-            key=key,
-            help="Drop runs that failed the conservative reliability check "
-                 "from the plots below. On by default; disable to include them.",
-        )
+        dates = []
+    exclude = render_reliability_scope(n, dates, key=key, slot=slot)
     if not exclude:
         return df, set()
     df = df[~df["run_id"].isin(unreliable_ids)]
@@ -155,9 +204,9 @@ def render_reliability_filter(
     *,
     key: str,
     date_col: str = "x_date",
+    slot=None,
 ) -> pd.DataFrame:
-    """:func:`resolve_reliability_filter` for the callers that only plot the
-    frame — same warning, same toggle, without the excluded-run set."""
+    """:func:`resolve_reliability_filter` for callers that only need the frame."""
     return resolve_reliability_filter(
-        df, reliability, key=key, date_col=date_col,
+        df, reliability, key=key, date_col=date_col, slot=slot,
     )[0]

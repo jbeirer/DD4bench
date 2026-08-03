@@ -9,15 +9,12 @@ from plotly.subplots import make_subplots
 
 from k4bench.analysis.plots._theme import _TEMPLATE
 from ui_utils import (
-    _auto_palette_index,
+    _display_options,
     _legend_below,
-    _PALETTE_NAMES,
+    _palette_control,
     _PALETTES,
-    _reset_widget_on_scope,
     _to_rgba,
 )
-
-from ._common import _palette_placeholder
 
 # Fixed colours for source / sink — independent of user palette
 _SINK_COLOR   = "#3FA5C8"   # teal-blue  — absorbs secondaries
@@ -50,7 +47,11 @@ def _attribution_explainer() -> None:
     st.write("")
 
 
-def _render_attribution_analysis(region_data: dict, selected_labels: list[str]) -> None:
+def _render_attribution_analysis(
+    region_data: dict,
+    selected_labels: list[str],
+    display_options_slot=None,
+) -> None:
     """Attribution analysis: scatter (at location vs by birth) + diverging asymmetry bar.
 
     Key implementation note
@@ -67,16 +68,29 @@ def _render_attribution_analysis(region_data: dict, selected_labels: list[str]) 
         return
 
     # ── Controls — no Top N slider; all detectors are shown ───────────────────
-    col_cfg, col_pal = st.columns([3, 1])
-    with col_cfg:
-        config = st.selectbox("Configuration", filtered_labels, key="ss_config")
+    config = st.selectbox(
+        "Configuration", filtered_labels, key="ss_config", width=420,
+    )
 
-    # ── Data (computed before palette selectbox so n is known for auto-index) ──
+    def _display_controls(n_detectors: int | None) -> dict:
+        """Draw the popover, sizing the palette for *n_detectors* points.
+
+        ``None`` means this render has no ranking to size against, which keeps
+        the palette's stored value alive without letting an empty render
+        re-default it (see :func:`~ui_utils._palette_control`).
+        """
+        return _display_options(
+            _palette_control("ss_palette", n_detectors),
+            key_prefix="ss_display",
+            slot=display_options_slot,
+        )
+
+    # ── Data (computed before the popover so n is known for the auto-index) ───
     data  = region_data.get(config, {})
     al_df = data.get("at_location")
     bb_df = data.get("by_birth")
     if al_df is None or bb_df is None:
-        _palette_placeholder(col_pal, "ss_palette")
+        _display_controls(None)
         st.info("Both attributions are required for this view.")
         return
 
@@ -94,21 +108,12 @@ def _render_attribution_analysis(region_data: dict, selected_labels: list[str]) 
     })
     det_list = union_max[union_max > 1e-9].sort_values(ascending=False).index.tolist()
     if not det_list:
-        _palette_placeholder(col_pal, "ss_palette")
+        _display_controls(None)
         st.info("No detector data to show.")
         return
 
     n = len(det_list)
-    with col_pal:
-        palette_default = _auto_palette_index(n)
-        _reset_widget_on_scope(
-            "ss_palette", palette_default, reset_unscoped=True,
-        )
-        palette_name = st.selectbox(
-            "Colour palette", options=_PALETTE_NAMES,
-            index=palette_default, key="ss_palette",
-        )
-    palette = _PALETTES[palette_name]
+    palette = _PALETTES[_display_controls(n)["palette"]]
 
     st.divider()
     _attribution_explainer()

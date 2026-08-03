@@ -620,17 +620,28 @@ def _render_regressions_in_range(
         # their URL is synchronized immediately below.
         st.session_state.pop(picker_key, None)
         st.session_state[seed_key] = query_token
-    selected = render_metric_picker(
-        shown,
-        key=picker_key,
-        include_scope=show_all,
-        include_window=True,
-        label="Regression trend",
-        help="Confirmed metrics whose onset lies in the selected release "
-             "range, worst first. Each option includes its own blame window. "
-             "Pick “—” to hide the trend.",
-        default=requested,
+    controls = st.container(
+        horizontal=True, vertical_alignment="bottom", width="stretch", gap="medium",
     )
+    with controls:
+        picker = st.container(width="stretch")
+        with picker:
+            selected = render_metric_picker(
+                shown,
+                key=picker_key,
+                include_scope=show_all,
+                include_window=True,
+                label="Regression trend",
+                help="Confirmed metrics whose onset lies in the selected release "
+                     "range, worst first. Each option includes its own blame window. "
+                     "Pick “—” to hide the trend.",
+                default=requested,
+            )
+        actions = st.container(
+            horizontal=True, horizontal_alignment="right",
+            vertical_alignment="bottom", width="content",
+        )
+        reliability_slot = actions.empty()
     if len(hits) > _MAX_REGRESSIONS:
         suffix = " plus the linked metric." if requested_below_cap else "."
         st.caption(
@@ -651,6 +662,7 @@ def _render_regressions_in_range(
         fetch_runs_windowed=_cached_fetch_runs_windowed,
         widget_namespace=f"stack_regr_{base_release}_{head_release}",
         include_scope=show_all,
+        reliability_slot=reliability_slot,
     )
     _render_focus_action(
         selected, releases, base_release=base_release,

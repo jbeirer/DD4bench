@@ -98,7 +98,9 @@ a fully opaque step outline over it. That pairing is what keeps a dozen overlaid
 runs readable: turn `alpha` down and the fills that would occlude one another
 fade while every distribution stays sharply traced, with `alpha=0` leaving
 outlines only. The dashboard exposes this and the other specialist histogram
-controls in **Display options** on the Event Timing and Event Memory tabs.
+controls in the **Display options** popover — the same popover every dashboard
+view uses for appearance controls, here on the Event Timing and Event Memory
+tabs.
 
 ```python
 plot_event_timing(
@@ -123,11 +125,12 @@ whole-width steps until they cover the figure's pooled data. By contrast,
 the runs can change its binning. The exact resolved edges, range, width and
 uniformity flag are reported in `fig.layout.meta`.
 
-In the dashboard, the **Bins** field under **Display options** starts at the
+In the dashboard, the **Bins** field in **Display options** starts at the
 current automatic count; editing it keeps that custom count as configurations
-change. Its allowed maximum is derived from the current pooled in-range event
-count and always includes NumPy's automatic choice (up to the renderer's safety
-ceiling), rather than coming from a fixed UI range.
+change, and **Reset to defaults** puts it back to following the automatic one.
+Its allowed maximum is derived from the current pooled in-range event count and
+always includes NumPy's automatic choice (up to the renderer's safety ceiling),
+rather than coming from a fixed UI range.
 
 The automatic count is computed from the same prepared data the plotting
 functions use. It is also available directly through `auto_bin_count`:

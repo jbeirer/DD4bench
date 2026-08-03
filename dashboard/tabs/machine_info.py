@@ -64,6 +64,10 @@ _KEY_FLAGS: dict[str, str] = {
 _UNRELIABLE_FILL = "rgba(214,60,60,0.06)"
 _THRESHOLD_LINE  = "rgba(214,60,60,0.9)"
 
+#: Sub-views, in dispatch order; the first is the fallback when the tab has no
+#: history to offer and the guard for the optional segmented-control return.
+_VIEWS = ["Current Run", "Historical Trends"]
+
 
 def _add_reliability_threshold(
     fig, row: int, col: int, *, y: float,
@@ -773,13 +777,13 @@ def render(
     # window's data) so the view selector stays put when the trend window changes.
     if trends_enabled:
         view = st.radio(
-            "View",
-            options=["Current Run", "Historical Trends"],
+            "**View**",
+            options=_VIEWS,
             horizontal=True,
             key="machine_info_view_mode",
         )
     else:
-        view = "Current Run"
+        view = _VIEWS[0]
 
     if view == "Current Run":
         if machine_info is None:

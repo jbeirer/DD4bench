@@ -10,18 +10,20 @@ from plotly.subplots import make_subplots
 from k4bench.analysis.plots._theme import _TEMPLATE
 from tabs._reliability import render_reliability_filter
 from ui_utils import (
-    _auto_palette_index,
     _DASHES,
+    _display_options,
     _is_valid_df,
     _legend_below,
-    _PALETTE_NAMES,
+    _opacity_control,
+    _palette_control,
     _PALETTES,
-    _reset_widget_on_scope,
+    _style_cycling_control,
+    _style_cycling_flags,
     _SYMBOLS,
     _to_rgba,
 )
 
-from ._common import _ATTRIBUTION_HELP, _palette_placeholder
+from ._common import _ATTRIBUTION_HELP
 
 
 def _render_historical(
@@ -42,17 +44,24 @@ def _render_historical(
         st.info("No historical region timing data available for the selected configurations.")
         return
 
-    trend_region_df = render_reliability_filter(
-        trend_region_df[trend_region_df["label"].isin(filtered_labels)],
-        reliability, key="region_hist_exclude_unreliable",
+    # Keep the selectors and their view-level actions on one baseline.  The
+    # reliability and display controls are populated later, after their data is
+    # known, so reserve their positions here rather than placing them beside the
+    # View selector above this row.
+    config_host, attribution_host, actions_host = st.columns(
+        [1, 1, 1.5], gap="medium", vertical_alignment="bottom",
     )
-    if trend_region_df.empty:
-        return
+    with actions_host:
+        actions = st.container(
+            horizontal=True, horizontal_alignment="right",
+            vertical_alignment="bottom", width="stretch", gap="small",
+        )
+        reliability_slot = actions.container(width="content").empty()
+        display_options_slot = actions.container(width="content").empty()
 
-    col_cfg, col_attr = st.columns([2, 2])
-    with col_cfg:
+    with config_host:
         config = st.selectbox("Configuration", filtered_labels, key="region_hist_config")
-    with col_attr:
+    with attribution_host:
         attribution = st.radio(
             "Attribution",
             options=["at_location", "by_birth"],
@@ -62,24 +71,28 @@ def _render_historical(
             help=_ATTRIBUTION_HELP,
         )
 
-    # Style controls — palette selectbox is rendered last (after top_detectors is
-    # known) so its default index can auto-select the right Matplotlib tab-N.
-    ctrl_l, ctrl_m, ctrl_r = st.columns(3, vertical_alignment="bottom")
-    with ctrl_m:
-        style_cycling = st.selectbox(
-            "Style cycling",
-            options=["Colour only", "Colour + Dash", "Colour + Marker", "Colour + Dash + Marker"],
-            index=0,
-            key="region_hist_style",
-        )
-    with ctrl_r:
-        alpha = st.slider(
-            "Opacity", min_value=0.1, max_value=1.0, value=0.85, step=0.05,
-            key="region_hist_alpha",
-        )
+    trend_region_df = render_reliability_filter(
+        trend_region_df[trend_region_df["label"].isin(filtered_labels)],
+        reliability, key="region_hist_exclude_unreliable",
+        slot=reliability_slot,
+    )
+    if trend_region_df.empty:
+        return
 
-    use_dash   = style_cycling in ("Colour + Dash",   "Colour + Dash + Marker")
-    use_marker = style_cycling in ("Colour + Marker", "Colour + Dash + Marker")
+    def _display_controls(n_detectors: int | None) -> dict:
+        """Draw the popover, sizing the palette for *n_detectors* lines.
+
+        ``None`` means this render has no ranking to size against, which keeps
+        every control's stored value alive without letting an empty render
+        re-default the palette (see :func:`~ui_utils._palette_control`).
+        """
+        return _display_options(
+            _palette_control("region_hist_palette", n_detectors),
+            _style_cycling_control("region_hist_style"),
+            _opacity_control("region_hist_alpha"),
+            key_prefix="region_hist_display",
+            slot=display_options_slot,
+        )
 
     sub = trend_region_df[
         (trend_region_df["label"] == config)
@@ -87,7 +100,7 @@ def _render_historical(
     ].copy()
 
     if sub.empty:
-        _palette_placeholder(ctrl_l, "region_hist_palette")
+        _display_controls(None)
         st.info(
             f"No historical region timing data for **{config}** "
             f"({attribution.replace('_', ' ')})."
@@ -109,16 +122,10 @@ def _render_historical(
     )
     top_detectors = detector_rank.index.tolist()
 
-    with ctrl_l:
-        palette_default = _auto_palette_index(len(top_detectors))
-        _reset_widget_on_scope(
-            "region_hist_palette", palette_default, reset_unscoped=True,
-        )
-        palette_name = st.selectbox(
-            "Colour palette", options=_PALETTE_NAMES,
-            index=palette_default, key="region_hist_palette",
-        )
-    palette = _PALETTES[palette_name]
+    display = _display_controls(len(top_detectors))
+    palette = _PALETTES[display["palette"]]
+    alpha = display["alpha"]
+    use_dash, use_marker = _style_cycling_flags(display["style"])
 
     unique_dates = sorted(sub["x_date"].dropna().unique())
     tick_labels  = [pd.Timestamp(d).strftime("%Y-%m-%d") for d in unique_dates]
