@@ -874,6 +874,18 @@ def test_a_doubted_step_is_noted_once_above_its_candidates():
     assert "#1" in html  # the ranking itself is untouched
 
 
+def test_a_reason_the_model_already_ended_is_not_given_a_second_full_stop():
+    v = _windowed(first_confirmed_run_id="2026-06-27")
+    blame = _blame(
+        _candidate(1, 88.0),
+        assessment=StepAssessment("likely_noise", "the host changed mid-window."),
+    )
+    for body in (to_html(_report(_group(v)), blame=blame),
+                 to_markdown(_report(_group(v)), blame=blame)):
+        assert "the host changed mid-window." in body
+        assert "mid-window.." not in body
+
+
 def test_an_ordinary_step_carries_no_caveat_line():
     v = _windowed(first_confirmed_run_id="2026-06-27")
     blame = _blame(_candidate(1, 88.0), assessment=StepAssessment("real_change", "held"))

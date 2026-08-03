@@ -349,6 +349,19 @@ def test_an_assessment_verdict_nobody_defined_is_dropped_not_surfaced():
     assert entry.candidates and entry.onset_release == "2026-07-04"
 
 
+def test_the_reason_reads_as_one_sentence_however_the_model_ended_it():
+    # The model punctuates as it pleases; every surface quotes the same line, so
+    # neither an unterminated clause nor a doubled full stop may reach a reader.
+    assert StepAssessment("likely_noise", "the series wobbles").reason_sentence \
+        == "the series wobbles."
+    assert StepAssessment("likely_noise", "the series wobbles.").reason_sentence \
+        == "the series wobbles."
+    assert StepAssessment("likely_noise", " the host changed! ").reason_sentence \
+        == "the host changed!"
+    assert StepAssessment("likely_noise", "   ").reason_sentence == ""
+    assert StepAssessment("likely_noise").reason_sentence == ""
+
+
 def test_a_malformed_assessment_costs_only_the_assessment():
     raw = _entry().to_dict()
     raw["assessment"] = "likely_noise"  # a string where the object belongs

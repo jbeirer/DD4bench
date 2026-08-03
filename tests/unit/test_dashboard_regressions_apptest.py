@@ -1331,6 +1331,23 @@ def test_a_doubted_step_is_captioned_above_its_own_ranking(monkeypatch):
     assert "the series wobbles weekly" in captions[0]
 
 
+def test_a_reason_the_model_already_ended_keeps_one_full_stop(monkeypatch):
+    from dashboard.tabs import _regression_flags as flags
+    from k4bench.blame.models import BlameEntry, StepAssessment
+
+    captions: list[str] = []
+    monkeypatch.setattr(flags.st, "caption", captions.append)
+    entry = BlameEntry(
+        detector="ALLEGRO_o1_v03", platform="x86_64-almalinux9-gcc14.2.0-opt",
+        sample="single_e", label="baseline", metric="wall_time_s",
+        sub_detector=None, base_release="2026-07-03", onset_release="2026-07-04",
+        assessment=StepAssessment("likely_noise", "the host changed mid-window."),
+    )
+    flags.render_step_assessment(entry)
+    # The caption escapes Markdown, so every stop and hyphen is written "\x".
+    assert captions[0].endswith("the host changed mid\\-window\\.")
+
+
 def test_an_ordinary_step_adds_no_caption_at_all(monkeypatch):
     # A caveat that appears every night is a line every reader learns to skip —
     # which is how the one that matters gets skipped too.

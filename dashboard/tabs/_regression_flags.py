@@ -357,10 +357,7 @@ def _render_candidate_rows(candidates: list[CandidatePR]) -> None:
 #: on every ranking would be one more line to skip past on the way to the
 #: ledger. Only a reading that should change how the table is read earns a line.
 _ASSESSMENT_CAPTION = {
-    "likely_noise": (
-        "⚖️ The ranker reads this step as **likely measurement noise** — the "
-        "candidates below are shown for completeness, not as suspects"
-    ),
+    "likely_noise": "⚖️ The ranker reads this step as **likely measurement noise**",
     "insufficient_evidence": (
         "⚖️ The ranker found **too little history** to judge whether this step "
         "is real"
@@ -399,8 +396,8 @@ def render_step_assessment(entry) -> None:
     caption = _ASSESSMENT_CAPTION.get(assessment.verdict)
     if caption is None:
         return
-    reason = f" — {_plain(assessment.reason)}" if assessment.reason else ""
-    st.caption(f"{caption}{reason}.")
+    reason = _plain(assessment.reason_sentence)
+    st.caption(f"{caption} — {reason}" if reason else f"{caption}.")
 
 
 def candidate_table(candidates: list[CandidatePR]) -> None:
