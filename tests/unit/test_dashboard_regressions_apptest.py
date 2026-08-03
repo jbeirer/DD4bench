@@ -582,7 +582,8 @@ def test_run_listing_failure_falls_back_with_a_visible_warning():
             return {}
         _tab._cached_list_run_dates = _raise_once
         _tab._cached_fetch_runs_windowed = lambda *a, **k: ()
-        _tab.render(
+        import streamlit as _st
+        _st.session_state["_scope_override"] = _tab.render(
             "https://example.invalid", "/tmp/cache", "CLD", platform, "single_e",
             f"key4hep-{night}",
         )
@@ -597,6 +598,11 @@ def test_run_listing_failure_falls_back_with_a_visible_warning():
     assert any("Could not check" in w.value for w in at.warning)
     by_label = {m.label: m.value for m in at.metric}
     assert by_label["🔴 Regressed"] == "2"  # still rendered, from the fallback
+    # The scope note above the tab must not contradict that warning by naming
+    # the selected release as the one on screen.
+    override = at.session_state["_scope_override"]
+    assert override is not None
+    assert override.release == "the latest report, which may not be the selected release"
 
 
 def test_release_older_than_the_first_report_says_so():

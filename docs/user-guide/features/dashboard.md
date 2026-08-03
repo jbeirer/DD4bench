@@ -41,6 +41,23 @@ the Overview tab is scoped by platform and sample *across all detectors*:
 without it, a sample that quietly moved would look like detectors vanishing
 from its charts.
 
+Not every tab honours the whole hierarchy, so a single muted line directly
+under the section bar names the slice the tab in front of you actually uses —
+for example `Showing CLD — AlmaLinux 9 · GCC 14.2.0 (optimized) — Single e⁻ ·
+10GeV — 2026-07-10`. Each level is written the way the tabs and the nightly
+mail write it, so a sample reads as its physics rather than as its EOS
+directory. Where a tab deliberately ignores a level it says so
+instead of quietly dropping it: Overview reads **all detectors**, Run Trends
+reads **all releases in the trend window**, and Stack Changes says its package
+diff is **platform-wide**, because a Key4hep release is the same stack whatever
+benchmarked it. The line also follows the controls inside a tab that change its
+scope: switching to a **Historical Trends** view replaces the release with *all
+releases in the trend window*, and switching on Stack Changes' **Whole platform**
+toggle replaces the detector and sample with *all detectors* and *all samples*.
+The line never repeats a date range, report night or run date — each tab prints
+its own, in its own words. In local mode there is no hierarchy to show, so it
+names the run directory instead.
+
 !!! note "Example detectors"
     A couple of detectors (currently: `SiD`) come from a simulation toolkit's
     own reference/tutorial geometry rather than a maintained FCC/Key4hep

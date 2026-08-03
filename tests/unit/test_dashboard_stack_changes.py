@@ -100,7 +100,10 @@ def _app(dashboard_dir, stack_names, packages, from_release, to_release,
         for name, value in query_params.items():
             _st.query_params[name] = value
         _st.session_state["_test_query_seeded"] = True
-    _tab.render(
+    # The return value is the scope note's override (``None`` when the registry's
+    # declaration stands). Parked in session state so a test can read it without
+    # adding an element the other tests' assertions would see.
+    _st.session_state["_scope_override"] = _tab.render(
         "https://example.invalid", "/tmp/cache",
         "x86_64-almalinux9-gcc14.2.0-opt",
         detector, sample, selected_stack,
@@ -857,6 +860,42 @@ def test_reverse_view_scopes_to_the_sidebar_and_widens_on_toggle():
     )
     assert restored.value.detector == "IDEA"
     assert restored.value.metric == "peak_rss_mb"
+
+
+def test_the_widened_scope_is_reported_only_while_the_reverse_view_renders():
+    # The scope note above the tab may only claim all-detector scope when the
+    # view that widened is on screen. The toggle's state outlives it — it is
+    # remembered for the range it was set on — so a range the tab refuses to
+    # compare must report no override at all rather than the remembered one.
+    report = _raw_report([
+        _confirmed(metric="wall_time_s", pct_change=0.10,
+                   last_accepted_run_date="2026-07-09",
+                   onset_run_date="2026-07-10"),
+        _confirmed(detector="IDEA", sample="p8_ee_Zbb_ecm91",
+                   metric="peak_rss_mb", metric_family="memory",
+                   pct_change=0.25, onset_run_id="run-idea",
+                   last_accepted_run_date="2026-07-09",
+                   onset_run_date="2026-07-10"),
+    ])
+    at = _run(from_release="2026-07-09", to_release="2026-07-10",
+              report_dates=("2026-07-10",), reports_map={"2026-07-10": report})
+    at.toggle(key="stack_regr_all").set_value(True).run()
+    assert not at.exception, at.exception
+    override = at.session_state["_scope_override"]
+    assert override is not None and override.detector == "all detectors"
+
+    # Collapse the range: "Pick two different releases" replaces the whole
+    # comparison, reverse view included.
+    next(s for s in at.selectbox if s.label == "To release").set_value(
+        "2026-07-09"
+    ).run()
+    assert not at.exception, at.exception
+    assert at.session_state["_scope_override"] is None
+
+
+def test_a_platform_with_nothing_to_compare_reports_no_scope_override():
+    at = _run(stack_names=["key4hep-2026-07-10"])
+    assert at.session_state["_scope_override"] is None
 
 
 def test_reg_all_query_navigation_overrides_existing_toggle_session_state():

@@ -4,6 +4,7 @@ import pandas as pd
 import streamlit as st
 
 from k4bench.analysis.plots import plot_event_memory
+from sections import TREND_WINDOW_SCOPE, SectionScope
 from stats import build_event_stats_table, style_stats_table
 from tabs._reliability import render_reliability_filter
 from ui_utils import (
@@ -141,13 +142,13 @@ def render(
     selected_labels: list[str],
     trends_enabled: bool = False,
     reliability: dict[str, bool | None] | None = None,
-) -> None:
+) -> SectionScope | None:
     if event_data is None and not trends_enabled:
         st.info("No event memory data available in the selected directory.")
-        return
+        return None
     if not selected_labels:
         st.info("Select at least one run in the sidebar.")
-        return
+        return None
 
     # The "Historical Trends" option is gated on remote mode (not on the current
     # window's data) so the view selector stays put when the trend window changes.
@@ -171,5 +172,8 @@ def render(
             st.info("No event memory data available in the selected directory.")
         else:
             _render_current_run(event_data, selected_labels, display_options_slot)
-    else:
-        _render_historical(trend_event_df, selected_labels, reliability)
+        return None
+    _render_historical(trend_event_df, selected_labels, reliability)
+    # The trends span the window's releases, not the sidebar's one — reported
+    # so the scope note above stops naming it.
+    return TREND_WINDOW_SCOPE

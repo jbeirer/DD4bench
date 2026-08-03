@@ -45,6 +45,7 @@ from ui_chrome import (
     render_example_detector_badge,
     render_logs_tab,
     render_run_status,
+    render_scope_note,
     resource_link_card,
     seed_query_param,
 )
@@ -154,6 +155,14 @@ def main() -> None:
     selected_run_meta: dict | None = None
     sidebar_window: tuple[date, date] | None = None
     trend_results_df: pd.DataFrame | None = None
+    # The EOS hierarchy exists in remote mode only; local mode has a single run
+    # directory and no detector/platform/sample/release above it. Bound to None
+    # up here so anything outside the remote branch below — the scope note under
+    # the section bar — can read them without a NameError.
+    detector: str | None = None
+    platform: str | None = None
+    sample:   str | None = None
+    stack:    str | None = None
 
     with st.sidebar:
         st.header("Data Source")
@@ -508,6 +517,15 @@ def main() -> None:
     ) or section_names[0]
     st.query_params["tab"] = active_section
 
+    # One muted line naming what the active section is actually showing. Driven
+    # by sections.SECTION_SCOPE, so it states only the dimensions that section
+    # honours — Overview spans every detector, Stack Changes' diff is
+    # platform-wide — and never the time reference, which each tab prints itself.
+    # Only its position is reserved here; it is written after the section body,
+    # which may itself change the scope (see the fill below).
+    scope_note = st.empty()
+    scope_override = None
+
     # Trends (remote only) — uses all stacks so history is complete
     if active_section == "Run Trends":
         trends.render(
@@ -525,7 +543,7 @@ def main() -> None:
     # and ?report= pins one for deep links. The cross-detector picture is the
     # Overview tab.
     if active_section == "Regressions":
-        regressions.render(
+        scope_override = regressions.render(
             config.data_url, config.cache_dir, detector, platform, sample, stack,
         )
 
@@ -547,7 +565,7 @@ def main() -> None:
     # the Regressions tab's evidence window. The sidebar stack seeds the
     # comparison's newer end when the tab is opened.
     if active_section == "Stack Changes":
-        stack_changes.render(
+        scope_override = stack_changes.render(
             config.data_url, config.cache_dir, platform, detector, sample, stack,
         )
 
@@ -558,19 +576,19 @@ def main() -> None:
     # visit is a cache hit) so the other tabs never build or copy them.
     if active_section == "Region Timing":
         trend_region_df = cached_load_trend_region_timing(run_dirs) if run_dirs else None
-        region_timing.render(region_data, trend_region_df, selected_labels, trends_enabled, reliability)
+        scope_override = region_timing.render(region_data, trend_region_df, selected_labels, trends_enabled, reliability)
 
     if active_section == "Event Timing":
         trend_event_df = cached_load_trend_event_timing(run_dirs) if run_dirs else None
-        event_timing.render(event_data, trend_event_df, selected_labels, trends_enabled, reliability)
+        scope_override = event_timing.render(event_data, trend_event_df, selected_labels, trends_enabled, reliability)
 
     if active_section == "Event Memory":
         trend_event_df = cached_load_trend_event_timing(run_dirs) if run_dirs else None
-        event_memory.render(event_data, trend_event_df, selected_labels, trends_enabled, reliability)
+        scope_override = event_memory.render(event_data, trend_event_df, selected_labels, trends_enabled, reliability)
 
     if active_section == "Machine Info":
         minfo = load_machine_info(data_dir) if _path_valid else None
-        machine_info.render(
+        scope_override = machine_info.render(
             minfo,
             run_meta=selected_run_meta,
             results=results,
@@ -582,6 +600,17 @@ def main() -> None:
     # Logs (per-config status + log explorer)
     if active_section == "Logs":
         render_logs_tab(results, data_dir if _path_valid else None, selected_run_meta)
+
+    # Fill the slot reserved above the section. A section that offers a control
+    # over its own scope — a historical sub-view, Stack Changes' "Whole platform"
+    # toggle — returns the scope it actually rendered, which is knowable only
+    # once its body has run; hence the note is composed last and written back
+    # into its earlier position.
+    render_scope_note(
+        active_section,
+        detector=detector, platform=platform, sample=sample, release=stack,
+        data_dir=data_dir, override=scope_override, slot=scope_note,
+    )
 
     _render_footer()
 

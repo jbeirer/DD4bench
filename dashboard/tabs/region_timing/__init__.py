@@ -9,6 +9,8 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
+from sections import TREND_WINDOW_SCOPE, SectionScope
+
 from .attribution import _render_attribution_analysis
 from .current_run import _render_current_run
 from .historical import _render_historical
@@ -21,13 +23,13 @@ def render(
     selected_labels: list[str],
     trends_enabled: bool = False,
     reliability: dict[str, bool | None] | None = None,
-) -> None:
+) -> SectionScope | None:
     if region_data is None and not trends_enabled:
         st.info("No region timing data available in the selected directory.")
-        return
+        return None
     if not selected_labels:
         st.info("Select at least one run in the sidebar.")
-        return
+        return None
 
     # Build view options dynamically based on available data
     # Order: current-run analyses first, then historical trends.
@@ -60,7 +62,12 @@ def render(
             _render_current_run(region_data, selected_labels)
     elif view == "Historical Trends":
         _render_historical(trend_region_df, selected_labels, reliability)
+        # The trends span the window's releases, not the sidebar's one —
+        # reported so the scope note above stops naming it. The other three
+        # views are the selected run, which the registry already describes.
+        return TREND_WINDOW_SCOPE
     elif view == "Attribution Analysis":
         _render_attribution_analysis(region_data, selected_labels)
     elif view == "Step Analysis":
         _render_step_analysis(region_data, selected_labels)
+    return None

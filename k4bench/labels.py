@@ -69,6 +69,22 @@ def pretty_sample(sample: str) -> str:
     return sample
 
 
+#: Prefix every Key4hep release tag carries, both on EOS and in the sidebar.
+#: Public because the dashboard composes directory names with it as well as
+#: stripping it for display, and one literal has to serve both directions.
+RELEASE_PREFIX = "key4hep-"
+
+
+def pretty_release(stack: str) -> str:
+    """Human-readable label for a Key4hep release tag, e.g.
+    ``key4hep-2026-07-10`` -> ``2026-07-10``.
+
+    The prefix is the same on every tag, so it distinguishes nothing and only
+    costs width in a label. Anything without it is returned unchanged.
+    """
+    return stack.removeprefix(RELEASE_PREFIX)
+
+
 #: LCG/Spack-style platform triplet vocabulary for :func:`describe_platform`.
 _OS_LABELS = {"almalinux": "AlmaLinux", "centos": "CentOS", "ubuntu": "Ubuntu"}
 _COMPILER_LABELS = {"gcc": "GCC", "clang": "Clang", "icc": "ICC"}
