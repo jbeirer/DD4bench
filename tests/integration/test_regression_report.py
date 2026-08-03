@@ -380,7 +380,7 @@ def test_blame_report_with_ranker_over_local_tree(tmp_path, monkeypatch):
         [str(data_dir)], None, {_PLAT: ["DET"]}
     )
     k4bench_commit_for_run = blame_cli._make_k4bench_commit_for_run(
-        [str(data_dir)], None, {_PLAT: ["DET"]}
+        [str(data_dir)], None
     )
 
     def fake_resolve(client, slug, base, head):
@@ -427,6 +427,34 @@ def test_blame_report_with_ranker_over_local_tree(tmp_path, monkeypatch):
         c["number"] for e in data["entries"] for r in e["repos"] for c in r["candidates"]
     }
     assert 999 not in all_numbers  # the invented PR was dropped
+
+
+def test_local_run_commit_reads_the_exact_run_and_nothing_else(tmp_path):
+    # The run-keyed harness lookup names one run_info.json — a sibling group
+    # that ran the same night at a different commit (a manual dispatch, a
+    # partial re-run) must never answer for this group's run.
+    blame_cli = _load_script(_BLAME_SCRIPT)
+    run_url = "https://github.com/key4hep/k4Bench/actions/runs/1"
+    mine = tmp_path / "DET" / _PLAT / "key4hep-2026-01-01" / "single_e" / "2026-01-02"
+    mine.mkdir(parents=True)
+    (mine / "run_info.json").write_text(json.dumps(
+        {"commit_sha": "a" * 40, "github_run_url": run_url}
+    ))
+    sibling = tmp_path / "DET2" / _PLAT / "key4hep-2026-01-01" / "single_e" / "2026-01-02"
+    sibling.mkdir(parents=True)
+    (sibling / "run_info.json").write_text(json.dumps({"commit_sha": "b" * 40}))
+
+    assert blame_cli._local_run_commit(
+        [str(tmp_path)], "DET", _PLAT, "2026-01-01", "single_e", "2026-01-02"
+    ) == ("a" * 40, run_url)
+    # An absent run, and a run that predates commit capture, both answer None.
+    assert blame_cli._local_run_commit(
+        [str(tmp_path)], "DET", _PLAT, "2026-01-01", "single_e", "2026-01-03"
+    ) is None
+    (mine / "run_info.json").write_text(json.dumps({"date": "2026-01-02"}))
+    assert blame_cli._local_run_commit(
+        [str(tmp_path)], "DET", _PLAT, "2026-01-01", "single_e", "2026-01-02"
+    ) is None
 
 
 def test_the_whole_evidence_chain_reaches_the_cross_configuration_review(

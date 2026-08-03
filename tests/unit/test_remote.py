@@ -382,3 +382,43 @@ def test_shared_adapter_blocks_rather_than_opening_extra_connections():
     # connections past pool_maxsize instead of enforcing it.
     assert remote._adapter._pool_block is True
     assert remote._adapter._pool_maxsize == remote._POOL_MAXSIZE
+
+
+# ---------------------------------------------------------------------------
+# Run-keyed harness provenance
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_run_commit_reads_exactly_one_run_info(monkeypatch):
+    det, plat, stack, sample = "DET", "PLAT", "key4hep-2026-05-20", "single_e"
+    run_url = "https://github.com/key4hep/k4Bench/actions/runs/9"
+    url = f"{BASE}/{det}/{plat}/{stack}/{sample}/2026-05-21/run_info.json"
+    fake = FakeWeb({
+        url: (
+            '{"commit_sha": "%s", "github_run_url": "%s"}' % ("b" * 40, run_url)
+        ).encode(),
+    })
+    _use_session(monkeypatch, fake.get)
+    got = remote.fetch_run_commit(BASE, det, plat, stack, sample, "2026-05-21")
+    assert got == ("b" * 40, run_url)
+    # The named run's own file, in one GET — no listing walked, no sibling
+    # sample or stack consulted: a same-day re-run can leave siblings at a
+    # different commit, so "any run of that night" is not a safe stand-in.
+    assert fake.requested == [url]
+
+
+def test_fetch_run_commit_none_when_the_run_predates_capture(web):
+    # The shared tree's runs carry k4h_packages but no commit_sha.
+    assert remote.fetch_run_commit(
+        BASE, "DET", "PLAT", "key4hep-2026-05-20", "single_e", "2026-05-20"
+    ) is None
+
+
+def test_fetch_run_commit_none_when_the_run_is_absent(monkeypatch):
+    def _404(url, timeout=None):
+        raise remote.requests.RequestException("404")
+
+    _use_session(monkeypatch, _404)
+    assert remote.fetch_run_commit(
+        BASE, "DET", "PLAT", "key4hep-2026-05-20", "single_e", "2026-05-22"
+    ) is None
