@@ -49,7 +49,7 @@ from tabs._regression_flags import (
 )
 from tabs._regression_trend import render_metric_picker
 from tabs._reliability import render_reliability_scope
-from ui_chrome import _drop_stale_selection, seed_query_param
+from ui_chrome import EXAMPLE_DETECTORS, _drop_stale_selection, seed_query_param
 from ui_utils import (
     _DASHES,
     _METRIC_LABELS,
@@ -577,7 +577,9 @@ def _detector_legend_columns(
     Returns ``(trace_specs, layout_legends, bottom_margin)``. ``trace_specs``
     maps each detector to its named legend and its compact entry label. A family
     with versioned detectors gets a heading (``ALLEGRO``) and entries below it
-    (``o1_v03``, ``o2_v01``); an unversioned singleton stays simply ``SiD``.
+    (``o1_v03``, ``o2_v01``). Toolkit examples use their toolkit as the heading,
+    so the unversioned ``SiD`` entry sits below ``DD4hep`` like the experiment
+    variants sit below their family names.
     Separate legends are what make the grouping structural rather than an
     ordering trick, while ``legendgroup=detector`` still lets each variant be
     toggled independently across both panels and its regression markers.
@@ -591,17 +593,28 @@ def _detector_legend_columns(
     font_size = 12
     row_h = font_size + 8
     families = list(by_family.items())
+    headings: dict[str, str] = {}
     display_labels = []
     for family, members in families:
         versioned = any(detector_family(d)[1] for d in members)
-        if versioned:
-            display_labels.append(family)
+        example_toolkits = {
+            EXAMPLE_DETECTORS[d][0] for d in members if d in EXAMPLE_DETECTORS
+        }
+        heading = family if versioned else (
+            next(iter(example_toolkits)) if len(example_toolkits) == 1 else ""
+        )
+        headings[family] = heading
+        if heading:
+            display_labels.append(heading)
         display_labels.extend(
             detector_family(detector)[1] if versioned else detector
             for detector in members
         )
     longest_label = max(map(len, display_labels), default=0)
-    max_columns = 2 if longest_label > 28 else 3 if longest_label > 18 else 4
+    # The nightly roster currently has five compact families. Let all five
+    # share the first row; long names still reduce the column count before they
+    # can crowd one another.
+    max_columns = 2 if longest_label > 28 else 3 if longest_label > 18 else 5
     family_rows = [
         families[start:start + max_columns]
         for start in range(0, len(families), max_columns)
@@ -609,7 +622,7 @@ def _detector_legend_columns(
     row_gap = 12
     legend_row_heights = [
         max(
-            len(members) + any(detector_family(d)[1] for d in members)
+            len(members) + bool(headings[family])
             for _, members in family_row
         ) * row_h + 12
         for family_row in family_rows
@@ -637,7 +650,7 @@ def _detector_legend_columns(
             )
         layout_legends[legend_ref] = dict(
             orientation="v",
-            title=dict(text=family if versioned else ""),
+            title=dict(text=headings[family]),
             yref="container",
             yanchor="top",
             y=(b_margin - offset - preceding_height) / total_h,
