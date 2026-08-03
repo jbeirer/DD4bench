@@ -666,7 +666,7 @@ def test_detector_styles_family_colour_version_dash():
 def test_detector_legend_columns_stack_family_variants_structurally():
     specs, legends, bottom = ov._detector_legend_columns([
         "SiD", "ALLEGRO_o2_v01", "CLD_o2_v08", "ALLEGRO_o1_v03",
-        "IDEA_o1_v03", "CLD_o1_v06",
+        "IDEA_o1_v03", "CLD_o1_v06", "ILD_FCCee_v01", "ILD_FCCee_v02",
     ], plot_h=380, t_margin=50, tick_clearance=75)
     assert specs == {
         "ALLEGRO_o1_v03": ("legend", "o1_v03"),
@@ -674,17 +674,20 @@ def test_detector_legend_columns_stack_family_variants_structurally():
         "CLD_o1_v06": ("legend2", "o1_v06"),
         "CLD_o2_v08": ("legend2", "o2_v08"),
         "IDEA_o1_v03": ("legend3", "o1_v03"),
-        "SiD": ("legend4", "SiD"),
+        "ILD_FCCee_v01": ("legend4", "v01"),
+        "ILD_FCCee_v02": ("legend4", "v02"),
+        "SiD": ("legend5", "SiD"),
     }
     assert legends["legend"]["title"]["text"] == "ALLEGRO"
     assert legends["legend2"]["title"]["text"] == "CLD"
-    assert legends["legend4"]["title"]["text"] == ""
+    assert legends["legend5"]["title"]["text"] == "DD4hep"
     assert all(legend["orientation"] == "v" for legend in legends.values())
     assert all(legend["xref"] == "paper" for legend in legends.values())
     assert all(legend["xanchor"] == "center" for legend in legends.values())
     assert [legend["x"] for legend in legends.values()] == [
-        0.125, 0.375, 0.625, 0.875,
+        0.1, 0.3, 0.5, 0.7, 0.9,
     ]
+    assert len({legend["y"] for legend in legends.values()}) == 1
     assert bottom >= 160
 
 
