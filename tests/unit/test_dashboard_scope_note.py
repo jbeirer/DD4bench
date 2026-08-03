@@ -47,31 +47,38 @@ def test_every_declared_dimension_is_a_sentinel_a_phrase_or_absent():
 
 # ── the rendered line ────────────────────────────────────────────────────────
 
-def _note(dashboard_dir, section, detector, platform, sample, release, data_dir):
+def _note(dashboard_dir, section, detector, platform, sample, release, data_dir,
+          platform_wide, use_slot):
     """``render_scope_note`` alone, re-executed as its own Streamlit script.
 
     ``AppTest.from_function`` execs this source in a fresh script context, so it
-    can close over nothing — the import lives inside it.
+    can close over nothing — the imports live inside it.
     """
     import sys as _sys
     if dashboard_dir not in _sys.path:
         _sys.path.insert(0, dashboard_dir)
 
+    import streamlit as st
+
+    from sections import STACK_CHANGES_PLATFORM_WIDE
     from ui_chrome import render_scope_note
 
     render_scope_note(
         section,
         detector=detector, platform=platform, sample=sample, release=release,
         data_dir=data_dir,
+        override=STACK_CHANGES_PLATFORM_WIDE if platform_wide else None,
+        slot=st.empty() if use_slot else None,
     )
 
 
 def _run(section, *, detector="CLD", platform=PLAT, sample="single_e",
-         release=STACK, data_dir="/cache/CLD/.../2026-07-10") -> AppTest:
+         release=STACK, data_dir="/cache/CLD/.../2026-07-10",
+         platform_wide=False, use_slot=False) -> AppTest:
     at = AppTest.from_function(
         _note,
         args=(str(_DASHBOARD_DIR), section, detector, platform, sample,
-              release, data_dir),
+              release, data_dir, platform_wide, use_slot),
         default_timeout=30,
     )
     at.run()
@@ -110,13 +117,36 @@ def test_run_trends_says_it_plots_every_release():
     assert "all releases" in line and STACK not in line
 
 
-def test_stack_changes_says_its_diff_is_platform_wide():
-    line = _line(_run("Stack Changes"))
-    assert "platform-wide" in line
-    # The sample does not enter a package diff, and the release pair is picked
-    # in the tab rather than by the sidebar.
-    assert "single_e" not in line
+def test_stack_changes_names_the_sidebar_scope_its_regressions_honour():
+    # The section has two halves: the package diff is platform-wide whatever the
+    # sidebar says, but the regressions listed below it are scoped to the
+    # sidebar's detector and sample — so the note must name both facts.
+    line = _line(_run("Stack Changes", sample="single_e-_10GeV"))
+    assert line == (
+        "Showing CLD — AlmaLinux 9 · GCC 14.2.0 (optimized) — Single e⁻ · 10GeV "
+        "— platform-wide package diff for the release pair chosen below"
+    )
+    # The release pair is picked in the tab rather than by the sidebar.
     assert STACK not in line
+
+
+def test_stack_changes_drops_the_sidebar_scope_once_widened():
+    # "Whole platform" widens the regressions across every detector and sample,
+    # so naming the sidebar's would describe a filter the tab stopped applying.
+    line = _line(_run(
+        "Stack Changes", sample="single_e-_10GeV", platform_wide=True,
+    ))
+    assert "all detectors" in line and "all samples" in line
+    assert "CLD" not in line and "Single e⁻" not in line
+    # The other half of the section is unaffected by the toggle.
+    assert "platform-wide package diff" in line
+    assert "AlmaLinux 9" in line
+
+
+def test_a_reserved_slot_renders_the_same_line_in_place():
+    # app.py always writes through a slot, so that the note can be composed
+    # after the section body has settled the state it describes.
+    assert _line(_run("Config Impact", use_slot=True)) == _line(_run("Config Impact"))
 
 
 def test_the_note_never_carries_a_time_reference():

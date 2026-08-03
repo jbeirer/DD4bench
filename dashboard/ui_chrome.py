@@ -14,7 +14,7 @@ import pandas as pd
 import streamlit as st
 
 from k4bench.labels import pretty_platform, pretty_release, pretty_sample
-from sections import SECTION_SCOPE
+from sections import SECTION_SCOPE, SectionScope
 
 
 def _failed_labels(results: "pd.DataFrame") -> list[str]:
@@ -253,6 +253,8 @@ def render_scope_note(
     sample: str | None = None,
     release: str | None = None,
     data_dir: str | None = None,
+    override: "SectionScope | None" = None,
+    slot: "st.delta_generator.DeltaGenerator | None" = None,
 ) -> None:
     """One muted line under the section bar naming what *section* is showing.
 
@@ -265,6 +267,14 @@ def render_scope_note(
     from the arguments: the sections honour genuinely different slices of the
     sidebar, so a uniform breadcrumb would misdescribe several of them. A
     section the registry does not know renders nothing rather than a guess.
+    *override* replaces that declaration for the one section whose scope a
+    control inside it can change (Stack Changes' "Whole platform" toggle); the
+    caller supplies it, because the chrome must not read a tab's widget keys.
+
+    *slot* is a placeholder reserved at the note's position on the page — pass
+    one to render the note *after* the section's body has run, which is the only
+    order in which a state that section owns can be read without being a frame
+    behind it.
 
     The note carries the hierarchy only. Time references are each tab's own —
     see the registry for where every one of them is printed — and repeating
@@ -283,9 +293,10 @@ def render_scope_note(
     just one run directory), so every dimension arrives as ``None`` and the
     note names *data_dir* instead.
     """
-    scope = SECTION_SCOPE.get(section)
+    scope = override or SECTION_SCOPE.get(section)
     if scope is None:
         return
+    target = slot if slot is not None else st
 
     parts: list[str] = []
     scoped_any = False
@@ -309,10 +320,10 @@ def render_scope_note(
 
     if not scoped_any:
         if data_dir:
-            st.caption(f"Showing local run directory `{data_dir}`")
+            target.caption(f"Showing local run directory `{data_dir}`")
         return
 
-    st.caption("Showing " + " — ".join(parts))
+    target.caption("Showing " + " — ".join(parts))
 
 
 def render_logs_tab(

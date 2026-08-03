@@ -111,15 +111,17 @@ SECTION_SCOPE: dict[str, SectionScope] = {
     "Regressions": SectionScope(
         detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED,
     ),
-    # A Key4hep release is one stack whatever benchmarked it, so the package
-    # diff — the section's headline content — is scoped by the platform alone,
-    # and the sample does not enter it. The sidebar release only seeds the
-    # newer end of the comparison; the pair is picked in the tab.
+    # Two halves with different scopes. A Key4hep release is one stack whatever
+    # benchmarked it, so the package diff is scoped by the platform alone — said
+    # in the release dimension, because that pair is what produces the diff. The
+    # regressions-in-range view below it *is* scoped to the sidebar's detector
+    # and sample, until its "Whole platform" toggle widens it; see
+    # :data:`STACK_CHANGES_PLATFORM_WIDE`.
     "Stack Changes": SectionScope(
-        detector="platform-wide package diff",
+        detector=SCOPED,
         platform=SCOPED,
-        sample=None,
-        release="release pair chosen below",
+        sample=SCOPED,
+        release="platform-wide package diff for the release pair chosen below",
     ),
     # The sections built on the sidebar's own selection: all four dimensions
     # come straight from it. Config Impact and Logs read that one run and
@@ -146,6 +148,20 @@ SECTION_SCOPE: dict[str, SectionScope] = {
         detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED,
     ),
 }
+
+#: Stack Changes while its reverse view's "Whole platform" toggle is on: the
+#: regressions listed there then span every detector and sample benchmarked on
+#: the platform, so the two sidebar dimensions the section otherwise honours
+#: stop applying. Supplied to :func:`ui_chrome.render_scope_note` by ``app.py``,
+#: the one module that knows both this registry and the tab's state — a section
+#: whose scope depends on a control inside it cannot be a static declaration,
+#: and reading a tab's widget keys from the chrome would couple them.
+STACK_CHANGES_PLATFORM_WIDE = SectionScope(
+    detector="all detectors",
+    platform=SCOPED,
+    sample="all samples",
+    release=SECTION_SCOPE["Stack Changes"].release,
+)
 
 
 def visible_sections(trends_enabled: bool) -> list[str]:

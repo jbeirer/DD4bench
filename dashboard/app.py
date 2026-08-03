@@ -30,7 +30,7 @@ from remote_cache import (
     _cached_scan_stack_samples,
 )
 from k4bench.results.reliability_evidence import run_reliability_map
-from sections import visible_sections
+from sections import STACK_CHANGES_PLATFORM_WIDE, visible_sections
 from tabs import detectors_overview, event_memory, event_timing, impact, machine_info, region_timing, regressions, stack_changes, trends
 from tabs._reliability import render_sidebar_run_quality
 from trend_window import WINDOW_PRESETS, resolve_window, window_domain
@@ -521,11 +521,9 @@ def main() -> None:
     # by sections.SECTION_SCOPE, so it states only the dimensions that section
     # honours — Overview spans every detector, Stack Changes' diff is
     # platform-wide — and never the time reference, which each tab prints itself.
-    render_scope_note(
-        active_section,
-        detector=detector, platform=platform, sample=sample, release=stack,
-        data_dir=data_dir,
-    )
+    # Only its position is reserved here; it is written after the section body,
+    # which may itself change the scope (see the fill below).
+    scope_note = st.empty()
 
     # Trends (remote only) — uses all stacks so history is complete
     if active_section == "Run Trends":
@@ -601,6 +599,24 @@ def main() -> None:
     # Logs (per-config status + log explorer)
     if active_section == "Logs":
         render_logs_tab(results, data_dir if _path_valid else None, selected_run_meta)
+
+    # Fill the slot reserved above the section. Stack Changes is the one section
+    # whose scope a control inside it can change — its "Whole platform" toggle
+    # drops the sidebar's detector/sample from the regressions it lists — and the
+    # toggle is only settled once that body has run, so the note is written last
+    # and rendered into its earlier position.
+    render_scope_note(
+        active_section,
+        detector=detector, platform=platform, sample=sample, release=stack,
+        data_dir=data_dir,
+        override=(
+            STACK_CHANGES_PLATFORM_WIDE
+            if active_section == "Stack Changes"
+            and stack_changes.reverse_view_is_platform_wide()
+            else None
+        ),
+        slot=scope_note,
+    )
 
     _render_footer()
 

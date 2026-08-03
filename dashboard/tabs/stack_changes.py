@@ -86,6 +86,20 @@ _REG_ALL_QUERY_KEY = "stack_regr_all__query"
 type _ProvenanceState = Literal["changed", "identical", "unavailable"]
 
 
+def reverse_view_is_platform_wide() -> bool:
+    """Whether the regressions-in-range view is widened past the sidebar scope.
+
+    The one piece of this tab's state the page chrome needs: with the toggle on,
+    the section stops honouring the sidebar's detector and sample, so the scope
+    note under the section bar must stop naming them. Exposed as a function
+    rather than the key itself so the chrome does not depend on where the state
+    is kept, and read *after* :func:`render` — the toggle is seeded from the URL,
+    force-reset when widening cannot help, and dropped when the sidebar platform
+    or stack moves, all of which happen while the section body renders.
+    """
+    return bool(st.session_state.get(_REG_ALL_KEY))
+
+
 def deep_link(
     *, detector: str, platform: str, head_release: str,
     base_release: str | None = None, sample: str | None = None,
