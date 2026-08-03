@@ -28,9 +28,7 @@ def test_prep_data_uses_only_selected_run_rows_and_needs_no_trend_dates():
         "events_per_sec": [1.0, 1.25],
     })
 
-    snapshot = impact._prep_data(
-        results, ["history_only", "current_a", "current_b"],
-    )
+    snapshot = impact._prep_data(results)
 
     assert list(snapshot["label"]) == ["current_a", "current_b"]
     assert "x_date" not in snapshot.columns
@@ -49,7 +47,7 @@ def test_successful_rows_excludes_failed_and_missing_returncodes():
     assert excluded == ["failed", "incomplete"]
 
 
-def _app(dashboard_dir, rows, selected_labels):
+def _app(dashboard_dir, rows):
     import sys as _sys
     if dashboard_dir not in _sys.path:
         _sys.path.insert(0, dashboard_dir)
@@ -57,7 +55,7 @@ def _app(dashboard_dir, rows, selected_labels):
     import pandas as _pd
     from tabs import impact as _impact
 
-    _impact.render(_pd.DataFrame(rows), selected_labels)
+    _impact.render(_pd.DataFrame(rows))
 
 
 def test_failed_partial_metrics_cannot_become_the_best_alternative():
@@ -77,7 +75,7 @@ def test_failed_partial_metrics_cannot_become_the_best_alternative():
     ]
     at = AppTest.from_function(
         _app,
-        args=(str(_DASHBOARD_DIR), rows, ["baseline", "failed_fast", "successful"]),
+        args=(str(_DASHBOARD_DIR), rows),
         default_timeout=30,
     ).run()
 
@@ -100,7 +98,7 @@ def test_metrics_with_no_valid_alternative_do_not_render_a_nan_winner():
     ]
     at = AppTest.from_function(
         _app,
-        args=(str(_DASHBOARD_DIR), rows, ["baseline", "empty"]),
+        args=(str(_DASHBOARD_DIR), rows),
         default_timeout=30,
     ).run()
 

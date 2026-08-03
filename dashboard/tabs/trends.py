@@ -141,7 +141,7 @@ def _tag_severity(
 
 def _render_timeseries(
     df: pd.DataFrame,
-    selected_labels: list[str],
+    labels: list[str],
     palette: list[str],
     line_shape: str,
     line_alpha: float,
@@ -152,6 +152,10 @@ def _render_timeseries(
     show_watch: bool = False,
 ) -> None:
     """Render the main time-series subplot figure.
+
+    *labels* is every configuration in the trend window, which fixes the colour
+    each one gets: a run missing from *df* still consumes its palette slot, so a
+    configuration keeps its colour on a window where another one has no data.
 
     *severity* is the ``{(label, k4h_release, metric): severity}`` map from
     :func:`_severity_lookup`; when *show_confirmed*/*show_watch* are set the
@@ -181,7 +185,7 @@ def _render_timeseries(
         vertical_spacing=0.14,   # room for per-row x-tick labels
     )
 
-    for cfg_idx, cfg_label in enumerate(selected_labels):
+    for cfg_idx, cfg_label in enumerate(labels):
         cfg_df = df[df["label"] == cfg_label].sort_values("x_date")
         if cfg_df.empty:
             continue
@@ -267,7 +271,7 @@ def _render_timeseries(
     plot_h    = n_rows * 350
     # tick_clearance=75: rotated (-30°) date ticks + "Key4hep Nightly Tag" title.
     legend, b_margin = _legend_below(
-        plot_h, len(selected_labels), t_margin=t_margin, tick_clearance=75,
+        plot_h, len(labels), t_margin=t_margin, tick_clearance=75,
         entry_width=200, font_size=12,
     )
     fig.update_layout(
@@ -283,7 +287,6 @@ def _render_timeseries(
 
 def render(
     trend_df: pd.DataFrame | None,
-    selected_labels: list[str],
     reliability: dict[str, bool | None] | None = None,
     *,
     data_url: str | None = None,
@@ -294,12 +297,9 @@ def render(
     if trend_df is None:
         st.info("No trend data available. Run the nightly benchmark at least once.")
         return
-    if not selected_labels:
-        st.info("Select at least one configuration in the sidebar.")
-        return
 
     _trends_body(
-        trend_df, selected_labels, reliability,
+        trend_df, reliability,
         data_url=data_url, detector=detector, platform=platform, sample=sample,
     )
 
@@ -307,7 +307,6 @@ def render(
 @st.fragment
 def _trends_body(
     trend_df: pd.DataFrame,
-    selected_labels: list[str],
     reliability: dict[str, bool | None] | None,
     *,
     data_url: str | None,
@@ -322,6 +321,10 @@ def _trends_body(
     nightly reports behind the flag lookup rather than re-issuing the threaded
     HTTPS fetch whose shutdown can race a rerun.
     """
+    # Every configuration in the window is plotted; there is no config selector
+    # here, so this is both the palette-sizing hint and the trace order.
+    labels = sorted(trend_df["label"].dropna().unique()) if "label" in trend_df.columns else []
+
     # ── Control row: regression pills left, run scope and display right ────
     # The pills stay on the page because they change *which* nights are marked;
     # everything that only changes how the lines are drawn lives in the popover,
@@ -341,7 +344,7 @@ def _trends_body(
         reliability_slot = actions.container(width="content").empty()
         display_options_slot = actions.container(width="content").empty()
     display = _display_options(
-        _palette_control("trends_palette", len(selected_labels)),
+        _palette_control("trends_palette", len(labels)),
         _style_cycling_control("trends_style"),
         _opacity_control("trends_alpha", default=0.75),
         _smooth_lines_control("trends_smooth"),
@@ -356,12 +359,12 @@ def _trends_body(
 
     # ── Data prep ─────────────────────────────────────────────────────────────
     # Dates and x_date are already normalised by cached_load_trend_results.
-    df = trend_df[trend_df["label"].isin(selected_labels)].copy()
+    df = trend_df.copy()
     df["x_date"]   = pd.to_datetime(df["x_date"])
     df["run_date"] = pd.to_datetime(df["run_date"])
     df = df.dropna(subset=["x_date"])
     if df.empty:
-        st.warning("No trend data for the selected configurations.")
+        st.warning("No dated trend data in the selected window.")
         return
     # Every run in the window, captured *before* the reliability filter and the
     # same-tag dedup below — the flag lookup must fetch the reports of the runs
@@ -385,7 +388,7 @@ def _trends_body(
     # ── Reliability filter ──────────────────────────────────────────────────────
     # Reliability is a per-run verdict (one machine condition per run, shared by
     # all its configs), computed once in app.py from the full trend so it matches
-    # the Machine Info tab regardless of which configs are selected here.
+    # the Machine Info tab's verdict for the same run.
     #
     # Applied *before* the same-tag dedup below, so excluding a run means the run
     # is gone rather than the tag: a tag whose newest run is unreliable falls back
@@ -421,6 +424,6 @@ def _trends_body(
 
     # ── Time-series plots ──────────────────────────────────────────────────────
     _render_timeseries(
-        df, selected_labels, palette, line_shape, alpha, use_dash, use_marker,
+        df, labels, palette, line_shape, alpha, use_dash, use_marker,
         severity, show_confirmed, show_watch,
     )

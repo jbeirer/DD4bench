@@ -28,7 +28,6 @@ from ._common import _ATTRIBUTION_HELP
 
 def _render_historical(
     trend_region_df: pd.DataFrame,
-    selected_labels: list[str],
     reliability: dict[str, bool | None] | None = None,
 ) -> None:
     """Render the historical region timing trends view."""
@@ -38,10 +37,9 @@ def _render_historical(
             "Widen the trend window in the sidebar."
         )
         return
-    avail_labels   = sorted(trend_region_df["label"].unique())
-    filtered_labels = [lbl for lbl in selected_labels if lbl in avail_labels]
-    if not filtered_labels:
-        st.info("No historical region timing data available for the selected configurations.")
+    avail_labels = sorted(trend_region_df["label"].unique())
+    if not avail_labels:
+        st.info("No historical region timing data in the selected window.")
         return
 
     # Keep the selectors and their view-level actions on one baseline.  The
@@ -60,7 +58,7 @@ def _render_historical(
         display_options_slot = actions.container(width="content").empty()
 
     with config_host:
-        config = st.selectbox("Configuration", filtered_labels, key="region_hist_config")
+        config = st.selectbox("Configuration", avail_labels, key="region_hist_config")
     with attribution_host:
         attribution = st.radio(
             "Attribution",
@@ -72,8 +70,7 @@ def _render_historical(
         )
 
     trend_region_df = render_reliability_filter(
-        trend_region_df[trend_region_df["label"].isin(filtered_labels)],
-        reliability, key="region_hist_exclude_unreliable",
+        trend_region_df, reliability, key="region_hist_exclude_unreliable",
         slot=reliability_slot,
     )
     if trend_region_df.empty:

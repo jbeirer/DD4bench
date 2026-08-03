@@ -161,10 +161,10 @@ def _baseline_selector_control(key_prefix: str, current_labels: list[str]) -> st
     """
     default_label = _default_baseline(current_labels)
     key = f"{key_prefix}_baseline"
-    # The sidebar is the overall availability filter. Adding or removing an
-    # unrelated configuration must not silently change a still-valid reference
-    # and therefore reinterpret every ratio on the page. Only discard the
-    # stored choice when the filter actually removes that baseline.
+    # *current_labels* is whatever the run currently offers. A configuration
+    # appearing or disappearing there must not silently change a still-valid
+    # reference and therefore reinterpret every ratio on the page. Only discard
+    # the stored choice when that baseline itself is gone.
     if key in st.session_state and st.session_state[key] not in current_labels:
         st.session_state.pop(key, None)
     return st.selectbox(
@@ -194,8 +194,8 @@ def _config_selector_control(
     largest ratio deviation from it (:func:`~stats.select_top_n_by_ratio`), but
     any of *current_labels* can be added or removed freely. The primary plot and
     Statistics table follow this selection so their colours and rows stay
-    aligned; the full sidebar-filtered table remains available in a collapsed
-    expander below it.
+    aligned; a table of every configuration in the run remains available in a
+    collapsed expander below it.
 
     The baseline itself is not one of the selectable options: it is always
     included in what gets plotted, so the ratio panel it anchors can never be
@@ -207,9 +207,9 @@ def _config_selector_control(
     selectable = [lbl for lbl in current_labels if lbl != baseline_label]
     key = f"{key_prefix}_configs"
     # A baseline change deliberately refreshes the comparison default: the new
-    # baseline moves out of the options and the old one moves in. Changes to the
-    # sidebar's broader availability filter do not reset still-valid in-tab
-    # choices; Streamlit drops values that disappear from ``options`` itself.
+    # baseline moves out of the options and the old one moves in. A change in
+    # which configurations the run offers does not reset a still-valid manual
+    # pick; Streamlit drops values that disappear from ``options`` itself.
     _reset_widget_on_scope(
         key, baseline_label, reset_unscoped=True,
     )
@@ -231,8 +231,8 @@ def _config_selector_control(
             f"`{baseline_label}` (the baseline) is always plotted. Pick which "
             "other configurations to compare it against — defaults to the "
             f"{n_extra} {noun} with the largest deviation from it. The "
-            "primary Statistics table follows this selection; all configurations "
-            "allowed by the sidebar filter remain available below it."
+            "primary Statistics table follows this selection; every "
+            "configuration in this run remains available below it."
         ),
     )
     return [baseline_label, *selected_extra]

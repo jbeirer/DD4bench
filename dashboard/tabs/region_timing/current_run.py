@@ -15,20 +15,16 @@ from ui_utils import (
 from ._common import _ATTRIBUTION_HELP
 
 
-def _render_current_run(
-    region_data: dict,
-    selected_labels: list[str],
-    display_options_slot=None,
-) -> None:
+def _render_current_run(region_data: dict, display_options_slot=None) -> None:
     """Render the current-run region timing view (existing behaviour)."""
-    filtered_labels = [lbl for lbl in selected_labels if lbl in region_data and region_data[lbl]]
-    if not filtered_labels:
-        st.info("No region timing data available for any of the selected configurations.")
+    labels = [lbl for lbl in sorted(region_data) if region_data[lbl]]
+    if not labels:
+        st.info("No region timing data available for any configuration in this run.")
         return
 
     col_cfg, col_attr = st.columns([1, 1], vertical_alignment="bottom")
     with col_cfg:
-        config = st.selectbox("Configuration", filtered_labels, key="region_config")
+        config = st.selectbox("Configuration", labels, key="region_config")
     with col_attr:
         attribution = st.selectbox(
             "Attribution",

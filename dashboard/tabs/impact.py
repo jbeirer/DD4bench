@@ -98,14 +98,14 @@ def _score_to_css(score: float, bad: str, mid: str, good: str) -> str:
 
 # ── Data helpers ──────────────────────────────────────────────────────────────
 
-def _prep_data(results_df: pd.DataFrame, selected_labels: list[str]) -> pd.DataFrame:
-    """The selected run's result rows, restricted to the sidebar filter.
+def _prep_data(results_df: pd.DataFrame) -> pd.DataFrame:
+    """The selected run's result rows — every configuration it contains.
 
-    Config impact is a within-run comparison. Pulling each label's latest row
-    independently from trend history can mix releases and silently ignore the
-    sidebar stack.
+    Config impact is a within-run comparison, so the rows come from the one
+    run the sidebar selected. Pulling each label's latest row independently
+    from trend history can mix releases and silently ignore the sidebar stack.
     """
-    return results_df[results_df["label"].isin(selected_labels)].copy()
+    return results_df.copy()
 
 
 def _successful_rows(snapshot: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
@@ -126,24 +126,18 @@ def _successful_rows(snapshot: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
 
 # ── Main render ───────────────────────────────────────────────────────────────
 
-def render(results_df: pd.DataFrame | None, selected_labels: list[str]) -> None:
+def render(results_df: pd.DataFrame | None) -> None:
     # Config Impact is a snapshot of the selected stack's latest run, not a
     # historical time series. Its reliability is surfaced by the sidebar card.
     if results_df is None:
         st.info("No result data available for the selected run.")
         return
-    if not selected_labels:
-        st.info("Select at least one configuration in the sidebar.")
-        return
 
-    snapshot = _prep_data(results_df, selected_labels)
-    snap_labels = [lbl for lbl in selected_labels if lbl in snapshot["label"].values]
+    snapshot = _prep_data(results_df)
+    snap_labels = sorted(snapshot["label"].unique()) if "label" in snapshot.columns else []
     if not snap_labels:
-        st.warning("No snapshot data for the selected configurations.")
+        st.warning("No configurations in the selected run.")
         return
-    missing_snap = sorted(set(selected_labels) - set(snap_labels))
-    if missing_snap:
-        st.warning(f"No result data in the selected run for: {', '.join(missing_snap)}")
     snapshot, failed_snap = _successful_rows(snapshot)
     if failed_snap:
         st.warning(

@@ -303,7 +303,7 @@ def _app(dashboard_dir, reports, reliability=None, same_tag=False):
         "involuntary_ctx_switches": [10, 12],
     })
     _trends.render(
-        df, ["baseline"], reliability=reliability or {},
+        df, reliability=reliability or {},
         data_url="https://x.invalid", detector="CLD",
         platform="PLAT", sample="single_e",
     )

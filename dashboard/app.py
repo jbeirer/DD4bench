@@ -37,7 +37,6 @@ from trend_window import WINDOW_PRESETS, resolve_window, window_domain
 from ui_chrome import (
     DOCS_URL,
     GITHUB_URL,
-    _drop_stale_multiselect,
     _drop_stale_selection,
     _render_footer,
     _render_scope_reset,
@@ -416,10 +415,11 @@ def main() -> None:
             event_data   = cached_load_event_timing(data_dir)
             region_data  = cached_load_region_timing(data_dir)
             available_labels = collect_labels(results, event_data, region_data)
-            # The latest run alone can be missing a config (a failed/timed-out job,
-            # or one retired from the newest release) that still has history
-            # earlier in the trend window — union those labels in too, or they'd
-            # never be selectable even though Run Trends has data for them.
+            # The latest run alone can be missing every config (a failed/timed-out
+            # job, or ones retired from the newest release) while the trend window
+            # still has history for them — union those labels in too, so the
+            # "no benchmark data" guards below don't blank out a page that Run
+            # Trends does have data for.
             if run_dirs:
                 trend_results_df = cached_load_trend_results(run_dirs)
                 if trend_results_df is not None and "label" in trend_results_df.columns:
@@ -431,33 +431,6 @@ def main() -> None:
 
         if _path_valid and not available_labels:
             st.warning("No benchmark data found in the specified directory.")
-
-        # ── Filters ────────────────────────────────────────────────────────────
-        if not available_labels:
-            selected_labels: list[str] = []
-        else:
-            st.header("Filters")
-            # `?config=...` deep-links straight to one config's history (e.g. in
-            # Run Trends), narrowing the selection to just that label — seeded into
-            # session_state the same way as seed_query_param (see its docstring),
-            # since a multiselect's `default=` has the identical constraint.
-            _drop_stale_multiselect("ms_selected_labels", available_labels)
-            if "ms_selected_labels" not in st.session_state:
-                requested_config = st.query_params.get("config")
-                st.session_state["ms_selected_labels"] = (
-                    [requested_config] if requested_config in available_labels
-                    else available_labels
-                )
-            selected_labels = st.multiselect(
-                "Configurations", available_labels, key="ms_selected_labels",
-            )
-            # Reflect the filter in the URL only when it actually narrows something —
-            # otherwise every normal view (all configs selected) would grow a
-            # `config=&config=...` query string for no reason.
-            if selected_labels and set(selected_labels) != set(available_labels):
-                st.query_params["config"] = selected_labels
-            else:
-                st.query_params.pop("config", None)
 
         _render_sidebar_footer()
 
@@ -480,7 +453,7 @@ def main() -> None:
     # once cached, deep-copied by st.cache_data) only when their own tab is
     # active, so switching between the other tabs never pays for the heaviest
     # frame (per-event timing across the whole window).
-    # trend_results_df was already loaded above (in the Filters section) to
+    # trend_results_df was already loaded above (with the single-run data) to
     # compute available_labels; only trend_machine_df is still needed here.
     trend_machine_df = None
     if run_dirs:
@@ -529,7 +502,7 @@ def main() -> None:
     # Trends (remote only) — uses all stacks so history is complete
     if active_section == "Run Trends":
         trends.render(
-            trend_results_df, selected_labels, reliability,
+            trend_results_df, reliability,
             data_url=config.data_url, detector=detector,
             platform=platform, sample=sample,
         )
@@ -570,21 +543,21 @@ def main() -> None:
         )
 
     if active_section == "Config Impact":
-        impact.render(results, selected_labels)
+        impact.render(results)
 
     # The region/event trend frames are loaded lazily here (cached, so a repeat
     # visit is a cache hit) so the other tabs never build or copy them.
     if active_section == "Region Timing":
         trend_region_df = cached_load_trend_region_timing(run_dirs) if run_dirs else None
-        scope_override = region_timing.render(region_data, trend_region_df, selected_labels, trends_enabled, reliability)
+        scope_override = region_timing.render(region_data, trend_region_df, trends_enabled, reliability)
 
     if active_section == "Event Timing":
         trend_event_df = cached_load_trend_event_timing(run_dirs) if run_dirs else None
-        scope_override = event_timing.render(event_data, trend_event_df, selected_labels, trends_enabled, reliability)
+        scope_override = event_timing.render(event_data, trend_event_df, trends_enabled, reliability)
 
     if active_section == "Event Memory":
         trend_event_df = cached_load_trend_event_timing(run_dirs) if run_dirs else None
-        scope_override = event_memory.render(event_data, trend_event_df, selected_labels, trends_enabled, reliability)
+        scope_override = event_memory.render(event_data, trend_event_df, trends_enabled, reliability)
 
     if active_section == "Machine Info":
         minfo = load_machine_info(data_dir) if _path_valid else None

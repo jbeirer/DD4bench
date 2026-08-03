@@ -13,7 +13,7 @@ from streamlit.testing.v1 import AppTest  # noqa: E402
 _DASHBOARD_DIR = Path(__file__).resolve().parents[2] / "dashboard"
 
 
-def _app(dashboard_dir, view, current_labels, selected_labels, n_events=200):
+def _app(dashboard_dir, view, current_labels, n_events=200):
     import sys as _sys
     if dashboard_dir not in _sys.path:
         _sys.path.insert(0, dashboard_dir)
@@ -64,17 +64,13 @@ def _app(dashboard_dir, view, current_labels, selected_labels, n_events=200):
         tab.plot_event_timing = _stub
     else:
         tab.plot_event_memory = _stub
-    tab.render(data, None, selected_labels)
+    tab.render(data, None)
 
 
-def _run(view, current_labels, selected_labels=None, n_events=200):
+def _run(view, current_labels, n_events=200):
     return AppTest.from_function(
         _app,
-        args=(
-            str(_DASHBOARD_DIR), view,
-            current_labels, selected_labels or current_labels,
-            n_events,
-        ),
+        args=(str(_DASHBOARD_DIR), view, current_labels, n_events),
         default_timeout=30,
     ).run()
 
@@ -93,20 +89,14 @@ def _widget_keys(at, prefix):
     return keys
 
 
-@pytest.mark.parametrize("view", ["timing", "memory"])
-def test_baseline_is_auto_selected_from_current_run_configs_only(view):
-    """The baseline is chosen automatically and must never be a history-only config."""
-    at = AppTest.from_function(
-        _app,
-        args=(
-            str(_DASHBOARD_DIR), view,
-            ["current_a", "current_b"],
-            ["history_only", "current_a", "current_b"],
-        ),
-        default_timeout=30,
-    ).run()
+@pytest.mark.parametrize(("view", "prefix"), [("timing", "evt_timing"), ("memory", "evt_memory")])
+def test_baseline_is_auto_selected_from_current_run_configs_only(view, prefix):
+    """The tab's roster is this run's event data, so the baseline is chosen
+    automatically from it and can never be a config the run does not contain."""
+    at = _run(view, ["current_a", "current_b"])
 
     assert not at.exception, at.exception
+    assert list(at.selectbox(key=f"{prefix}_baseline").options) == ["current_a", "current_b"]
     assert at.session_state["_captured_plot_kwargs"]["baseline_label"] == "current_a"
 
 
@@ -121,11 +111,7 @@ def test_palette_redefaults_when_selection_crosses_its_capacity(
     view, configs_key, palette_key,
 ):
     labels = [f"cfg_{i:02d}" for i in range(12)]
-    at = AppTest.from_function(
-        _app,
-        args=(str(_DASHBOARD_DIR), view, labels, labels),
-        default_timeout=30,
-    ).run()
+    at = _run(view, labels)
 
     assert not at.exception, at.exception
     assert at.selectbox(key=palette_key).value == "Matplotlib"
@@ -397,17 +383,16 @@ def test_baseline_is_user_selectable(view, prefix):
 
 
 @pytest.mark.parametrize(("view", "prefix"), _VIEWS)
-def test_valid_baseline_survives_overall_filter_changes(view, prefix):
-    """The sidebar is an availability filter; expanding it must not silently
-    reinterpret the chart by resetting a still-available baseline.
+def test_valid_baseline_survives_a_wider_run(view, prefix):
+    """The run's configurations are the tab's roster; gaining one must not
+    silently reinterpret the chart by resetting a still-available baseline.
     """
     labels = ["cfg_a", "cfg_b", "cfg_c"]
     at = _run(view, labels)
     at.selectbox(key=f"{prefix}_baseline").set_value("cfg_c").run()
     assert not at.exception, at.exception
 
-    expanded = [*labels, "cfg_d"]
-    at.args = (str(_DASHBOARD_DIR), view, expanded, expanded)
+    at.args = (str(_DASHBOARD_DIR), view, [*labels, "cfg_d"], 200)
     at.run()
 
     assert not at.exception, at.exception
@@ -480,14 +465,15 @@ def test_changing_the_baseline_refreshes_the_default_selection(view, prefix):
 
 
 @pytest.mark.parametrize(("view", "prefix"), _VIEWS)
-def test_displayed_configurations_survive_overall_filter_expansion(view, prefix):
+def test_displayed_configurations_survive_a_wider_run(view, prefix):
+    """A manual pick is kept when the run gains a configuration: the new one is
+    simply on offer, it does not reset the comparison already on screen."""
     labels = ["cfg_a", "cfg_b", "cfg_c"]
     at = _run(view, labels)
     at.multiselect(key=f"{prefix}_configs").set_value(["cfg_b", "cfg_c"]).run()
     assert not at.exception, at.exception
 
-    expanded = [*labels, "cfg_d"]
-    at.args = (str(_DASHBOARD_DIR), view, expanded, expanded)
+    at.args = (str(_DASHBOARD_DIR), view, [*labels, "cfg_d"], 200)
     at.run()
 
     assert not at.exception, at.exception
@@ -510,8 +496,8 @@ def test_plot_always_includes_the_baseline_even_when_deselected(view, prefix):
 
 
 @pytest.mark.parametrize(("view", "prefix"), _VIEWS)
-def test_statistics_align_with_plot_and_offer_all_filtered_runs(view, prefix):
-    """The primary table matches the chart; the overall sidebar-filtered set is
+def test_statistics_align_with_plot_and_offer_all_runs(view, prefix):
+    """The primary table matches the chart; every configuration in the run is
     still available on demand in a collapsed expander.
     """
     labels = [f"cfg_{i:02d}" for i in range(6)]
@@ -524,5 +510,5 @@ def test_statistics_align_with_plot_and_offer_all_filtered_runs(view, prefix):
     assert at.session_state["_captured_plot_kwargs"]["labels"] == ["cfg_00"]
 
     assert len(at.dataframe[0].value) == 1
-    assert at.expander[0].label == f"All filtered configurations ({len(labels)})"
+    assert at.expander[0].label == f"All configurations ({len(labels)})"
     assert len(at.dataframe[1].value) == len(labels)
