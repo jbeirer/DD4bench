@@ -17,7 +17,11 @@ from ui_utils import (
 )
 
 
-def _render_step_analysis(region_data: dict, selected_labels: list[str]) -> None:
+def _render_step_analysis(
+    region_data: dict,
+    selected_labels: list[str],
+    display_options_slot=None,
+) -> None:
     """Step count decomposition: scatter (steps vs µs/step) + ranked bar panels.
 
     Answers: *why* is a region expensive?
@@ -33,10 +37,9 @@ def _render_step_analysis(region_data: dict, selected_labels: list[str]) -> None
         return
 
     # ── Controls — config first, then data, then the popover (palette needs n) ─
-    col_cfg, col_display = st.columns([3, 1], vertical_alignment="bottom")
-    with col_cfg:
-        config = st.selectbox("Configuration", filtered_labels, key="sa_config")
-    display_slot = col_display.empty()
+    config = st.selectbox(
+        "Configuration", filtered_labels, key="sa_config", width=420,
+    )
 
     def _display_controls(n_detectors: int | None) -> dict:
         """Draw the popover, sizing the palette for *n_detectors* points.
@@ -48,7 +51,7 @@ def _render_step_analysis(region_data: dict, selected_labels: list[str]) -> None
         return _display_options(
             _palette_control("sa_palette", n_detectors),
             key_prefix="sa_display",
-            slot=display_slot,
+            slot=display_options_slot,
         )
 
     data     = region_data.get(config, {})

@@ -47,7 +47,11 @@ def _attribution_explainer() -> None:
     st.write("")
 
 
-def _render_attribution_analysis(region_data: dict, selected_labels: list[str]) -> None:
+def _render_attribution_analysis(
+    region_data: dict,
+    selected_labels: list[str],
+    display_options_slot=None,
+) -> None:
     """Attribution analysis: scatter (at location vs by birth) + diverging asymmetry bar.
 
     Key implementation note
@@ -64,10 +68,9 @@ def _render_attribution_analysis(region_data: dict, selected_labels: list[str]) 
         return
 
     # ── Controls — no Top N slider; all detectors are shown ───────────────────
-    col_cfg, col_display = st.columns([3, 1], vertical_alignment="bottom")
-    with col_cfg:
-        config = st.selectbox("Configuration", filtered_labels, key="ss_config")
-    display_slot = col_display.empty()
+    config = st.selectbox(
+        "Configuration", filtered_labels, key="ss_config", width=420,
+    )
 
     def _display_controls(n_detectors: int | None) -> dict:
         """Draw the popover, sizing the palette for *n_detectors* points.
@@ -79,7 +82,7 @@ def _render_attribution_analysis(region_data: dict, selected_labels: list[str]) 
         return _display_options(
             _palette_control("ss_palette", n_detectors),
             key_prefix="ss_display",
-            slot=display_slot,
+            slot=display_options_slot,
         )
 
     # ── Data (computed before the popover so n is known for the auto-index) ───

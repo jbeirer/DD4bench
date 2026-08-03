@@ -30,6 +30,8 @@ def _render_historical(
     trend_region_df: pd.DataFrame,
     selected_labels: list[str],
     reliability: dict[str, bool | None] | None = None,
+    reliability_slot=None,
+    display_options_slot=None,
 ) -> None:
     """Render the historical region timing trends view."""
     if not _is_valid_df(trend_region_df):
@@ -47,11 +49,12 @@ def _render_historical(
     trend_region_df = render_reliability_filter(
         trend_region_df[trend_region_df["label"].isin(filtered_labels)],
         reliability, key="region_hist_exclude_unreliable",
+        slot=reliability_slot,
     )
     if trend_region_df.empty:
         return
 
-    col_cfg, col_attr, col_display = st.columns([2, 2, 1], vertical_alignment="bottom")
+    col_cfg, col_attr = st.columns([1, 1], vertical_alignment="bottom")
     with col_cfg:
         config = st.selectbox("Configuration", filtered_labels, key="region_hist_config")
     with col_attr:
@@ -63,11 +66,6 @@ def _render_historical(
             key="region_hist_attr",
             help=_ATTRIBUTION_HELP,
         )
-    # The popover is drawn once the detector ranking is known, so the palette can
-    # size itself to the number of lines — hence the reserved slot here and the
-    # deferred render below.
-    display_slot = col_display.empty()
-
     def _display_controls(n_detectors: int | None) -> dict:
         """Draw the popover, sizing the palette for *n_detectors* lines.
 
@@ -80,7 +78,7 @@ def _render_historical(
             _style_cycling_control("region_hist_style"),
             _opacity_control("region_hist_alpha"),
             key_prefix="region_hist_display",
-            slot=display_slot,
+            slot=display_options_slot,
         )
 
     sub = trend_region_df[

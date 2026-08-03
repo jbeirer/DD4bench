@@ -253,6 +253,7 @@ def render_metric_trend(
     verdict: MetricVerdict, data_url: str, cache_dir: str, *,
     list_run_dates: Callable, fetch_runs_windowed: Callable,
     widget_namespace: str, include_scope: bool = False,
+    reliability_slot=None,
 ) -> None:
     """Render the canonical one-metric regression evidence chart."""
     history = _metric_history(
@@ -271,6 +272,7 @@ def render_metric_trend(
         df, reliability,
         key=f"{widget_namespace}_drill_excl_{series_key}",
         date_col="x_date",
+        slot=reliability_slot,
     )
     if df.empty:
         return

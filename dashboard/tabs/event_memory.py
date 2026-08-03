@@ -15,6 +15,7 @@ from ui_utils import (
     _is_valid_df,
     _PALETTES,
     _render_historical_trends,
+    _view_control_row,
 )
 
 
@@ -32,7 +33,7 @@ _HIST_STATS = [
 ]
 
 #: Sub-views, in dispatch order; the first is the fallback when the tab has no
-#: history to offer and the guard for the optional segmented-control return.
+#: history to offer.
 _VIEWS = ["Current Run", "Historical Trends"]
 
 
@@ -100,6 +101,7 @@ def _render_historical(
     trend_event_df: pd.DataFrame,
     selected_labels: list[str],
     reliability: dict[str, bool | None] | None = None,
+    reliability_slot=None,
     display_options_slot=None,
 ) -> None:
     """Render the historical event memory trends view (3-panel: Median | Mean | Std)."""
@@ -118,6 +120,7 @@ def _render_historical(
     trend_event_df = render_reliability_filter(
         trend_event_df[trend_event_df["label"].isin(filtered_labels)],
         reliability, key="evt_memory_hist_exclude_unreliable",
+        slot=reliability_slot,
     )
     if trend_event_df.empty:
         return
@@ -154,23 +157,9 @@ def render(
 
     # The "Historical Trends" option is gated on remote mode (not on the current
     # window's data) so the view selector stays put when the trend window changes.
-    view_col, display_options_col = st.columns(
-        [2, 1], gap="medium", vertical_alignment="bottom",
+    view, reliability_slot, display_options_slot = _view_control_row(
+        _VIEWS if trends_enabled else [_VIEWS[0]], key="evt_memory_view_mode",
     )
-    with view_col:
-        if trends_enabled:
-            # ``required=True`` keeps the selected option from being clicked
-            # off; the widget still types as optional, hence the fallback.
-            view = st.segmented_control(
-                "**View**",
-                options=_VIEWS,
-                default=_VIEWS[0],
-                required=True,
-                key="evt_memory_view_mode",
-            ) or _VIEWS[0]
-        else:
-            view = _VIEWS[0]
-    display_options_slot = display_options_col.empty()
 
     if view == "Current Run":
         if event_data is None:
@@ -179,7 +168,9 @@ def render(
             _render_current_run(event_data, selected_labels, display_options_slot)
         return None
     _render_historical(
-        trend_event_df, selected_labels, reliability, display_options_slot,
+        trend_event_df, selected_labels, reliability,
+        reliability_slot=reliability_slot,
+        display_options_slot=display_options_slot,
     )
     # The trends span the window's releases, not the sidebar's one — reported
     # so the scope note above stops naming it.

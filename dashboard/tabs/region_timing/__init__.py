@@ -10,6 +10,8 @@ import pandas as pd
 import streamlit as st
 
 from sections import TREND_WINDOW_SCOPE, SectionScope
+from ui_chrome import _drop_stale_selection
+from ui_utils import _view_control_row
 
 from .attribution import _render_attribution_analysis
 from .current_run import _render_current_run
@@ -49,32 +51,40 @@ def render(
     if trends_enabled:
         view_options.append("Historical Trends")
 
-    # ``required=True`` keeps the selected option from being clicked off. The
-    # ``or`` guard is load-bearing here rather than defensive: *view_options* is
-    # dynamic, and a segmented control whose stored value is no longer on offer
-    # returns None — which would match no branch below and render an empty tab.
-    view = (
-        st.segmented_control(
-            "**View**", options=view_options, default=view_options[0],
-            required=True, key="region_view_mode",
-        ) or view_options[0]
-        if len(view_options) > 1
-        else view_options[0]
+    # This option set is dynamic. Drop a selection whose data disappeared before
+    # constructing the radio, otherwise Streamlit would receive an invalid
+    # session-state value for the current options.
+    _drop_stale_selection("region_view_mode", view_options)
+    view, reliability_slot, display_options_slot = _view_control_row(
+        view_options, key="region_view_mode",
     )
 
     if view == "Current Run":
         if region_data is None:
             st.info("No region timing data available in the selected directory.")
         else:
-            _render_current_run(region_data, selected_labels)
+            _render_current_run(
+                region_data, selected_labels,
+                display_options_slot=display_options_slot,
+            )
     elif view == "Historical Trends":
-        _render_historical(trend_region_df, selected_labels, reliability)
+        _render_historical(
+            trend_region_df, selected_labels, reliability,
+            reliability_slot=reliability_slot,
+            display_options_slot=display_options_slot,
+        )
         # The trends span the window's releases, not the sidebar's one —
         # reported so the scope note above stops naming it. The other three
         # views are the selected run, which the registry already describes.
         return TREND_WINDOW_SCOPE
     elif view == "Attribution Analysis":
-        _render_attribution_analysis(region_data, selected_labels)
+        _render_attribution_analysis(
+            region_data, selected_labels,
+            display_options_slot=display_options_slot,
+        )
     elif view == "Step Analysis":
-        _render_step_analysis(region_data, selected_labels)
+        _render_step_analysis(
+            region_data, selected_labels,
+            display_options_slot=display_options_slot,
+        )
     return None

@@ -761,20 +761,33 @@ def _render_group(
             # value always move together.
             window_id = _window_label(window) if window is not None else "none"
             drill_key = f"regr_drill_{key}_{scope[0]}_{scope[1]}_{window_id}"
-            selected = render_metric_picker(
-                drillable,
-                key=drill_key,
-                help="Recent history with the baseline band this verdict was "
-                     "judged against. Opens on the most severe flag — pick "
-                     "another, or “—” to hide the chart. Downloads data on "
-                     "first use.",
+            controls = st.container(
+                horizontal=True, vertical_alignment="bottom",
+                width="stretch", gap="medium",
             )
+            with controls:
+                picker = st.container(width="stretch")
+                with picker:
+                    selected = render_metric_picker(
+                        drillable,
+                        key=drill_key,
+                        help="Recent history with the baseline band this verdict was "
+                             "judged against. Opens on the most severe flag — pick "
+                             "another, or “—” to hide the chart. Downloads data on "
+                             "first use.",
+                    )
+                actions = st.container(
+                    horizontal=True, horizontal_alignment="right",
+                    vertical_alignment="bottom", width="content",
+                )
+                reliability_slot = actions.empty()
             if selected is not None:
                 render_metric_trend(
                     selected, data_url, cache_dir,
                     list_run_dates=_cached_list_run_dates,
                     fetch_runs_windowed=_cached_fetch_runs_windowed,
                     widget_namespace="regr",
+                    reliability_slot=reliability_slot,
                 )
     if window is not None:
         st.markdown("###### What changed upstream")

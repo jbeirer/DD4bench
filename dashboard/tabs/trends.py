@@ -322,22 +322,30 @@ def _trends_body(
     nightly reports behind the flag lookup rather than re-issuing the threaded
     HTTPS fetch whose shutdown can race a rerun.
     """
-    # ── Control row: regression pills left, Display options right ───────────────
+    # ── Control row: regression pills left, run scope and display right ────
     # The pills stay on the page because they change *which* nights are marked;
     # everything that only changes how the lines are drawn lives in the popover,
     # in the same right-hand position every other view puts it.
-    flags_col, display_options_col = st.columns(
-        [2, 1], gap="medium", vertical_alignment="bottom",
+    controls = st.container(
+        horizontal=True, vertical_alignment="bottom", width="stretch", gap="medium",
     )
-    with flags_col:
-        show_confirmed, show_watch = render_flag_pills("trends_flags")
+    with controls:
+        flags = st.container(width="content")
+        with flags:
+            show_confirmed, show_watch = render_flag_pills("trends_flags")
+        actions = st.container(
+            horizontal=True, horizontal_alignment="right",
+            vertical_alignment="bottom", width="stretch", gap="small",
+        )
+        reliability_slot = actions.empty()
+        display_options_slot = actions.empty()
     display = _display_options(
         _palette_control("trends_palette", len(selected_labels)),
         _style_cycling_control("trends_style"),
         _opacity_control("trends_alpha", default=0.75),
         _smooth_lines_control("trends_smooth"),
         key_prefix="trends_display",
-        slot=display_options_col.empty(),
+        slot=display_options_slot,
     )
 
     palette    = _PALETTES[display["palette"]]
@@ -382,7 +390,7 @@ def _trends_body(
     # is gone rather than the tag: a tag whose newest run is unreliable falls back
     # to its newest reliable one instead of dropping off the chart entirely.
     runs, _excluded = resolve_reliability_filter(
-        df, reliability, key="trends_exclude_unreliable",
+        df, reliability, key="trends_exclude_unreliable", slot=reliability_slot,
     )
     if runs.empty:
         return

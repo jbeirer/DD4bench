@@ -48,6 +48,7 @@ from tabs._regression_flags import (
     render_flag_pills,
 )
 from tabs._regression_trend import render_metric_picker
+from tabs._reliability import render_reliability_scope
 from ui_chrome import _drop_stale_selection, seed_query_param
 from ui_utils import (
     _DASHES,
@@ -57,7 +58,6 @@ from ui_utils import (
     _PALETTE_NAMES,
     _SYMBOLS,
     _auto_palette_index,
-    _legend_below,
     _reset_widget_on_scope,
     _to_rgba,
 )
@@ -565,6 +565,72 @@ def detector_styles(
     return styles
 
 
+def _detector_legend_columns(
+    detectors: list[str],
+    *,
+    plot_h: int,
+    t_margin: int,
+    tick_clearance: int,
+) -> tuple[dict[str, tuple[str, str]], dict[str, dict], int]:
+    """One vertical Plotly legend per detector family, arranged below the plot.
+
+    Returns ``(trace_specs, layout_legends, bottom_margin)``. ``trace_specs``
+    maps each detector to its named legend and its compact entry label. A family
+    with versioned detectors gets a heading (``ALLEGRO``) and entries below it
+    (``o1_v03``, ``o2_v01``); an unversioned singleton stays simply ``SiD``.
+    Separate legends are what make the grouping structural rather than an
+    ordering trick, while ``legendgroup=detector`` still lets each variant be
+    toggled independently across both panels and its regression markers.
+    """
+    by_family: dict[str, list[str]] = {}
+    for detector in sorted(detectors):
+        by_family.setdefault(detector_family(detector)[0], []).append(detector)
+    if not by_family:
+        return {}, {}, 160
+
+    font_size = 12
+    row_h = font_size + 8
+    max_rows = max(
+        len(members) + any(detector_family(d)[1] for d in members)
+        for members in by_family.values()
+    )
+    legend_h = max_rows * row_h + 12
+    offset = tick_clearance + 75
+    b_margin = max(160, offset + legend_h)
+    total_h = plot_h + t_margin + b_margin
+    y = (b_margin - offset) / total_h
+
+    trace_specs: dict[str, tuple[str, str]] = {}
+    layout_legends: dict[str, dict] = {}
+    families = list(by_family.items())
+    for idx, (family, members) in enumerate(families):
+        legend_ref = "legend" if idx == 0 else f"legend{idx + 1}"
+        versioned = any(detector_family(d)[1] for d in members)
+        for detector in members:
+            variant = detector_family(detector)[1]
+            trace_specs[detector] = (
+                legend_ref,
+                variant if variant and versioned else detector,
+            )
+        layout_legends[legend_ref] = dict(
+            orientation="v",
+            title=dict(text=family if versioned else ""),
+            yref="container",
+            yanchor="top",
+            y=y,
+            # Paper-referenced x positions keep the plotting area full-width;
+            # container-referenced vertical legends make Plotly reserve side
+            # margins for every family and squeeze the chart between them.
+            xref="paper",
+            xanchor="left",
+            x=idx / len(families),
+            tracegroupgap=0,
+            font=dict(size=font_size),
+            groupclick="togglegroup",
+        )
+    return trace_specs, layout_legends, b_margin
+
+
 # ── The combined figure ────────────────────────────────────────────────────────
 
 def _to_display_units(wide: pd.DataFrame, hist: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -642,11 +708,20 @@ def _history_figure(
     tick_labels = [pd.Timestamp(d).strftime("%Y-%m-%d") for d in unique_dates]
     marker_alpha = max(0.1, alpha - 0.2)
     shown: set[str] = set()
+    plotted = [
+        detector for detector in detectors
+        if ((hist["detector"] == detector) & hist["metric"].isin(metrics)).any()
+    ]
+    t_margin = 50
+    plot_h = 380
+    legend_specs, legends, b_margin = _detector_legend_columns(
+        plotted, plot_h=plot_h, t_margin=t_margin, tick_clearance=75,
+    )
     for metric, col in ((time_metric, 1), (mem_metric, 2)):
         sub_m = hist[hist["metric"] == metric]
         if sub_m.empty:
             continue
-        for detector in detectors:
+        for detector, (legend_ref, legend_name) in legend_specs.items():
             sub = sub_m[sub_m["detector"] == detector].sort_values("night_dt")
             if sub.empty:
                 continue
@@ -660,8 +735,9 @@ def _history_figure(
                     x=sub["night_dt"],
                     y=sub["value"],
                     mode="lines+markers",
-                    name=detector,
+                    name=legend_name,
                     legendgroup=detector,
+                    legend=legend_ref,
                     showlegend=first,
                     line=dict(color=_to_rgba(color, alpha), width=2, dash=dash),
                     marker=dict(size=7, symbol=symbol,
@@ -691,6 +767,7 @@ def _history_figure(
                 fig, flagged, x_col="night_dt", y_col="value",
                 name_col="detector", severity=severity, hover_y=hover_y,
                 row=1, col=col,
+                legend_by_name={d: spec[0] for d, spec in legend_specs.items()},
             )
         fig.update_xaxes(
             type="date",
@@ -704,17 +781,11 @@ def _history_figure(
         fig.update_yaxes(title_text=_trend_y_title(metric, relative),
                          row=1, col=col, **_value_axis(log and not relative))
 
-    t_margin = 50
-    plot_h = 380
-    legend, b_margin = _legend_below(
-        plot_h, len(shown), t_margin=t_margin, tick_clearance=75,
-        entry_width=200, font_size=12,
-    )
     fig.update_layout(
         template=_TEMPLATE,
         height=plot_h + t_margin + b_margin,
         margin=dict(l=20, r=20, t=t_margin, b=b_margin),
-        legend=legend,
+        **legends,
     )
     return fig
 
@@ -744,7 +815,12 @@ def _landscape_figure(
 
     fig = go.Figure()
     plotted = [d for d in detectors if d in pts.index]
-    for detector in plotted:
+    t_margin = 50
+    plot_h = 430
+    legend_specs, legends, b_margin = _detector_legend_columns(
+        plotted, plot_h=plot_h, t_margin=t_margin, tick_clearance=60,
+    )
+    for detector, (legend_ref, legend_name) in legend_specs.items():
         color, _, symbol = styles[detector]
         tag = (as_of or {}).get(detector)
         fig.add_trace(
@@ -752,8 +828,9 @@ def _landscape_figure(
                 x=[pts.loc[detector, time_metric]],
                 y=[pts.loc[detector, mem_metric]],
                 mode="markers",
-                name=detector,
+                name=legend_name,
                 legendgroup=detector,
+                legend=legend_ref,
                 showlegend=True,
                 marker=dict(size=13, symbol=symbol, color=_to_rgba(color, alpha),
                             line=dict(width=1.5, color=color)),
@@ -774,17 +851,11 @@ def _landscape_figure(
     fig.update_xaxes(**x_axis)
     fig.update_yaxes(**y_axis)
 
-    t_margin = 50
-    plot_h = 430
-    legend, b_margin = _legend_below(
-        plot_h, len(plotted), t_margin=t_margin, tick_clearance=60,
-        entry_width=200, font_size=12,
-    )
     fig.update_layout(
         template=_TEMPLATE,
         height=plot_h + t_margin + b_margin,
         margin=dict(l=20, r=20, t=t_margin, b=b_margin),
-        legend=legend,
+        **legends,
     )
     return fig
 
@@ -1002,17 +1073,28 @@ def _render_flag_trend(
     # option model, but “—” survives every model: without this, a hidden chart
     # would stay hidden through a scope change that surfaced a worse flag.
     _reset_widget_on_scope("det_ov_flag_trend", (platform, sample, tuple(choices)))
-    v = render_metric_picker(
-        choices, key="det_ov_flag_trend", include_detector=True,
-        help="The flagged metric's history over the trend window, with the "
-             "baseline band its verdict was judged against — opens on the "
-             "worst flag; pick another or “—” to hide it. Built from the "
-             "nightly reports, no run downloads.",
+    controls = st.container(
+        horizontal=True, vertical_alignment="bottom", width="stretch", gap="medium",
     )
+    with controls:
+        picker = st.container(width="stretch")
+        with picker:
+            v = render_metric_picker(
+                choices, key="det_ov_flag_trend", include_detector=True,
+                help="The flagged metric's history over the trend window, with the "
+                     "baseline band its verdict was judged against — opens on the "
+                     "worst flag; pick another or “—” to hide it. Built from the "
+                     "nightly reports, no run downloads.",
+            )
+        actions = st.container(
+            horizontal=True, horizontal_alignment="right",
+            vertical_alignment="bottom", width="content",
+        )
+        reliability_slot = actions.empty()
     if v is None:
         return
     unreliable_pairs, exclude_unreliable = _render_reliability_filter(
-        status_rel_hist, key="det_ov_exclude_unreliable"
+        status_rel_hist, key="det_ov_exclude_unreliable", slot=reliability_slot,
     )
     rows = history_rows(status_frames, platform, sample, v.label)
     if exclude_unreliable:
@@ -1343,19 +1425,19 @@ def _trend_notes(
 
 
 def _render_reliability_filter(
-    rel_hist: pd.DataFrame, *, key: str
+    rel_hist: pd.DataFrame, *, key: str, inline: bool = False, slot=None,
 ) -> tuple[set[tuple[str, str]], bool]:
-    """The standard unreliable-run warning + "Exclude unreliable runs" toggle,
-    over the per-run ``reliable`` flag from the report *groups*.
+    """A single explicit choice between reliable-only and all runs.
 
     *rel_hist* has columns ``night, run_night, detector, reliable`` (see
     :func:`report_reliability_frame` — built per-group precisely because the
     flag belongs to the group and to no metric verdict). Mirrors
-    ``tabs._reliability.render_reliability_filter`` (same wording, same
-    on-by-default toggle); the shared helper keys on a global
+    ``tabs._reliability.render_reliability_filter``; the shared frame-filtering
+    helper keys on a global
     ``{run_id: verdict}`` map, which cannot express this tab's cross-detector
     frame where the same night is reliable for one detector and not another.
-    ``None`` (no evidence) never excludes.
+    ``None`` (no evidence) never excludes. The shared selector keeps this
+    cross-detector view identical to every other historical dashboard view.
 
     Returns the unreliable ``(run_night, detector)`` pairs and whether exclusion
     is active, so the caller can drop those *runs* from :func:`history_rows`
@@ -1368,23 +1450,12 @@ def _render_reliability_filter(
         return set(), False
 
     n = len(pairs)
-    dates = ", ".join(sorted(rel_hist.loc[rel_hist["reliable"].eq(False), "night"].unique()))
-    warn_col, toggle_col = st.columns([3, 1], vertical_alignment="center")
-    with warn_col:
-        st.warning(
-            f"⚠️ {n} unreliable run{'s' if n != 1 else ''} detected in this "
-            "window — likely affected by host contention (see the Machine "
-            f"Info tab for the per-run verdict): {dates}."
-        )
-    with toggle_col:
-        exclude = st.toggle(
-            "Exclude unreliable runs",
-            value=True,
-            key=key,
-            help="Drop runs that failed the conservative reliability check "
-                 "from the plots below. On by default; disable to include them.",
-        )
-    return pairs, exclude
+    dates = sorted(
+        rel_hist.loc[rel_hist["reliable"].eq(False), "night"].unique()
+    )
+    return pairs, render_reliability_scope(
+        n, dates, key=key, inline=inline, slot=slot,
+    )
 
 
 def render(
@@ -1606,14 +1677,13 @@ def render(
         # which both Regression Status and Nightly Report speak — would be
         # carried in the URL with no picker on screen to seed from them.
         seed_query_param(_VIEW_KEY, "view", _VIEWS)
-        # Seeding through session_state rules out ``default=`` (Streamlit
-        # rejects both in one call), so the opening view is written the same
-        # way — otherwise the bar would render with nothing selected. Same
-        # pattern as the Regressions night picker.
+        # Seeding through session_state rules out an explicit default, so the
+        # opening view is written the same way. Same pattern as the Regressions
+        # night picker.
         if _VIEW_KEY not in st.session_state:
             st.session_state[_VIEW_KEY] = _VIEWS[0]
-        view = st.segmented_control(
-            "**View**", _VIEWS, required=True, key=_VIEW_KEY,
+        view = st.radio(
+            "**View**", _VIEWS, horizontal=True, key=_VIEW_KEY,
         ) or _VIEWS[0]
         st.query_params["view"] = view
         if view == "Nightly Report":
@@ -1638,26 +1708,28 @@ def render(
         # ── Shaping controls shared by the two figure views. Same widget keys
         # in both, so the chosen metrics survive a view switch; only Scale
         # differs (Relative % only makes sense for a time series).
-        controls = st.container(
-            horizontal=True, vertical_alignment="bottom", width="stretch"
+        toolbar = st.container(
+            border=True, horizontal=True, vertical_alignment="bottom",
+            width="stretch", gap="small",
         )
-        with controls:
-            shaping = st.container(
-                horizontal=True, vertical_alignment="bottom", width="content"
+        with toolbar:
+            comparison = st.container(
+                horizontal=True, vertical_alignment="bottom", width="content",
+                gap="small",
             )
-            with shaping:
+            with comparison:
                 seed_query_param("det_ov_time_metric", "tmetric", _TIME_METRICS)
                 time_metric = st.selectbox(
-                    "Time metric", _TIME_METRICS, key="det_ov_time_metric",
-                    format_func=_metric_title, width=260,
-                    help="Per-event means/medians exclude the warmup event; wall "
-                         "time and user CPU cover the whole run including "
+                    "Time", _TIME_METRICS, key="det_ov_time_metric",
+                    format_func=_metric_title, width=210,
+                    help="Per-event means/medians exclude the warmup event; "
+                         "wall time and user CPU cover the whole run including "
                          "initialization.",
                 )
                 seed_query_param("det_ov_mem_metric", "mmetric", _MEMORY_METRICS)
                 mem_metric = st.selectbox(
-                    "Memory metric", _MEMORY_METRICS, key="det_ov_mem_metric",
-                    format_func=_metric_title, width=260,
+                    "Memory", _MEMORY_METRICS, key="det_ov_mem_metric",
+                    format_func=_metric_title, width=210,
                     help="Mean event RSS is the per-event average; peak RSS is "
                          "the run's high-water mark.",
                 )
@@ -1678,24 +1750,25 @@ def render(
                         help="Log keeps the detectors' >1-decade spread "
                              "readable; Linear shows absolute values.",
                     ) or "Log"
-            if view == "Performance Trends":
-                flags = st.container(
-                    horizontal=True, vertical_alignment="bottom",
-                    width="stretch", horizontal_alignment="right",
+
+            overlays = st.container(
+                horizontal=True, vertical_alignment="bottom", width="stretch",
+                horizontal_alignment="right", gap="small",
+            )
+            with overlays:
+                if view == "Performance Trends":
+                    show_confirmed, show_watch = render_flag_pills(
+                        "det_ov_flags", label="Regressions",
+                    )
+                unreliable, exclude_unreliable = _render_reliability_filter(
+                    rel_hist, key="det_ov_exclude_unreliable", inline=True,
                 )
-                with flags:
-                    show_confirmed, show_watch = render_flag_pills("det_ov_flags")
+
             log = scale == "Log"
             relative = scale == "Relative %"
         # Make the selected comparison shareable: ?tmetric=...&mmetric=...
         st.query_params["tmetric"] = time_metric
         st.query_params["mmetric"] = mem_metric
-
-        # ── Reliability filter (same behaviour as every other historical view;
-        # one shared key, so the toggle's state survives a view switch) ──
-        unreliable, exclude_unreliable = _render_reliability_filter(
-            rel_hist, key="det_ov_exclude_unreliable"
-        )
         # Dropped before the tag reduction, never after: a flag belongs to the run
         # that earned it, so excluding that run has to take its marker with it —
         # and must not take the marker of a reliable rerun of the same tag. One

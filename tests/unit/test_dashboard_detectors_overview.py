@@ -348,7 +348,7 @@ def _flag_trend_series(monkeypatch, *, exclude: bool) -> pd.DataFrame:
 
     monkeypatch.setattr(
         ov, "_render_reliability_filter",
-        lambda rel_hist, *, key: ({("2026-07-01", "CLD")}, exclude),
+        lambda rel_hist, *, key, slot=None: ({("2026-07-01", "CLD")}, exclude),
     )
     monkeypatch.setattr(ov, "_reset_widget_on_scope", lambda *a, **kw: None)
     # The picker's own behaviour is the Regressions tab's to test; here it just
@@ -362,10 +362,21 @@ def _flag_trend_series(monkeypatch, *, exclude: bool) -> pd.DataFrame:
         lambda series, v: captured.setdefault("series", series),
     )
 
+    class _Container:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def empty(self):
+            return self
+
     class _St:
         markdown = caption = info = plotly_chart = staticmethod(
             lambda *a, **kw: None
         )
+        container = staticmethod(lambda *a, **kw: _Container())
 
     monkeypatch.setattr(ov, "st", _St)
     ov._render_flag_trend(
@@ -652,6 +663,28 @@ def test_detector_styles_family_colour_version_dash():
     )
 
 
+def test_detector_legend_columns_stack_family_variants_structurally():
+    specs, legends, bottom = ov._detector_legend_columns([
+        "SiD", "ALLEGRO_o2_v01", "CLD_o2_v08", "ALLEGRO_o1_v03",
+        "IDEA_o1_v03", "CLD_o1_v06",
+    ], plot_h=380, t_margin=50, tick_clearance=75)
+    assert specs == {
+        "ALLEGRO_o1_v03": ("legend", "o1_v03"),
+        "ALLEGRO_o2_v01": ("legend", "o2_v01"),
+        "CLD_o1_v06": ("legend2", "o1_v06"),
+        "CLD_o2_v08": ("legend2", "o2_v08"),
+        "IDEA_o1_v03": ("legend3", "o1_v03"),
+        "SiD": ("legend4", "SiD"),
+    }
+    assert legends["legend"]["title"]["text"] == "ALLEGRO"
+    assert legends["legend2"]["title"]["text"] == "CLD"
+    assert legends["legend4"]["title"]["text"] == ""
+    assert all(legend["orientation"] == "v" for legend in legends.values())
+    assert all(legend["xref"] == "paper" for legend in legends.values())
+    assert [legend["x"] for legend in legends.values()] == [0, 0.25, 0.5, 0.75]
+    assert bottom >= 160
+
+
 # ── The two figures (smoke tests) ───────────────────────────────────────────────
 
 def _fixture_frames():
@@ -693,6 +726,7 @@ def test_history_figure_trace_counts_and_legend():
     assert {t.legendgroup for t in fig.data if t.legendgroup} == {"CLD", "IDEA"}
     halo = next(t for t in fig.data if t.hoverinfo == "skip")
     assert halo.marker.symbol == "circle" and halo.marker.line.width == 0
+    assert halo.legend == "legend2"  # IDEA's markers follow its family legend
     badge = next(t for t in fig.data if t.marker.color == "#d03b3b")
     assert badge.marker.line.color == "#ffffff"  # never blends into the line
     assert list(badge.customdata) == ["IDEA"]
@@ -711,7 +745,8 @@ def test_history_figure_trace_counts_and_legend():
     assert fig.layout.yaxis.title.text == "Mean event time (s)"
     assert fig.layout.yaxis2.title.text == "Peak RSS (GB)"
     assert fig.layout.yaxis.type == fig.layout.yaxis2.type == "log"
-    assert fig.layout.legend.orientation == "h"
+    assert fig.layout.legend.orientation == "v"
+    assert fig.layout.legend2.orientation == "v"
     titles = [a.text for a in fig.layout.annotations]
     assert titles == ["CPU", "Memory"]
 

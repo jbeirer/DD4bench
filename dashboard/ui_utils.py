@@ -293,6 +293,36 @@ def _validate_bin_count(
     st.session_state[custom_key] = bins != int(st.session_state[auto_key])
 
 
+def _view_control_row(
+    options: list[str], *, key: str,
+) -> tuple[str, Any, Any]:
+    """Render the dashboard's canonical tab-local view header.
+
+    The view radio occupies the left; two deferred right-hand slots hold the
+    run-quality scope and Display options respectively. Returning placeholders
+    lets callers compute their data before deciding whether either control is
+    needed without changing the row where it appears.
+    """
+    controls = st.container(
+        horizontal=True, vertical_alignment="bottom", width="stretch", gap="medium",
+    )
+    with controls:
+        view_group = st.container(width="content")
+        with view_group:
+            view = (
+                st.radio("**View**", options=options, horizontal=True, key=key)
+                if len(options) > 1
+                else options[0]
+            )
+        actions = st.container(
+            horizontal=True, horizontal_alignment="right",
+            vertical_alignment="bottom", width="stretch", gap="small",
+        )
+        reliability_slot = actions.empty()
+        display_options_slot = actions.empty()
+    return view, reliability_slot, display_options_slot
+
+
 # ── Display options ────────────────────────────────────────────────────────────
 # Every view whose figures can be restyled collects those knobs into one
 # "Display options" popover. The page flow then carries only the controls that

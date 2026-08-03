@@ -55,14 +55,14 @@ _FLAG_HELP = (
 SEVERITY_RANK = {"CONFIRMED": 3, "WATCH": 2, "FAILURE": 1}
 
 
-def render_flag_pills(key: str) -> tuple[bool, bool]:
+def render_flag_pills(key: str, *, label: str = "Regressions") -> tuple[bool, bool]:
     """The Confirmed/Watch flag toggle, both on by default.
 
     Returns ``(show_confirmed, show_watch)`` — the two booleans the trend
     figures use to decide which severities to overlay.
     """
     flags = st.pills(
-        "Regressions", ["🔴 Confirmed", "⚠️ Watch"], selection_mode="multi",
+        label, ["🔴 Confirmed", "⚠️ Watch"], selection_mode="multi",
         default=["🔴 Confirmed", "⚠️ Watch"], key=key, help=_FLAG_HELP,
     ) or []
     return "🔴 Confirmed" in flags, "⚠️ Watch" in flags
@@ -79,6 +79,7 @@ def add_severity_markers(
     hover_y: str,
     row: int | None = None,
     col: int | None = None,
+    legend_by_name: dict[str, str] | None = None,
 ) -> None:
     """Overlay the two-layer flag marker for one *severity* onto *fig*.
 
@@ -92,6 +93,8 @@ def add_severity_markers(
     *row*/*col* place the markers in a ``make_subplots`` grid (Overview and Run
     Trends); leave them unset for a plain single-panel figure — the Regressions
     tab's drill-down — where plotly ignores the ``None`` subplot reference.
+    *legend_by_name* assigns a named Plotly legend to each series when a figure
+    uses more than one legend; callers with the standard single legend omit it.
 
     The markers are split per series and tagged with that series' *legendgroup*
     (``name_col`` is exactly the identity the line traces group on — the config
@@ -101,11 +104,13 @@ def add_severity_markers(
     """
     mark = FLAG_MARKS[severity]
     for name, grp in flagged.groupby(name_col, sort=False):
+        legend = (legend_by_name or {}).get(str(name), "legend")
         fig.add_trace(
             go.Scatter(
                 x=grp[x_col], y=grp[y_col],
                 mode="markers", showlegend=False, hoverinfo="skip",
                 legendgroup=str(name),
+                legend=legend,
                 marker=dict(symbol=mark["symbol"], size=mark["halo_size"],
                             color=_to_rgba(mark["color"], 0.28), line_width=0),
             ),
@@ -116,6 +121,7 @@ def add_severity_markers(
                 x=grp[x_col], y=grp[y_col],
                 mode="markers", showlegend=False,
                 legendgroup=str(name),
+                legend=legend,
                 marker=dict(symbol=mark["symbol"], size=mark["badge_size"],
                             color=mark["color"], line=dict(width=1.5, color="#ffffff")),
                 customdata=grp[name_col],

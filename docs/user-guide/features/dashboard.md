@@ -93,9 +93,17 @@ restores every control inside it in one click.
 
 What stays on the page is everything that changes *what* you are looking at:
 baseline, configuration, attribution, metric, view, report night, the
-reliability toggle and the regression flag pills. Overview's Log/Linear/Relative
+reliability scope and the regression flag pills. Overview's Log/Linear/Relative
 % scale stays out on the page for the same reason — it changes what the numbers
-mean, not how they are painted.
+mean, not how they are painted. Whenever unreliable runs are present, the
+shared **Runs · ⚠ N unreliable** selector occupies the right-hand end of that
+view's existing controls line (beside Display options where present); it never
+inserts a separate warning or controls row.
+
+Tabs with multiple views use the same lightweight selector: horizontal radio
+buttons under a bold **View** label. The segmented bar is reserved for the
+dashboard's top-level section navigation and for compact value choices such as
+Scale; it is not repeated as tab-local navigation.
 
 Palette defaults follow the data: a figure picks the smallest Matplotlib tab-N
 palette that colours every series without repeating a colour, and re-picks it
@@ -145,7 +153,8 @@ means exactly what it means there. Flags appear on the metrics the engine judges
 verdict since throughput is exactly `n_events / wall_time_s` (the same
 regression, inverted); CPU efficiency and context switches carry none. Runs that
 failed the host-reliability check are excluded by default with the same
-warning/toggle as every other historical view. Palette, style cycling, opacity
+**Runs · ⚠ N unreliable** selector as every other historical view: **Reliable
+only** (the default) or **All runs**. Palette, style cycling, opacity
 and line smoothing sit in this tab's [Display options](#display-options)
 popover, alongside the pills on the same row.
 
@@ -245,7 +254,7 @@ naming that same run is kept, whatever the gap between the two dates. Nights
 recorded before that CI run existed fall back to accepting a single night's
 lag, and their note says that is what happened. The Overview's charts follow
 each run by the date it actually ran, so a straddling job is still covered by
-the unreliable-run warning and toggle — it is one of tonight's runs, and the
+the unreliable-run selector — it is one of tonight's runs, and the
 date it is stamped with should not decide whether the filter can see it.
 
 A `?report=YYYY-MM-DD` query parameter pins one report night directly and is
@@ -407,6 +416,19 @@ Four views, dispatched by the same View switcher as the other multi-view tabs
 rides in the URL as `?view=`, so a copied link reopens the view it came from
 along with the parameters only that view reads:
 
+Like every tab-local view selector in the dashboard, the Overview switcher uses
+simple horizontal radio buttons under a bold **View** label. It is visually
+separate from a single bordered comparison toolbar. **Time**, **Memory** and
+**Scale** form its left-hand group; **Regressions** and the explicit
+**Runs · ⚠ N unreliable** choice form its right-hand group on the same row.
+When unreliable runs are present, that choice offers:
+**Reliable only** (the default) or **All runs**; affected dates and the Machine
+Info pointer live in the control's help instead of a separate banner. The rows
+wrap naturally on narrow screens, with no CSS override. Each detector family
+has its own vertical legend below the figure: the family is the heading and its
+versions sit directly beneath it, while every version remains individually
+toggleable.
+
 - **Performance Trends** — the two selected metrics side by side (CPU,
   Memory), one line per detector across every nightly tag in the sidebar's
   trend window (x-axis: the Key4hep nightly tag, like every other trend
@@ -481,11 +503,11 @@ along with the parameters only that view reads:
 Colours follow the detector *family* (ALLEGRO, CLD, …), with versions of one
 family distinguished by dash pattern and marker symbol, so experiment-level
 comparisons read at a glance. Runs that failed the host-reliability check are
-excluded by default with the same warning/toggle as every other historical
+excluded by default with the same **Reliable only / All runs** selector as every historical
 view (the nightly report carries each night's per-detector verdict); their raw
-values are still recorded — as unjudged points, never flagged — so disabling
-the toggle plots them like Run Trends does. One toggle covers all three views,
-the Regression Status trend preview included, and the warning and toggle reach
+values are still recorded — as unjudged points, never flagged — so choosing
+**All runs** plots them like Run Trends does. One selector covers all three views,
+the Regression Status trend preview included, and it reaches
 every report in view — including nights outside the trend window, which the
 landscape and the night picker both read, and any the landscape reaches back to
 for a detector that has not run in a while. Exclusion drops the *run*,

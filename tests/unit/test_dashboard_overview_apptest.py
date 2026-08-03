@@ -139,13 +139,22 @@ def test_default_view_renders_the_trends_figure_and_controls():
     at = _run()
     # The tab opens on Performance Trends: one figure, the shaping controls,
     # and the flag pills; the landscape lives in its own view now.
-    assert at.segmented_control(key="det_ov_view_mode").value == "Performance Trends"
+    view = at.radio(key="det_ov_view_mode")
+    assert view.label == "**View**"
+    assert view.value == "Performance Trends"
+    assert view.options == [
+        "Performance Trends", "Performance Landscape", "Regression Status",
+        "Nightly Report",
+    ]
     assert len(at.get("plotly_chart")) == 1
-    assert {s.label for s in at.selectbox} == {"Time metric", "Memory metric"}
+    assert {s.label for s in at.selectbox} == {"Time", "Memory"}
     assert not at.slider
-    assert {t.label for t in at.toggle} == {"Exclude unreliable runs"}
+    assert not at.toggle
     assert {p.label for p in at.pills} == {"Regressions"}
-    assert {c.label for c in at.segmented_control} == {"**View**", "Scale"}
+    assert {c.label for c in at.segmented_control} == {
+        "Scale", "Runs · ⚠️ 3 unreliable",
+    }
+    assert at.segmented_control(key="det_ov_exclude_unreliable").value == "Reliable only"
     captions = "\n".join(str(c.value) for c in at.caption)
     assert "Latest night: **2026-07-11**" in captions
     assert "**2026-07-09** → **2026-07-11** (3 nights)" in captions
@@ -157,7 +166,7 @@ def test_default_view_renders_the_trends_figure_and_controls():
 
 def test_landscape_view_renders_its_own_figure():
     at = _run()
-    at.segmented_control(key="det_ov_view_mode").set_value("Performance Landscape").run()
+    at.radio(key="det_ov_view_mode").set_value("Performance Landscape").run()
     assert not at.exception, at.exception
     assert len(at.get("plotly_chart")) == 1
     # Relative % is a time-series notion; the snapshot offers Log/Linear only.
@@ -169,16 +178,15 @@ def test_landscape_view_renders_its_own_figure():
     assert "Nightly tag: **2026-07-11**" in captions
 
 
-def test_unreliable_night_warned_and_excludable():
+def test_unreliable_night_is_one_explicit_run_choice():
     at = _run()
-    warnings = "\n".join(str(w.value) for w in at.warning)
-    # One night × three detectors failed the host check, on by default.
-    assert "3 unreliable runs detected" in warnings
-    assert "2026-07-10" in warnings
-    toggle = at.toggle(key="det_ov_exclude_unreliable")
-    assert toggle.value is True
-    # Including them re-renders without error.
-    toggle.set_value(False).run()
+    runs = at.segmented_control(key="det_ov_exclude_unreliable")
+    # One night × three detectors failed the host check; reliable-only is the
+    # explicit default, with the count attached to the control itself.
+    assert runs.label == "Runs · ⚠️ 3 unreliable"
+    assert runs.value == "Reliable only"
+    assert "2026-07-10" in runs.help
+    runs.set_value("All runs").run()
     assert not at.exception, at.exception
 
 
@@ -196,9 +204,9 @@ def _report_unjudged(night: str) -> dict:
     return to_json(NightlyReport(generated_at=f"{night}T06:00:00+00:00", groups=groups))
 
 
-def test_unreliable_night_with_no_verdicts_still_warns():
+def test_unreliable_night_with_no_verdicts_is_still_a_run_choice():
     # Regression guard: an unreliable night contributes no metric verdict rows,
-    # yet the warning must still fire — it now reads the group-level flag, not
+    # yet the filter must still appear — it reads the group-level flag, not
     # the (absent) verdict rows. The latest night has data so the tab renders.
     dates = ["2026-07-11", "2026-07-10"]
     reports = {
@@ -212,9 +220,9 @@ def test_unreliable_night_with_no_verdicts_still_warns():
     )
     at.run()
     assert not at.exception, at.exception
-    warnings = "\n".join(str(w.value) for w in at.warning)
-    assert "1 unreliable run detected" in warnings
-    assert "2026-07-10" in warnings
+    runs = at.segmented_control(key="det_ov_exclude_unreliable")
+    assert runs.label == "Runs · ⚠️ 1 unreliable"
+    assert "2026-07-10" in runs.help
 
 
 def test_control_changes_rerender():
@@ -245,7 +253,7 @@ def test_no_window_falls_back_to_latest_nights():
 
 
 def _status_view(at: AppTest) -> AppTest:
-    at.segmented_control(key="det_ov_view_mode").set_value("Regression Status").run()
+    at.radio(key="det_ov_view_mode").set_value("Regression Status").run()
     assert not at.exception, at.exception
     return at
 
@@ -531,7 +539,7 @@ def test_landscape_ignores_the_selected_report_night():
     ).run()
     at = _status_view(at)
     at.selectbox(key="det_ov_report_night").set_value("2026-07-09").run()
-    at.segmented_control(key="det_ov_view_mode").set_value("Performance Landscape").run()
+    at.radio(key="det_ov_view_mode").set_value("Performance Landscape").run()
     assert not at.exception, at.exception
     captions = "\n".join(str(c.value) for c in at.caption)
     assert "Nightly tag: **2026-07-11**" in captions
@@ -548,7 +556,7 @@ def test_landscape_falls_back_to_a_detectors_last_run():
     at = AppTest.from_function(
         _app, args=(str(_DASHBOARD_DIR), DATES, reports, _WINDOW), default_timeout=30,
     ).run()
-    at.segmented_control(key="det_ov_view_mode").set_value("Performance Landscape").run()
+    at.radio(key="det_ov_view_mode").set_value("Performance Landscape").run()
     assert not at.exception, at.exception
     captions = "\n".join(str(c.value) for c in at.caption)
     assert "Newest nightly tag: **2026-07-11**" in captions
@@ -678,7 +686,7 @@ def test_landscape_reaches_a_run_between_the_window_and_the_latest_report():
         default_timeout=30,
     ).run()
     assert not at.exception, at.exception
-    at.segmented_control(key="det_ov_view_mode").set_value("Performance Landscape").run()
+    at.radio(key="det_ov_view_mode").set_value("Performance Landscape").run()
     assert not at.exception, at.exception
     captions = "\n".join(str(c.value) for c in at.caption)
     assert "Newest nightly tag: **2026-07-11**" in captions
@@ -708,7 +716,7 @@ def _report_cross_midnight(night: str, det: str, ran_on: str) -> dict:
     return rep
 
 
-def test_cross_midnight_unreliable_run_is_warned_and_excludable():
+def test_cross_midnight_unreliable_run_is_offered_and_excludable():
     # SiD's job started before midnight: dated 07-10 inside the 07-11 report,
     # same batch, contended host. Its raw values are kept for display, so the
     # exclusion has to be able to reach them — keyed on the report night rather
@@ -722,25 +730,26 @@ def test_cross_midnight_unreliable_run_is_warned_and_excludable():
     ).run()
     assert not at.exception, at.exception
 
-    warnings = "\n".join(str(w.value) for w in at.warning)
-    assert "2026-07-11" in warnings          # the tag the reader sees on the axis
-    assert at.toggle(key="det_ov_exclude_unreliable").value is True
+    runs = at.segmented_control(key="det_ov_exclude_unreliable")
+    assert "2026-07-11" in runs.help          # the tag the reader sees on the axis
+    assert runs.value == "Reliable only"
 
-    at.segmented_control(key="det_ov_view_mode").set_value("Performance Landscape").run()
+    at.radio(key="det_ov_view_mode").set_value("Performance Landscape").run()
     assert not at.exception, at.exception
     captions = "\n".join(str(c.value) for c in at.caption)
     # SiD falls back to its last reliable run rather than being plotted from
     # the contended one.
     assert "SiD (2026-07-09)" in captions
 
-    # Toggle off and the contended run is back, on the newest tag.
-    at.toggle(key="det_ov_exclude_unreliable").set_value(False).run()
+    # Include all and the contended run is back, on the newest tag.
+    runs = at.segmented_control(key="det_ov_exclude_unreliable")
+    runs.set_value("All runs").run()
     assert not at.exception, at.exception
     captions = "\n".join(str(c.value) for c in at.caption)
     assert "Nightly tag: **2026-07-11**" in captions
 
 
-def test_unreliable_run_outside_the_window_is_still_warned_and_excludable():
+def test_unreliable_run_outside_the_window_is_still_offered_and_excludable():
     # The landscape reads the newest run it can find, which sits outside the
     # sidebar window whenever the range ends before the latest report. Scoping
     # the filter to the window would plot that run with no warning beside it and
@@ -756,12 +765,12 @@ def test_unreliable_run_outside_the_window_is_still_warned_and_excludable():
         default_timeout=30,
     ).run()
     assert not at.exception, at.exception
-    warnings = "\n".join(str(w.value) for w in at.warning)
-    assert "3 unreliable runs detected" in warnings
-    assert "2026-07-11" in warnings
-    assert at.toggle(key="det_ov_exclude_unreliable").value is True
+    runs = at.segmented_control(key="det_ov_exclude_unreliable")
+    assert runs.label == "Runs · ⚠️ 3 unreliable"
+    assert "2026-07-11" in runs.help
+    assert runs.value == "Reliable only"
     # …and the landscape falls back to each detector's last reliable run.
-    at.segmented_control(key="det_ov_view_mode").set_value("Performance Landscape").run()
+    at.radio(key="det_ov_view_mode").set_value("Performance Landscape").run()
     assert not at.exception, at.exception
     captions = "\n".join(str(c.value) for c in at.caption)
     assert "Nightly tag: **2026-07-10**" in captions
@@ -799,7 +808,7 @@ def test_failed_night_status_view_shows_the_failure():
 # ── Nightly Report view ──────────────────────────────────────────────────────
 
 def _email_view(at: AppTest) -> AppTest:
-    at.segmented_control(key="det_ov_view_mode").set_value("Nightly Report").run()
+    at.radio(key="det_ov_view_mode").set_value("Nightly Report").run()
     assert not at.exception, at.exception
     return at
 
@@ -874,7 +883,7 @@ def test_view_deep_link_opens_the_email_view_directly():
     # picker (and the Regressions tab), so the view has to be named.
     at = _deep_linked(view="Nightly Report", report="2026-07-09")
 
-    assert at.segmented_control(key="det_ov_view_mode").value == "Nightly Report"
+    assert at.radio(key="det_ov_view_mode").value == "Nightly Report"
     assert at.selectbox(key="det_ov_email_night").value == "2026-07-09"
     assert "Report night <strong>9 Jul 2026</strong>" in _srcdoc(at)
 
@@ -892,7 +901,7 @@ def test_a_copied_url_restores_both_the_view_and_the_night():
 
     restored = _deep_linked(view=copied["view"], report=copied["report"])
 
-    assert restored.segmented_control(key="det_ov_view_mode").value == "Nightly Report"
+    assert restored.radio(key="det_ov_view_mode").value == "Nightly Report"
     assert restored.selectbox(key="det_ov_email_night").value == "2026-07-10"
     assert "Report night <strong>10 Jul 2026</strong>" in _srcdoc(restored)
 
@@ -902,7 +911,7 @@ def test_view_deep_link_reopens_the_status_view_too():
     # ?report= as well, and was equally unreachable from a pasted URL.
     at = _deep_linked(view="Regression Status", report="2026-07-09")
 
-    assert at.segmented_control(key="det_ov_view_mode").value == "Regression Status"
+    assert at.radio(key="det_ov_view_mode").value == "Regression Status"
     assert at.selectbox(key="det_ov_report_night").value == "2026-07-09"
 
 
@@ -910,7 +919,7 @@ def test_an_unknown_view_falls_back_to_the_default():
     # A stale or hand-edited parameter must not blank the tab.
     at = _deep_linked(view="Nightly Reports")
 
-    assert at.segmented_control(key="det_ov_view_mode").value == "Performance Trends"
+    assert at.radio(key="det_ov_view_mode").value == "Performance Trends"
     assert at.query_params["view"] == ["Performance Trends"]
 
 
@@ -966,7 +975,7 @@ def test_malformed_historical_report_does_not_blank_the_tab():
     assert not at.exception, at.exception
     assert len(at.get("plotly_chart")) == 1
     # The Nightly Report view still offers the nights that did parse.
-    at.segmented_control(key="det_ov_view_mode").set_value("Nightly Report").run()
+    at.radio(key="det_ov_view_mode").set_value("Nightly Report").run()
     assert not at.exception, at.exception
     offered = at.selectbox(key="det_ov_email_night").options
     assert [o.split()[-1] for o in offered] == ["2026-07-11", "2026-07-09"]

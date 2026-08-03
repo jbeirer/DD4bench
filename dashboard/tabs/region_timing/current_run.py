@@ -15,14 +15,18 @@ from ui_utils import (
 from ._common import _ATTRIBUTION_HELP
 
 
-def _render_current_run(region_data: dict, selected_labels: list[str]) -> None:
+def _render_current_run(
+    region_data: dict,
+    selected_labels: list[str],
+    display_options_slot=None,
+) -> None:
     """Render the current-run region timing view (existing behaviour)."""
     filtered_labels = [lbl for lbl in selected_labels if lbl in region_data and region_data[lbl]]
     if not filtered_labels:
         st.info("No region timing data available for any of the selected configurations.")
         return
 
-    col_cfg, col_attr, col_display = st.columns([2, 2, 1], vertical_alignment="bottom")
+    col_cfg, col_attr = st.columns([1, 1], vertical_alignment="bottom")
     with col_cfg:
         config = st.selectbox("Configuration", filtered_labels, key="region_config")
     with col_attr:
@@ -43,7 +47,7 @@ def _render_current_run(region_data: dict, selected_labels: list[str]) -> None:
         _top_n_control("region_topn"),
         _palette_control("region_cur_palette", top_n_stored),
         key_prefix="region_cur_display",
-        slot=col_display.empty(),
+        slot=display_options_slot,
     )
     top_n = display["top_n"]
     palette_name = display["palette"]

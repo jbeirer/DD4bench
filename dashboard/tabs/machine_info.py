@@ -775,16 +775,13 @@ def render(
     """
     # Gate the "Historical Trends" option on remote mode (not on the current
     # window's data) so the view selector stays put when the trend window changes.
-    # ``required=True`` keeps the selected option from being clicked off; the
-    # widget still types as optional, hence the fallback.
     if trends_enabled:
-        view = st.segmented_control(
+        view = st.radio(
             "**View**",
             options=_VIEWS,
-            default=_VIEWS[0],
-            required=True,
+            horizontal=True,
             key="machine_info_view_mode",
-        ) or _VIEWS[0]
+        )
     else:
         view = _VIEWS[0]
 
