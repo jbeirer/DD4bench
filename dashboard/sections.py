@@ -85,6 +85,12 @@ class SectionScope:
 #: name. Read by :func:`ui_chrome.render_scope_note`, which renders the single
 #: muted line under the section bar.
 #:
+#: What a section declares here is its scope *on entry*. Several sections carry
+#: a control that changes it — a historical sub-view, a "Whole platform" toggle
+#: — and a static registry cannot see those, so each such ``render()`` returns
+#: the scope it actually rendered (one of the overrides below) and ``app.py``
+#: hands that to the note. Only the section itself knows which branch it took.
+#:
 #: No section declares a *time* reference here, on purpose: every section that
 #: has one already prints it in its own words and in the right place, and a
 #: second copy in the chrome line would either duplicate it or — on the tabs
@@ -101,13 +107,18 @@ SECTION_SCOPE: dict[str, SectionScope] = {
     "Overview": SectionScope(
         detector="all detectors", platform=SCOPED, sample=SCOPED, release=None,
     ),
-    # Plots the full history of the sidebar triple across every release in the
-    # trend window — the sidebar release picks the single-run tabs' run only.
+    # Plots the history of the sidebar triple across every release the trend
+    # window covers — the sidebar release picks the single-run tabs' run only.
+    # The window is named, not dated: the run history is not unbounded, and the
+    # sidebar's own caption carries the dates.
     "Run Trends": SectionScope(
-        detector=SCOPED, platform=SCOPED, sample=SCOPED, release="all releases",
+        detector=SCOPED, platform=SCOPED, sample=SCOPED,
+        release="all releases in the trend window",
     ),
     # The release selects which report nights are on offer; the tab's picker
-    # then chooses one of them.
+    # then chooses one of them. When EOS cannot say which nights belong to the
+    # release, the tab falls back to the latest report and says so by returning
+    # :data:`REGRESSIONS_LATEST_REPORT`.
     "Regressions": SectionScope(
         detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED,
     ),
@@ -126,9 +137,8 @@ SECTION_SCOPE: dict[str, SectionScope] = {
     # The sections built on the sidebar's own selection: all four dimensions
     # come straight from it. Config Impact and Logs read that one run and
     # nothing else; the four below them open on it too, and their historical
-    # sub-views then widen to the trend window's runs across every release —
-    # a sub-view the note cannot see from here, which is the other reason it
-    # states the hierarchy rather than a time reference.
+    # sub-views widen across the trend window's releases, which they report by
+    # returning :data:`TREND_WINDOW_SCOPE`.
     "Config Impact": SectionScope(
         detector=SCOPED, platform=SCOPED, sample=SCOPED, release=SCOPED,
     ),
@@ -149,13 +159,29 @@ SECTION_SCOPE: dict[str, SectionScope] = {
     ),
 }
 
+#: What a historical sub-view shows: the same sidebar triple, but every release
+#: the trend window covers rather than the selected one. Returned by the four
+#: sections that offer such a view, so the note stops naming a release the plot
+#: below it does not single out.
+TREND_WINDOW_SCOPE = SectionScope(
+    detector=SCOPED, platform=SCOPED, sample=SCOPED,
+    release="all releases in the trend window",
+)
+
+#: Regressions when EOS could not list the release's runs. The tab then shows
+#: the latest report, which need not be the selected release's — it warns about
+#: that in the view, and the note must not contradict the warning.
+REGRESSIONS_LATEST_REPORT = SectionScope(
+    detector=SCOPED, platform=SCOPED, sample=SCOPED,
+    release="the latest report, which may not be the selected release",
+)
+
 #: Stack Changes while its reverse view's "Whole platform" toggle is on: the
 #: regressions listed there then span every detector and sample benchmarked on
 #: the platform, so the two sidebar dimensions the section otherwise honours
-#: stop applying. Supplied to :func:`ui_chrome.render_scope_note` by ``app.py``,
-#: the one module that knows both this registry and the tab's state — a section
-#: whose scope depends on a control inside it cannot be a static declaration,
-#: and reading a tab's widget keys from the chrome would couple them.
+#: stop applying. Returned only when that view actually rendered — the tab exits
+#: early on a range it cannot compare, and the toggle's remembered state would
+#: otherwise outlive the view it describes.
 STACK_CHANGES_PLATFORM_WIDE = SectionScope(
     detector="all detectors",
     platform=SCOPED,

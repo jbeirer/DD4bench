@@ -47,6 +47,7 @@ from k4bench.results.reliability_evidence import (
     ctx_switch_baseline as _ctx_switch_baseline,
     reliability_verdict as _reliability_verdict,
 )
+from sections import TREND_WINDOW_SCOPE, SectionScope
 from ui_utils import _is_valid_df, _to_rgba
 
 # CPU flags relevant to simulation / floating-point heavy workloads.
@@ -748,7 +749,7 @@ def render(
     trend_machine_df: pd.DataFrame | None = None,
     trend_results_df: pd.DataFrame | None = None,
     trends_enabled: bool = False,
-) -> None:
+) -> SectionScope | None:
     """Render the Machine Info tab.
 
     Parameters
@@ -786,7 +787,10 @@ def render(
                 "No machine info available for this run. "
                 "Machine info is written by CI jobs running the new directory layout."
             )
-            return
-        _render_current_run(machine_info, run_meta, results, trend_results_df)
-    else:
-        _render_historical(trend_machine_df, trend_results_df)
+        else:
+            _render_current_run(machine_info, run_meta, results, trend_results_df)
+        return None
+    _render_historical(trend_machine_df, trend_results_df)
+    # The trends span the window's releases, not the sidebar's one — reported
+    # so the scope note above stops naming it.
+    return TREND_WINDOW_SCOPE

@@ -30,7 +30,7 @@ from remote_cache import (
     _cached_scan_stack_samples,
 )
 from k4bench.results.reliability_evidence import run_reliability_map
-from sections import STACK_CHANGES_PLATFORM_WIDE, visible_sections
+from sections import visible_sections
 from tabs import detectors_overview, event_memory, event_timing, impact, machine_info, region_timing, regressions, stack_changes, trends
 from tabs._reliability import render_sidebar_run_quality
 from trend_window import WINDOW_PRESETS, resolve_window, window_domain
@@ -524,6 +524,7 @@ def main() -> None:
     # Only its position is reserved here; it is written after the section body,
     # which may itself change the scope (see the fill below).
     scope_note = st.empty()
+    scope_override = None
 
     # Trends (remote only) — uses all stacks so history is complete
     if active_section == "Run Trends":
@@ -542,7 +543,7 @@ def main() -> None:
     # and ?report= pins one for deep links. The cross-detector picture is the
     # Overview tab.
     if active_section == "Regressions":
-        regressions.render(
+        scope_override = regressions.render(
             config.data_url, config.cache_dir, detector, platform, sample, stack,
         )
 
@@ -564,7 +565,7 @@ def main() -> None:
     # the Regressions tab's evidence window. The sidebar stack seeds the
     # comparison's newer end when the tab is opened.
     if active_section == "Stack Changes":
-        stack_changes.render(
+        scope_override = stack_changes.render(
             config.data_url, config.cache_dir, platform, detector, sample, stack,
         )
 
@@ -575,19 +576,19 @@ def main() -> None:
     # visit is a cache hit) so the other tabs never build or copy them.
     if active_section == "Region Timing":
         trend_region_df = cached_load_trend_region_timing(run_dirs) if run_dirs else None
-        region_timing.render(region_data, trend_region_df, selected_labels, trends_enabled, reliability)
+        scope_override = region_timing.render(region_data, trend_region_df, selected_labels, trends_enabled, reliability)
 
     if active_section == "Event Timing":
         trend_event_df = cached_load_trend_event_timing(run_dirs) if run_dirs else None
-        event_timing.render(event_data, trend_event_df, selected_labels, trends_enabled, reliability)
+        scope_override = event_timing.render(event_data, trend_event_df, selected_labels, trends_enabled, reliability)
 
     if active_section == "Event Memory":
         trend_event_df = cached_load_trend_event_timing(run_dirs) if run_dirs else None
-        event_memory.render(event_data, trend_event_df, selected_labels, trends_enabled, reliability)
+        scope_override = event_memory.render(event_data, trend_event_df, selected_labels, trends_enabled, reliability)
 
     if active_section == "Machine Info":
         minfo = load_machine_info(data_dir) if _path_valid else None
-        machine_info.render(
+        scope_override = machine_info.render(
             minfo,
             run_meta=selected_run_meta,
             results=results,
@@ -600,22 +601,15 @@ def main() -> None:
     if active_section == "Logs":
         render_logs_tab(results, data_dir if _path_valid else None, selected_run_meta)
 
-    # Fill the slot reserved above the section. Stack Changes is the one section
-    # whose scope a control inside it can change — its "Whole platform" toggle
-    # drops the sidebar's detector/sample from the regressions it lists — and the
-    # toggle is only settled once that body has run, so the note is written last
-    # and rendered into its earlier position.
+    # Fill the slot reserved above the section. A section that offers a control
+    # over its own scope — a historical sub-view, Stack Changes' "Whole platform"
+    # toggle — returns the scope it actually rendered, which is knowable only
+    # once its body has run; hence the note is composed last and written back
+    # into its earlier position.
     render_scope_note(
         active_section,
         detector=detector, platform=platform, sample=sample, release=stack,
-        data_dir=data_dir,
-        override=(
-            STACK_CHANGES_PLATFORM_WIDE
-            if active_section == "Stack Changes"
-            and stack_changes.reverse_view_is_platform_wide()
-            else None
-        ),
-        slot=scope_note,
+        data_dir=data_dir, override=scope_override, slot=scope_note,
     )
 
     _render_footer()

@@ -176,6 +176,57 @@ def test_local_mode_without_a_directory_renders_nothing():
     assert not at.caption
 
 
+# ── the note against the tab that produced it ────────────────────────────────
+# The tests above render the note from a declaration handed to it. These render
+# a real tab first and note *what it returned*, which is the only way to catch
+# the note and the view below it disagreeing.
+
+def _tab_note(dashboard_dir, section, platform, release):
+    import sys as _sys
+    if dashboard_dir not in _sys.path:
+        _sys.path.insert(0, dashboard_dir)
+
+    from tabs import event_timing, machine_info
+    from ui_chrome import render_scope_note
+
+    # No trend data: the historical views say so and render nothing else, which
+    # is beside the point here — the scope they claim is the view's, not the
+    # data's.
+    if section == "Event Timing":
+        override = event_timing.render(None, None, ["cfg"], trends_enabled=True)
+    else:
+        override = machine_info.render(None, trends_enabled=True)
+
+    render_scope_note(
+        section, detector="CLD", platform=platform,
+        sample="single_e-_10GeV", release=release, override=override,
+    )
+
+
+@pytest.mark.parametrize("section", ["Event Timing", "Machine Info"])
+def test_a_historical_sub_view_stops_the_note_naming_one_release(section):
+    at = AppTest.from_function(
+        _tab_note, args=(str(_DASHBOARD_DIR), section, PLAT, STACK),
+        default_timeout=30,
+    ).run()
+    assert not at.exception, at.exception
+    # The view these tabs open on is the selected run, so the note names it.
+    assert "2026-07-10" in _line(at)
+
+    at.radio(key=(
+        "evt_timing_view_mode" if section == "Event Timing"
+        else "machine_info_view_mode"
+    )).set_value("Historical Trends").run()
+    assert not at.exception, at.exception
+    line = _line(at)
+    # ... but the trends below span the window's releases, so naming the
+    # selected one would describe a plot the tab is not drawing.
+    assert "2026-07-10" not in line
+    assert "all releases in the trend window" in line
+    # The rest of the hierarchy still holds — only the release widened.
+    assert "CLD" in line and "AlmaLinux 9" in line and "Single e⁻" in line
+
+
 def test_an_unregistered_section_renders_nothing():
     # A new section that forgot its SECTION_SCOPE entry gets no note at all,
     # rather than a guessed one that may claim the wrong scope.

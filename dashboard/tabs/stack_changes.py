@@ -29,6 +29,7 @@ from k4bench.provenance.diff import ADDED, CHANGED, REMOVED, diff_packages, unch
 from k4bench.regression.models import MetricVerdict
 from k4bench.labels import RELEASE_PREFIX, pretty_release, pretty_sample
 from k4bench.regression.render import from_json
+from sections import STACK_CHANGES_PLATFORM_WIDE, SectionScope
 from remote_cache import (
     _cached_fetch_blame,
     _cached_fetch_reports,
@@ -84,20 +85,6 @@ _REG_ALL_KEY = "stack_regr_all"
 _REG_ALL_QUERY_KEY = "stack_regr_all__query"
 
 type _ProvenanceState = Literal["changed", "identical", "unavailable"]
-
-
-def reverse_view_is_platform_wide() -> bool:
-    """Whether the regressions-in-range view is widened past the sidebar scope.
-
-    The one piece of this tab's state the page chrome needs: with the toggle on,
-    the section stops honouring the sidebar's detector and sample, so the scope
-    note under the section bar must stop naming them. Exposed as a function
-    rather than the key itself so the chrome does not depend on where the state
-    is kept, and read *after* :func:`render` — the toggle is seeded from the URL,
-    force-reset when widening cannot help, and dropped when the sidebar platform
-    or stack moves, all of which happen while the section body renders.
-    """
-    return bool(st.session_state.get(_REG_ALL_KEY))
 
 
 def deep_link(
@@ -342,17 +329,28 @@ def packages_for_release(data_url: str, platform: str, release: str) -> dict | N
 def render(
     data_url: str, cache_dir: str, platform: str, detector: str, sample: str,
     stack: str,
-) -> None:
+) -> SectionScope | None:
+    """Render the tab; return the scope note's override when one applies.
+
+    ``None`` — the registry's declaration stands — on every path that does not
+    reach the reverse view, including the three ranges below that cannot be
+    compared: the toggle's remembered state says nothing about a view that was
+    never drawn.
+    """
     stacks = _stacks_for_platform(data_url, platform)
+    # Before the release-count guard: a platform with too few releases to
+    # compare must still drop the previous platform's picker and toggle state,
+    # or returning to a comparable platform resumes a scope the reader left
+    # behind on another one.
+    _forget_stale_stack_scope(platform, stack)
     if len(stacks) < 2:
         st.info(
             f"Need at least two Key4hep releases on `{platform}` to compare; "
             f"found {len(stacks)}."
         )
-        return
+        return None
 
     releases = [_release(s) for s in stacks]
-    _forget_stale_stack_scope(platform, stack)
     from_default, to_default = _defaults_for_stack(releases, stack)
     # Default to the selected sidebar stack and the release immediately before
     # it. This keeps the tab anchored to the release the user was inspecting;
@@ -378,7 +376,7 @@ def render(
 
     if base_release == head_release:
         st.info("Pick two different releases to compare.")
-        return
+        return None
     # Ordered by position in the newest-first list rather than by comparing the
     # tags, so this and _span read the release order the same single way.
     if releases.index(base_release) < releases.index(head_release):
@@ -388,7 +386,7 @@ def render(
             "the diff in the direction time runs.",
             icon="⚠️",
         )
-        return
+        return None
 
     span = _span(releases, base_release, head_release)
     base = _packages(data_url, platform, _PREFIX + base_release)
@@ -412,11 +410,12 @@ def render(
     # regression reports, so it renders even when provenance is unavailable. A
     # non-empty span means the *selected range* spans more than one release
     # step (see :func:`_span`) — the only case where the diff is cumulative.
-    _render_regressions_in_range(
+    platform_wide = _render_regressions_in_range(
         data_url, cache_dir, platform, base_release, head_release,
         releases=releases, detector=detector, sample=sample,
         provenance_state=provenance_state, cumulative=bool(span),
     )
+    return STACK_CHANGES_PLATFORM_WIDE if platform_wide else None
 
 
 #: Cap on reverse-view options so a month-wide range cannot produce an
@@ -482,8 +481,11 @@ def _render_regressions_in_range(
     *, releases: list[str], detector: str, sample: str,
     provenance_state: _ProvenanceState,
     cumulative: bool,
-) -> None:
+) -> bool:
     """Trend-first reverse attribution for confirmed changes in this range.
+
+    Returns whether the view widened past the sidebar's scope, which is the
+    section's scope note's to state.
 
     Same-release regressions are excluded because no stack moved for them. The
     selected metric uses the exact shared drill-down from the Regressions tab,
@@ -596,7 +598,7 @@ def _render_regressions_in_range(
                 "No confirmed regression has its onset in this release range.",
                 icon="✅",
             )
-        return
+        return show_all
 
     requested = _query_verdict(hits)
     shown = sorted(hits, key=attention_key)[:_MAX_REGRESSIONS]
@@ -641,7 +643,7 @@ def _render_regressions_in_range(
         _query_value(param) for param in _REGRESSION_PARAMS
     )
     if selected is None:
-        return
+        return show_all
 
     render_metric_trend(
         selected, data_url, cache_dir,
@@ -657,6 +659,7 @@ def _render_regressions_in_range(
     render_candidate_ranking(
         selected, _blame_for_verdict(data_url, selected), show_empty=True,
     )
+    return show_all
 
 
 def _render_focus_action(

@@ -31,6 +31,7 @@ from k4bench.regression.models import (
     Severity,
 )
 from k4bench.labels import pretty_sample
+from sections import REGRESSIONS_LATEST_REPORT, SectionScope
 from k4bench.regression.render import (
     WINDOW_WATCH_TOKEN,
     _detector_badge,
@@ -65,28 +66,37 @@ _log = logging.getLogger(__name__)
 def render(
     data_url: str, cache_dir: str, detector: str, platform: str, sample: str,
     stack: str,
-) -> None:
+) -> SectionScope | None:
+    """Render the tab; return the scope note's override when one applies.
+
+    The override is the fallback case only: when EOS cannot say which nights
+    belong to the selected release, the night on screen is the latest report
+    rather than that release's, and the note must say so too.
+    """
     dates = _cached_list_report_dates(data_url)
     if not dates:
         st.info(
             "No regression reports available yet. The nightly benchmark workflow "
             "uploads the first report after its next run."
         )
-        return
+        return None
 
-    nights = _candidate_nights(data_url, detector, platform, sample, stack, dates)
+    nights, is_release = _candidate_nights(
+        data_url, detector, platform, sample, stack, dates,
+    )
+    override = None if is_release else REGRESSIONS_LATEST_REPORT
     if nights is None:
         st.info(
             f"No nightly report covers release **{_release(stack)}**'s runs — "
             f"reports begin on {min(dates)}. Pick a newer release in the sidebar."
         )
-        return
+        return None
     reports, unavailable = _load_reports(data_url, nights)
     if not reports:
         st.warning(
             f"Could not load release **{_release(stack)}**'s report(s) from EOS."
         )
-        return
+        return None
     # A ?report= deep link pointing at a night that could not be loaded must say
     # so, rather than silently defaulting to another night and rewriting the URL
     # under the reader (who followed a link to a specific report).
@@ -118,7 +128,7 @@ def render(
     group = _night_group(report, detector, platform, sample)
     if group is None:
         _render_no_group_notice(report, detector, sample, night)
-        return
+        return override
 
     # Package/PR attribution belongs to the change window, not to whichever
     # repeat measurement is open in the night picker: each window is pinned to
@@ -134,6 +144,7 @@ def render(
         key=f"{detector}_{platform}_{sample}",
         scope=(stack, night),
     )
+    return override
 
 
 def _load_reports(
@@ -165,8 +176,13 @@ def _load_reports(
 def _candidate_nights(
     data_url: str, detector: str, platform: str, sample: str, stack: str,
     dates: list[str],
-) -> list[str] | None:
+) -> tuple[list[str] | None, bool]:
     """Report nights on offer for the sidebar's release, newest first.
+
+    Returned with a flag for whether those nights are known to *be* the
+    release's. It is false on the two fallbacks below, where the nights are the
+    latest report rather than anything EOS confirmed belongs to the release —
+    the tab says so in the view, and the scope note must not claim otherwise.
 
     A report is written per *run*, under ``_reports/{run_date}`` — so several
     nights routinely re-benchmark one fixed release, and while the engine
@@ -197,12 +213,12 @@ def _candidate_nights(
             "latest report; it may not match the sidebar's selected release.",
             icon="⚠️",
         )
-        return [max(dates)]
+        return [max(dates)], False
     run_dates = stacks_dates.get(stack) or ()
     if not run_dates:
         # No run listing for this release — the latest report is the only
         # sensible answer left.
-        return [max(dates)]
+        return [max(dates)], False
     dateset = set(dates)
     nights = {d for d in run_dates if d in dateset}
     newest_any = max(d for ds in stacks_dates.values() for d in ds)
@@ -212,8 +228,8 @@ def _candidate_nights(
         # visible even though it isn't one of the release's own run dates.
         nights.add(max(dates))
     if not nights:
-        return None
-    return sorted(nights, reverse=True)
+        return None, True
+    return sorted(nights, reverse=True), True
 
 
 def _night_group(
