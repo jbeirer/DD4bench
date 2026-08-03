@@ -105,7 +105,12 @@ def test_bounded_window_collects_candidates(monkeypatch):
     assert cand.score == 0.0 and cand.description == ""
 
 
-def test_same_stack_window_is_skipped(monkeypatch):
+def test_same_stack_window_without_a_harness_lookup_is_skipped(monkeypatch):
+    # A same-release window is attributable only through the harness's own
+    # commits — the stack is identical by construction. With no harness lookup
+    # injected nobody can look, so the window is dropped rather than recorded
+    # as a window where nothing moved. (Injected, it is attributed: see
+    # test_a_same_release_window_is_attributed_to_the_harness_alone.)
     _stub_resolve(monkeypatch, lambda *a, **k: RepoResolution())
     provenance = _provenance({(_PLAT, "2026-07-04"): {"k4geo": _pkgs("a" * 40)}})
     blame = build_blame_report(
@@ -951,3 +956,526 @@ def test_a_ranking_without_analogues_records_none(monkeypatch):
     )
     assert blame.entries[0].historical_evidence == ()
     assert "historical_evidence" in blame.to_json()["entries"][0]
+
+
+# ── The harness's own movement across the window ─────────────────────────────
+
+_RUN_URL = "https://github.com/key4hep/k4Bench/actions/runs/30603409866"
+
+
+def _commits(mapping):
+    """A harness lookup from a dict keyed exactly like the lookup itself:
+    ``(detector, platform, release, sample, run_id)`` — the run-keyed sibling
+    of :func:`_provenance`."""
+    return lambda *key: mapping.get(key)
+
+
+def _hkey(release, run_id, detector="ALLEGRO_o1_v03", sample="single_e"):
+    """One harness-lookup key, defaulting to :func:`_verdict`'s identity."""
+    return (detector, _PLAT, release, sample, run_id)
+
+
+_HARNESS_MOVED = _commits({
+    _hkey("2026-07-03", "2026-07-03"): ("1" * 40, _RUN_URL),
+    _hkey("2026-07-04", "2026-07-04"): ("2" * 40, _RUN_URL),
+})
+
+
+def test_the_endpoint_is_the_verdicts_run_not_the_first_run_of_the_release(monkeypatch):
+    # The design-pinning case: one release measured by two runs at two
+    # different harness commits. The window's base end is the run the verdict
+    # names — ``last_accepted_run_id`` — never "the first readable run under
+    # the release", which is the assumption the release-keyed package lookup is
+    # entitled to and this lookup is not. The mapping deliberately holds no
+    # entry whose run id is a bare release date: a lookup asking by release
+    # would find nothing and the assertions below would fail.
+    _stub_resolve(monkeypatch, lambda *a, **k: RepoResolution())
+    v = dataclasses.replace(
+        _verdict(),
+        last_accepted_run_id="2026-07-03-r2", onset_run_id="2026-07-04-r1",
+    )
+    lookup = _commits({
+        # the release's first run
+        _hkey("2026-07-03", "2026-07-03-r1"): ("a" * 40, _RUN_URL),
+        # the run the verdict names
+        _hkey("2026-07-03", "2026-07-03-r2"): ("b" * 40, _RUN_URL),
+        _hkey("2026-07-04", "2026-07-04-r1"): ("c" * 40, _RUN_URL),
+    })
+    blame = build_blame_report(
+        _report([v]), packages_for_release=_MOVED,
+        k4bench_commit_for_run=lookup, github=GitHubClient(),
+    )
+    harness = next(r for r in blame.entries[0].repos if r.package == "k4bench")
+    assert harness.base_commit == "b" * 40
+    assert harness.head_commit == "c" * 40
+
+
+def test_a_harness_move_lands_as_a_repo_in_the_entry(monkeypatch):
+    _stub_resolve(monkeypatch, lambda *a, **k: RepoResolution())
+    blame = build_blame_report(
+        _report([_verdict()]), packages_for_release=_MOVED,
+        k4bench_commit_for_run=_HARNESS_MOVED, github=GitHubClient(),
+    )
+    repos = {r.package: r for r in blame.entries[0].repos}
+    assert set(repos) == {"k4geo", "k4bench"}
+    harness = repos["k4bench"]
+    assert harness.repo == "key4hep/k4Bench"  # parsed from the run URL
+    assert harness.status == "changed"
+    assert harness.compare_url == (
+        "https://github.com/key4hep/k4Bench/compare/" + "1" * 40 + "..." + "2" * 40
+    )
+
+
+def test_the_harness_repo_comes_from_the_run_url_with_a_fallback(monkeypatch):
+    # A fork running its own benchmarks blames its own pull requests; a run
+    # written before ``github_run_url`` existed still lands in the default
+    # repository rather than nowhere.
+    _stub_resolve(monkeypatch, lambda *a, **k: RepoResolution())
+    fork_url = "https://github.com/myfork/bench-fork/actions/runs/1"
+    for run_url, slug in ((fork_url, "myfork/bench-fork"), (None, "key4hep/k4Bench")):
+        lookup = _commits({
+            _hkey("2026-07-03", "2026-07-03"): ("1" * 40, run_url),
+            _hkey("2026-07-04", "2026-07-04"): ("2" * 40, run_url),
+        })
+        blame = build_blame_report(
+            _report([_verdict()]), packages_for_release=_MOVED,
+            k4bench_commit_for_run=lookup, github=GitHubClient(),
+        )
+        harness = next(r for r in blame.entries[0].repos if r.package == "k4bench")
+        assert harness.repo == slug
+
+
+def test_an_unmoved_harness_adds_no_repo(monkeypatch):
+    _stub_resolve(monkeypatch, lambda *a, **k: RepoResolution())
+    parked = _commits({
+        _hkey("2026-07-03", "2026-07-03"): ("1" * 40, _RUN_URL),
+        _hkey("2026-07-04", "2026-07-04"): ("1" * 40, _RUN_URL),
+    })
+    blame = build_blame_report(
+        _report([_verdict()]), packages_for_release=_MOVED,
+        k4bench_commit_for_run=parked, github=GitHubClient(),
+    )
+    assert [r.package for r in blame.entries[0].repos] == ["k4geo"]
+
+
+def test_an_unanswerable_lookup_changes_nothing(monkeypatch):
+    # ``None`` — a run that cannot be read — must behave exactly like missing
+    # provenance: byte-identical output to a build with no lookup injected.
+    _two_candidates(monkeypatch)
+    kwargs = dict(
+        packages_for_release=_MOVED, github=GitHubClient(),
+        generated_at="2026-07-05T00:00:00",
+    )
+    without = build_blame_report(_report([_verdict()]), **kwargs)
+    with_none = build_blame_report(
+        _report([_verdict()]), k4bench_commit_for_run=lambda *k: None, **kwargs
+    )
+    assert with_none.to_json() == without.to_json()
+
+
+def test_a_quiet_stack_with_a_moved_harness_still_gets_an_entry(monkeypatch):
+    # Releases differ but every tracked package is identical — previously an
+    # unconditional skip. When the harness moved, that is the high-signal case:
+    # its commits are the only thing that can have caused the step.
+    _stub_resolve(monkeypatch, lambda *a, **k: RepoResolution())
+    quiet = _provenance({
+        (_PLAT, "2026-07-03"): {"k4geo": _pkgs("a" * 40)},
+        (_PLAT, "2026-07-04"): {"k4geo": _pkgs("a" * 40)},
+    })
+    unattributed = build_blame_report(
+        _report([_verdict()]), packages_for_release=quiet, github=GitHubClient(),
+    )
+    assert unattributed.entries == ()  # without the lookup, still nothing
+    blame = build_blame_report(
+        _report([_verdict()]), packages_for_release=quiet,
+        k4bench_commit_for_run=_HARNESS_MOVED, github=GitHubClient(),
+    )
+    assert [r.package for r in blame.entries[0].repos] == ["k4bench"]
+    assert blame.entries[0].n_unchanged == 1  # k4geo stood still
+
+
+def test_missing_upstream_provenance_skips_even_when_the_harness_moved(monkeypatch):
+    # An entry naming only the harness while the stack is unknown would read as
+    # "the stack was checked and it was clean" — a lie.
+    _stub_resolve(monkeypatch, lambda *a, **k: RepoResolution())
+    provenance = _provenance({(_PLAT, "2026-07-04"): {"k4geo": _pkgs("c" * 40)}})
+    blame = build_blame_report(
+        _report([_verdict()]), packages_for_release=provenance,
+        k4bench_commit_for_run=_HARNESS_MOVED, github=GitHubClient(),
+    )
+    assert blame.entries == ()
+
+
+def test_the_harness_never_counts_toward_the_stack_denominator(monkeypatch):
+    _two_candidates(monkeypatch)
+    ranker = _FakeRanker({("key4hep/k4geo", 10): Ranking(60.0, "x")})
+    blame = build_blame_report(
+        _report([_verdict()]), packages_for_release=_MOVED,
+        k4bench_commit_for_run=_HARNESS_MOVED,
+        github=GitHubClient(), ranker=ranker,
+    )
+    # _MOVED moves k4geo only and records no other package: the harness's own
+    # movement must not inflate either side of the stack's moved/still split.
+    assert ranker.requests[0].n_unchanged == 0
+    assert blame.entries[0].n_unchanged == 0
+    # The ranker is told which repo is the harness, so the prompt can say so.
+    assert ranker.requests[0].harness_repo == "key4hep/k4Bench"
+
+
+def test_a_rank_group_with_disagreeing_run_ids_takes_the_narrowest_range(
+    monkeypatch, caplog
+):
+    _stub_resolve(monkeypatch, lambda *a, **k: RepoResolution())
+    v1 = dataclasses.replace(
+        _verdict(metric="wall_time_s"),
+        last_accepted_run_id="2026-07-03-r1", onset_run_id="2026-07-04-r2",
+    )
+    v2 = dataclasses.replace(
+        _verdict(metric="peak_rss_mb"),
+        last_accepted_run_id="2026-07-03-r2", onset_run_id="2026-07-04-r1",
+    )
+    # Only the narrowest endpoints — newest base run, oldest onset run — are
+    # mapped: resolving any other pair would yield no harness repo at all and
+    # fail the assertions below.
+    lookup = _commits({
+        _hkey("2026-07-03", "2026-07-03-r2"): ("b" * 40, _RUN_URL),
+        _hkey("2026-07-04", "2026-07-04-r1"): ("c" * 40, _RUN_URL),
+    })
+    blame = build_blame_report(
+        _report([v1, v2]), packages_for_release=_MOVED,
+        k4bench_commit_for_run=lookup, github=GitHubClient(),
+    )
+    assert "disagreeing run ids" in caplog.text
+    assert len(blame.entries) == 2
+    for entry in blame.entries:
+        harness = next(r for r in entry.repos if r.package == "k4bench")
+        assert (harness.base_commit, harness.head_commit) == ("b" * 40, "c" * 40)
+
+
+def test_harmless_harness_candidates_are_dropped_but_the_move_is_kept(monkeypatch):
+    def resolve(client, slug, base, head):
+        if slug == "key4hep/k4Bench":
+            return RepoResolution(candidates=[
+                CandidatePR(repo=slug, number=134, title="fix the patcher",
+                            author="a", url="u",
+                            files=("docs/geometry.md",
+                                   "k4bench/geometry/patcher.py")),
+                CandidatePR(repo=slug, number=138, title="rework the plugin",
+                            author="a", url="u",
+                            files=("plugin/k4BenchTimingAction.cpp",)),
+                CandidatePR(repo=slug, number=140, title="rework the dashboard",
+                            author="a", url="u",
+                            files=("dashboard/app.py", "dashboard/tabs/trends.py")),
+                CandidatePR(repo=slug, number=141, title="no file list",
+                            author="a", url="u"),
+                CandidatePR(repo=slug, number=142, title="tune the blame retries",
+                            author="a", url="u",
+                            files=("k4bench/blame/rank.py",
+                                   "tests/unit/test_blame_rank.py")),
+            ])
+        return RepoResolution(candidates=[
+            CandidatePR(repo=slug, number=10, title="docs", author="a", url="u",
+                        files=("docs/x.md",)),
+        ])
+    _stub_resolve(monkeypatch, resolve)
+    blame = build_blame_report(
+        _report([_verdict()]), packages_for_release=_MOVED,
+        k4bench_commit_for_run=_HARNESS_MOVED, github=GitHubClient(),
+    )
+    repos = {r.package: r for r in blame.entries[0].repos}
+    # The patcher and plugin changes survive; the dashboard-only and
+    # blame/tests-only changes provably cannot move a measurement; a candidate
+    # with no file list cannot be proven harmless.
+    assert [c.number for c in repos["k4bench"].candidates] == [134, 138, 141]
+    # The judgement is the harness's own: an upstream docs-only candidate rides
+    # through exactly as it always has.
+    assert [c.number for c in repos["k4geo"].candidates] == [10]
+
+
+def test_the_harness_filter_keeps_everything_that_can_touch_a_measurement():
+    # Judged by exclusion, not by an allowlist of "measurement paths": the
+    # nightly execution surface — the invocation script, the reusable
+    # workflow, the timing plugin, packaging — is exactly what an allowlist
+    # forgets first, and a filter that hides the true culprit fails in the
+    # direction this feature exists to fix.
+    from k4bench.blame.builder import _harness_candidate_signal
+
+    kept = [
+        ("k4bench/geometry/patcher.py",),
+        ("k4bench/runner/executor.py",),
+        ("plugin/k4BenchRegionTimingAction.cpp",),
+        (".github/scripts/nightly_benchmark.sh",),
+        (".github/workflows/benchmark-detector.yml",),
+        (".github/workflows/nightly.yml",),
+        (".github/benchmarks/sid.yml",),
+        ("pyproject.toml",),
+        ("docs/x.md", "k4bench/benchmark/metrics.py"),  # one real file keeps it
+        (),  # no file list: cannot be proven harmless
+    ]
+    dropped = [
+        ("docs/user-guide/x.md",),
+        ("dashboard/app.py", "dashboard/tabs/regressions.py"),
+        ("tests/integration/test_geometry_patching.py",),
+        ("k4bench/blame/rank.py", "tests/unit/test_blame_rank.py"),
+        ("README.md", "assets/logo.svg"),
+        ("openshift/deployment.yaml", "mkdocs.yml"),
+    ]
+    for files in kept:
+        assert _harness_candidate_signal(files), files
+    for files in dropped:
+        assert not _harness_candidate_signal(files), files
+
+
+def test_each_group_reads_its_own_runs_provenance(monkeypatch):
+    # A manual dispatch or a partially failed re-run can leave one night's
+    # date directory carrying different harness commits under different
+    # benchmark groups. The lookup is keyed down to detector and sample, so
+    # each group's window is resolved from its own ``run_info.json`` — never
+    # from whichever sibling a glob happened to read first.
+    _stub_resolve(monkeypatch, lambda *a, **k: RepoResolution())
+    lookup = _commits({
+        _hkey("2026-07-03", "2026-07-03", "IDEA_o1_v03", "single_mu-"): ("1" * 40, _RUN_URL),
+        _hkey("2026-07-04", "2026-07-04", "IDEA_o1_v03", "single_mu-"): ("2" * 40, _RUN_URL),
+        _hkey("2026-07-03", "2026-07-03", "CLD_o2_v07", "ttbar"): ("3" * 40, _RUN_URL),
+        _hkey("2026-07-04", "2026-07-04", "CLD_o2_v07", "ttbar"): ("4" * 40, _RUN_URL),
+    })
+    report = _report_groups(
+        ("IDEA_o1_v03", "single_mu-",
+         [_verdict(detector="IDEA_o1_v03", sample="single_mu-")]),
+        ("CLD_o2_v07", "ttbar",
+         [_verdict(detector="CLD_o2_v07", sample="ttbar")]),
+    )
+    blame = build_blame_report(
+        report, packages_for_release=_MOVED,
+        k4bench_commit_for_run=lookup, github=GitHubClient(),
+    )
+    ranges = {
+        e.detector: next(r for r in e.repos if r.package == "k4bench")
+        for e in blame.entries
+    }
+    assert ranges["IDEA_o1_v03"].base_commit == "1" * 40
+    assert ranges["IDEA_o1_v03"].head_commit == "2" * 40
+    assert ranges["CLD_o2_v07"].base_commit == "3" * 40
+    assert ranges["CLD_o2_v07"].head_commit == "4" * 40
+
+
+_UPSTREAM_RUN = "https://github.com/key4hep/k4Bench/actions/runs/1"
+_FORK_RUN = "https://github.com/myfork/k4Bench/actions/runs/2"
+
+
+def test_a_window_spanning_two_repositories_is_not_attributed(monkeypatch, caplog):
+    # A base run produced by one fork and an onset run by another have no
+    # meaningful compare range between their commits — no entry, never a
+    # wrong one. A *missing* workflow URL means the default repository (that is
+    # the documented fallback), so it must be resolved before the comparison
+    # rather than treated as a wildcard matching whatever the other end says:
+    # otherwise an upstream base paired with a fork onset silently becomes a
+    # fork-only range and both commits are looked for in the wrong repository.
+    for base_url, onset_url in (
+        (_UPSTREAM_RUN, _FORK_RUN),   # both recorded, and they disagree
+        (None, _FORK_RUN),            # base defaults to upstream, onset a fork
+        (_FORK_RUN, None),            # fork base, onset defaults to upstream
+    ):
+        caplog.clear()
+        _stub_resolve(monkeypatch, lambda *a, **k: RepoResolution())
+        lookup = _commits({
+            _hkey("2026-07-03", "2026-07-03"): ("1" * 40, base_url),
+            _hkey("2026-07-04", "2026-07-04"): ("2" * 40, onset_url),
+        })
+        blame = build_blame_report(
+            _report([_verdict()]), packages_for_release=_MOVED,
+            k4bench_commit_for_run=lookup, github=GitHubClient(),
+        )
+        assert [r.package for r in blame.entries[0].repos] == ["k4geo"]
+        assert "different harness repositories" in caplog.text
+
+
+def test_both_ends_missing_a_url_stay_on_the_default_repository(monkeypatch):
+    # Two pre-``github_run_url`` runs agree: both are the default repository,
+    # so the window is attributed rather than rejected as cross-repository.
+    _stub_resolve(monkeypatch, lambda *a, **k: RepoResolution())
+    lookup = _commits({
+        _hkey("2026-07-03", "2026-07-03"): ("1" * 40, None),
+        _hkey("2026-07-04", "2026-07-04"): ("2" * 40, None),
+    })
+    blame = build_blame_report(
+        _report([_verdict()]), packages_for_release=_MOVED,
+        k4bench_commit_for_run=lookup, github=GitHubClient(),
+    )
+    harness = next(r for r in blame.entries[0].repos if r.package == "k4bench")
+    assert harness.repo == "key4hep/k4Bench"
+
+
+# ── Same-release windows ──────────────────────────────────────────────────────
+
+def test_a_same_release_window_is_attributed_to_the_harness_alone(monkeypatch):
+    # Two runs of one release: the upstream stack is identical by construction,
+    # so the harness's own commits are the only thing a diff can name — the
+    # reviewer's canonical case (PR #132's n_events bump: 719 flags, window
+    # 2026-07-29 → 2026-07-29, previously discarded by the gate).
+    _stub_resolve(monkeypatch, lambda *a, **k: RepoResolution())
+    v = dataclasses.replace(
+        _verdict(base="2026-07-04", onset="2026-07-04"),
+        last_accepted_run_id="2026-07-04", onset_run_id="2026-07-05",
+    )
+    lookup = _commits({
+        _hkey("2026-07-04", "2026-07-04"): ("1" * 40, _RUN_URL),
+        _hkey("2026-07-04", "2026-07-05"): ("2" * 40, _RUN_URL),
+    })
+    provenance = _provenance({
+        (_PLAT, "2026-07-04"): {"k4geo": _pkgs("a" * 40),
+                                "dd4hep": _pkgs("d" * 40, _GH)},
+    })
+    blame = build_blame_report(
+        _report([v]), packages_for_release=provenance,
+        k4bench_commit_for_run=lookup, github=GitHubClient(),
+    )
+    entry = blame.entries[0]
+    assert entry.base_release == entry.onset_release == "2026-07-04"
+    assert [r.package for r in entry.repos] == ["k4bench"]
+    harness = entry.repos[0]
+    assert (harness.base_commit, harness.head_commit) == ("1" * 40, "2" * 40)
+    # Every tracked package stood still — by construction, and counted.
+    assert entry.n_unchanged == 2
+
+
+def test_a_same_release_window_without_a_harness_move_stays_unattributed(monkeypatch):
+    _stub_resolve(monkeypatch, lambda *a, **k: RepoResolution())
+    v = dataclasses.replace(
+        _verdict(base="2026-07-04", onset="2026-07-04"),
+        last_accepted_run_id="2026-07-04", onset_run_id="2026-07-05",
+    )
+    parked = _commits({
+        _hkey("2026-07-04", "2026-07-04"): ("1" * 40, _RUN_URL),
+        _hkey("2026-07-04", "2026-07-05"): ("1" * 40, _RUN_URL),
+    })
+    blame = build_blame_report(
+        _report([v]), packages_for_release=_MOVED,
+        k4bench_commit_for_run=parked, github=GitHubClient(),
+    )
+    assert blame.entries == ()
+
+
+def test_a_same_release_window_survives_unreadable_stack_provenance(monkeypatch):
+    # Unlike a cross-release window, the stack's stillness is not a claim that
+    # needs provenance to back it — the release is the same directory. An
+    # unreadable package map costs only the unchanged count.
+    _stub_resolve(monkeypatch, lambda *a, **k: RepoResolution())
+    v = dataclasses.replace(
+        _verdict(base="2026-07-04", onset="2026-07-04"),
+        last_accepted_run_id="2026-07-04", onset_run_id="2026-07-05",
+    )
+    lookup = _commits({
+        _hkey("2026-07-04", "2026-07-04"): ("1" * 40, _RUN_URL),
+        _hkey("2026-07-04", "2026-07-05"): ("2" * 40, _RUN_URL),
+    })
+    blame = build_blame_report(
+        _report([v]), packages_for_release=_provenance({}),
+        k4bench_commit_for_run=lookup, github=GitHubClient(),
+    )
+    assert [r.package for r in blame.entries[0].repos] == ["k4bench"]
+    assert blame.entries[0].n_unchanged == 0
+
+
+def test_two_run_windows_inside_one_release_get_their_own_harness_range(monkeypatch):
+    # The grouping key's whole reason for existing. Metric A stepped between
+    # run1 and run2; metric B between run2 and run3. Both windows sit inside
+    # release R, so a key built from release dates alone puts them in one group
+    # — and the shared range then narrows to max(base)=run2 meeting
+    # min(onset)=run2, an empty interval that silently drops the attribution
+    # from BOTH metrics. Non-overlapping windows are worse: the narrowing
+    # inverts and yields a backwards compare URL.
+    _stub_resolve(monkeypatch, lambda *a, **k: RepoResolution())
+    R = "2026-07-04"
+    a = dataclasses.replace(
+        _verdict(base=R, onset=R, metric="wall_time_s"),
+        last_accepted_run_id="2026-07-04", onset_run_id="2026-07-05",
+    )
+    b = dataclasses.replace(
+        _verdict(base=R, onset=R, metric="peak_rss_mb"),
+        last_accepted_run_id="2026-07-05", onset_run_id="2026-07-06",
+    )
+    lookup = _commits({
+        _hkey(R, "2026-07-04"): ("1" * 40, _RUN_URL),
+        _hkey(R, "2026-07-05"): ("2" * 40, _RUN_URL),
+        _hkey(R, "2026-07-06"): ("3" * 40, _RUN_URL),
+    })
+    blame = build_blame_report(
+        _report([a, b]), packages_for_release=_provenance({
+            (_PLAT, R): {"k4geo": _pkgs("a" * 40)},
+        }),
+        k4bench_commit_for_run=lookup, github=GitHubClient(),
+    )
+    ranges = {
+        e.metric: next(r for r in e.repos if r.package == "k4bench")
+        for e in blame.entries
+    }
+    assert len(blame.entries) == 2
+    assert (ranges["wall_time_s"].base_commit,
+            ranges["wall_time_s"].head_commit) == ("1" * 40, "2" * 40)
+    assert (ranges["peak_rss_mb"].base_commit,
+            ranges["peak_rss_mb"].head_commit) == ("2" * 40, "3" * 40)
+
+
+def test_two_run_windows_in_one_release_are_ranked_separately(monkeypatch):
+    # Two windows means two candidate sets, so they must not share one
+    # inference: a single prompt would describe one range while scoring the
+    # other's pull requests.
+    def resolve(client, slug, base, head):
+        number = {"1" * 40: 10, "2" * 40: 20}.get(base, 99)
+        return RepoResolution(candidates=[
+            CandidatePR(repo=slug, number=number, title="t", author="a", url="u",
+                        files=("k4bench/runner/executor.py",)),
+        ])
+    _stub_resolve(monkeypatch, resolve)
+    R = "2026-07-04"
+    a = dataclasses.replace(
+        _verdict(base=R, onset=R, metric="wall_time_s"),
+        last_accepted_run_id="2026-07-04", onset_run_id="2026-07-05",
+    )
+    b = dataclasses.replace(
+        _verdict(base=R, onset=R, metric="peak_rss_mb"),
+        last_accepted_run_id="2026-07-05", onset_run_id="2026-07-06",
+    )
+    lookup = _commits({
+        _hkey(R, "2026-07-04"): ("1" * 40, _RUN_URL),
+        _hkey(R, "2026-07-05"): ("2" * 40, _RUN_URL),
+        _hkey(R, "2026-07-06"): ("3" * 40, _RUN_URL),
+    })
+    ranker = _FakeRanker({("key4hep/k4Bench", 10): Ranking(80.0, "x"),
+                          ("key4hep/k4Bench", 20): Ranking(70.0, "y")})
+    build_blame_report(
+        _report([a, b]), packages_for_release=_provenance({
+            (_PLAT, R): {"k4geo": _pkgs("a" * 40)},
+        }),
+        k4bench_commit_for_run=lookup, github=GitHubClient(), ranker=ranker,
+    )
+    assert len(ranker.requests) == 2   # one call per window, not one shared
+    assert [{c.number for c in req.candidates} for req in ranker.requests] == [
+        {10}, {20},
+    ]
+
+
+def test_a_degenerate_harness_range_is_refused(monkeypatch, caplog):
+    # A cross-release group can still disagree on run ids (its key does not
+    # carry them). If the narrowing ever produced a base run at or after the
+    # onset run, the compare URL would be reversed — silently, confidently
+    # wrong. Refuse instead.
+    from k4bench.blame.builder import _harness_change
+
+    v1 = dataclasses.replace(
+        _verdict(), last_accepted_run_id="2026-07-03", onset_run_id="2026-07-06",
+    )
+    v2 = dataclasses.replace(
+        _verdict(metric="peak_rss_mb"),
+        last_accepted_run_id="2026-07-07", onset_run_id="2026-07-08",
+    )
+    called = []
+
+    def lookup(*key):
+        called.append(key)
+        return ("1" * 40, _RUN_URL)
+
+    assert _harness_change(lookup, [v1, v2]) is None
+    assert "is not an interval" in caplog.text
+    assert called == []  # refused before spending a provenance read

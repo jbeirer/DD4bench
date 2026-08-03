@@ -363,6 +363,40 @@ def fetch_stack_packages(
     return None
 
 
+def fetch_run_commit(
+    base_url: str, detector: str, platform: str, stack: str, sample: str,
+    run_id: str,
+) -> tuple[str, str | None] | None:
+    """Return k4Bench's own ``(commit_sha, github_run_url)`` at one exact run,
+    or ``None``.
+
+    The run-keyed sibling of :func:`fetch_stack_packages`, for the one
+    provenance field that varies per run rather than per release: the commit of
+    the harness that produced the run. Unlike the release-keyed read there is
+    no walk and no "any run answers" shortcut — a same-day manual dispatch or
+    partial re-run can leave sibling groups carrying different commits, so only
+    the named run's own ``run_info.json`` is read (one small GET).
+
+    ``None`` covers "no such run" and "that run predates the field" — the
+    harness's position is unknown either way.
+    """
+    url = (
+        f"{base_url.rstrip('/')}/{detector}/{platform}/{stack}/{sample}/"
+        f"{run_id}/run_info.json"
+    )
+    try:
+        resp = _get_session().get(url, timeout=_TIMEOUT)
+        resp.raise_for_status()
+        info = resp.json()
+    except (requests.RequestException, ValueError) as exc:
+        _log.debug("fetch_run_commit: %s — %s", url, exc)
+        return None
+    sha = info.get("commit_sha")
+    if sha:
+        return str(sha), info.get("github_run_url") or None
+    return None
+
+
 def list_report_dates(base_url: str) -> list[str]:
     """Return available nightly regression-report dates (newest first).
 

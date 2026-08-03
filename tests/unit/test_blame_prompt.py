@@ -317,3 +317,42 @@ def test_not_touching_it_is_not_rendered_as_exculpatory():
     # not support.
     assert geometry_reach(("core/driver.cpp",), "FCCee/ALLEGRO/") == ""
     assert geometry_reach(("FCCee/ALLEGRO/x.xml",), "") == ""
+
+
+# ── The harness as an alternative explanation ─────────────────────────────────
+
+def test_the_rules_offer_the_harness_change_as_an_alternative_explanation():
+    # A step caused by the benchmark harness previously had nowhere to land but
+    # "the benchmark host changed" — the only alternative the rules offered —
+    # and came back likely_noise with a confident wrong story. Both shared
+    # rules must name the harness beside the host.
+    from k4bench.blame.prompt import ASSESSMENT_RULE, NOISE_RULE
+    assert "benchmark host changed" in NOISE_RULE
+    assert "benchmark harness itself changed" in NOISE_RULE
+    assert "benchmark host changed" in ASSESSMENT_RULE
+    assert "benchmark harness itself" in ASSESSMENT_RULE
+    # A harness-caused step is a real change to the measurement, not noise.
+    assert "not noise" in ASSESSMENT_RULE
+
+
+def test_the_harness_note_explains_the_mechanisms_a_harness_change_can_use():
+    from k4bench.blame.prompt import HARNESS_PACKAGE, HARNESS_PACKAGE_NOTE
+    assert HARNESS_PACKAGE == "k4bench"
+    assert "does not run inside the simulation" in HARNESS_PACKAGE_NOTE
+    assert "geometry" in HARNESS_PACKAGE_NOTE
+    assert "how many events are simulated" in HARNESS_PACKAGE_NOTE
+    assert "not comparable across the window" in HARNESS_PACKAGE_NOTE
+
+
+def test_a_same_release_window_states_that_the_stack_cannot_have_moved():
+    # A bare "X → X" reads as a typo rather than as the strongest fact the
+    # window carries: the stack is identical by construction, so only the
+    # harness, the host or noise can differ between the two runs.
+    from k4bench.blame.prompt import window_phrase
+    same = window_phrase("2026-07-29", "2026-07-29")
+    assert "within release 2026-07-29" in same
+    assert "SAME Key4hep release" in same
+    assert "benchmark harness" in same
+    # A genuine interval and an open window keep their existing wording.
+    assert window_phrase("2026-07-03", "2026-07-04") == "2026-07-03 → 2026-07-04"
+    assert window_phrase(None, "2026-07-04") == "2026-07-04"

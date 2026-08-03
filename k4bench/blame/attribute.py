@@ -96,6 +96,7 @@ from k4bench.blame.prompt import (
     platform_line,
     region_lines,
     sample_line,
+    window_phrase,
 )
 from k4bench.regression.models import RegionDelta
 
@@ -929,9 +930,7 @@ def build_user_prompt(
     *only_ids* narrows what is *asked for* without narrowing what is *shown* —
     the whole window stays in the prompt. See
     :meth:`OpenAICompatAttributor._complete`, its only caller, for why."""
-    window = request.onset_release
-    if request.base_release:
-        window = f"{request.base_release} → {request.onset_release}"
+    window = window_phrase(request.base_release, request.onset_release)
 
     competitors = sorted(request.competitors, key=competitor_order)[:MAX_COMPETITORS]
     # The reviewed diff is reserved first, then the competitors waterfill what is

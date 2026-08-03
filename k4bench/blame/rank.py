@@ -61,6 +61,7 @@ from k4bench.blame.llm import (
 from k4bench.blame.prompt import (
     ASSESSMENT_RULE,
     ASSESSMENT_VALUES,
+    HARNESS_PACKAGE_NOTE,
     HISTORICAL_ANALOGUE_RULE,
     NOISE_RULE,
     SCORE_BAND_RULE,
@@ -82,6 +83,7 @@ from k4bench.blame.prompt import (
     platform_line,
     region_lines,
     sample_line,
+    window_phrase,
 )
 from k4bench.regression.models import RegionDelta
 
@@ -182,6 +184,13 @@ class RankRequest:
     #: of it — every call saw one configuration and could only conclude *within*
     #: it.
     outcomes: tuple[ScopeOutcome, ...] = ()
+    #: The ``owner/repo`` slug of the benchmark harness when its own commits
+    #: moved across this window, else ``""``. The harness is categorically
+    #: unlike the stack packages — it decides how the run is invoked and
+    #: measured rather than running inside it — and the prompt says so
+    #: (:data:`~k4bench.blame.prompt.HARNESS_PACKAGE_NOTE`) wherever its
+    #: candidates appear, so a model never judges them as simulation code.
+    harness_repo: str = ""
     #: What older release boundaries the model may ask to see the code behind,
     #: and the seam it is retrieved through (:mod:`k4bench.blame.history`).
     #: ``None`` — the default, and every environment without
@@ -698,14 +707,12 @@ def _run_context_lines(request: RankRequest) -> str:
     ranked in its own call, and a terse header is too easy to under-weight
     against a large diff — the answer must be about *this* run, not the most
     prominent detector in the diff."""
-    window = request.onset_release
-    if request.base_release:
-        window = f"{request.base_release} → {request.onset_release}"
     lines = [
         f"- Detector: {request.detector}",
         sample_line(request.sample),
         platform_line(request.platform),
-        f"- Release window: {window}",
+        f"- Release window: "
+        f"{window_phrase(request.base_release, request.onset_release)}",
         *_step_lines(request),
         *_history_lines(request),
     ]
@@ -753,7 +760,12 @@ def _build_user_prompt(
     the follow-up prompt would be a second retrieval round, which the protocol
     does not have. With neither (the default, and the whole of a run with the
     feature switched off) this returns byte-for-byte what it always did."""
-    packages = sorted({c.repo for c in request.candidates})
+    # The harness is not one of the tracked stack packages, so it never rides
+    # in the moved/stood-still count — that number is a statement about the
+    # simulation stack, and folding the harness in would quietly corrupt it.
+    packages = sorted(
+        {c.repo for c in request.candidates} - {request.harness_repo}
+    )
     parts = [
         f"Run context — the {request.detector} run these metrics were "
         f"measured on; judge every candidate against it:",
@@ -764,6 +776,24 @@ def _build_user_prompt(
         # packages that moved, or in something k4Bench does not track.
         f"{len(packages)} of {len(packages) + request.n_unchanged} tracked "
         f"package(s) moved across this window; the rest stood still.",
+    ]
+    if request.harness_repo:
+        # Said whether or not any harness pull request survived as a candidate:
+        # "the harness changed" is part of what the window's evidence has to be
+        # weighed against either way.
+        harness_shown = any(
+            c.repo == request.harness_repo for c in request.candidates
+        )
+        parts.append(
+            f"The benchmark harness itself ({request.harness_repo}) also "
+            f"changed across this window"
+            + (
+                "; its pull requests are listed below."
+                if harness_shown
+                else "; none of its pull requests are listed as candidates."
+            )
+        )
+    parts += [
         "",
         "Candidate pull requests, grouped by package — score each on its own:",
     ]
@@ -779,6 +809,8 @@ def _build_user_prompt(
     for repo, candidates in by_repo.items():
         parts.append("")
         parts.append(f"## {repo}")
+        if repo == request.harness_repo:
+            parts.append(HARNESS_PACKAGE_NOTE)
         for candidate in candidates:
             parts.append(_render_candidate(
                 candidate, budget_for[candidate], geometry_tree(request.geometry_tree)

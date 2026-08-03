@@ -49,7 +49,7 @@ from remote_cache import (
     _cached_list_report_dates,
     _cached_list_run_dates,
 )
-from k4bench.blame.models import BlameReport, BlameSchemaError
+from k4bench.blame.models import BlameReport, BlameSchemaError, rank_group_key
 from k4bench.provenance.diff import diff_packages
 from tabs import _blame
 from tabs._night_picker import render_night_picker
@@ -323,9 +323,18 @@ def _night_group(
     )
 
 
-def _window_key(verdict: MetricVerdict) -> tuple[str | None, str | None]:
-    """A verdict's change window as a hashable key."""
-    return (verdict.last_accepted_run_date, verdict.onset_run_date)
+def _window_key(verdict: MetricVerdict) -> tuple:
+    """A verdict's change window as a hashable key.
+
+    Two windows inside *one* release are two different changes — different
+    runs, different harness commits, different pull requests — so a
+    same-release window is keyed on its run ids too. The rule lives in
+    :func:`k4bench.blame.models.rank_group_key`, which the blame build groups
+    by; re-deriving it here is how the picker and the sidecar drift apart. The
+    detector/platform/sample prefix is dropped: this key is only ever compared
+    within one scoped run group.
+    """
+    return rank_group_key(verdict)[3:]
 
 
 def _metric_key(verdict: MetricVerdict) -> tuple:
@@ -572,9 +581,30 @@ def _render_blame_card(data_url: str, attribution: _WindowAttribution) -> None:
         if kind is _blame.WindowKind.SAME_STACK:
             st.caption(
                 f"Change entered within release **{v.onset_run_date}** · {scope} · "
-                "no tracked Key4hep package changed. Check benchmark "
-                "code/config, inputs, runner environment, or noise."
+                "no tracked Key4hep package changed."
             )
+            # The stack is identical by construction, so the sidecar can only
+            # name the benchmark harness itself — render its commit range and
+            # ranking when the blame build recorded one.
+            entry = (
+                attribution.blame.entry_for(v)
+                if attribution.blame is not None else None
+            )
+            if entry is not None:
+                moved = [
+                    f"[`{r.package}` ↗]({r.compare_url})" if r.compare_url
+                    else f"`{r.package}`"
+                    for r in entry.repos
+                ]
+                if moved:
+                    st.markdown(
+                        "**Changed between these runs:** " + " · ".join(moved)
+                    )
+            if not render_candidate_ranking(v, attribution.blame) and entry is None:
+                st.caption(
+                    "Check benchmark code/config, inputs, runner environment, "
+                    "or noise."
+                )
             return
         onset = v.onset_run_date
         baseline = v.last_accepted_run_date if kind is _blame.WindowKind.BOUNDED else None
@@ -605,11 +635,20 @@ def _render_blame_card(data_url: str, attribution: _WindowAttribution) -> None:
 
 
 def _window_label(attribution: _WindowAttribution) -> str:
-    """A change window as a picker pill: the release interval it entered in."""
+    """A change window as a picker pill: the release interval it entered in.
+
+    A same-release window names its two *runs* rather than just the release:
+    one release can hold several of them, and "within 2026-07-29" twice over
+    tells the reader nothing about which change is which."""
     v = attribution.verdict
     kind = _blame.classify(v)
     if kind is _blame.WindowKind.SAME_STACK:
-        return f"within {v.onset_run_date}"
+        runs = (
+            f" ({v.last_accepted_run_id} → {v.onset_run_id})"
+            if v.last_accepted_run_id and v.onset_run_id
+            and v.last_accepted_run_id != v.onset_run_id else ""
+        )
+        return f"within {v.onset_run_date}{runs}"
     if kind is _blame.WindowKind.OPEN:
         return f"up to {v.onset_run_date}"
     return f"{v.last_accepted_run_date} → {v.onset_run_date}"
@@ -622,16 +661,18 @@ def _window_token(attribution: _WindowAttribution) -> str:
 
     A same-release window keeps its baseline, matching what the email emits for
     it (``R..R``) and keeping it distinct from an open window onto the same
-    onset (``..R``), which would otherwise collide on one token.
+    onset (``..R``), which would otherwise collide on one token. It also
+    carries its two run dates, since one release can hold several such windows
+    and the release pair alone cannot tell them apart.
     """
     v = attribution.verdict
     kind = _blame.classify(v)
     if kind is _blame.WindowKind.SAME_STACK:
-        base = v.onset_run_date
-    elif kind is _blame.WindowKind.BOUNDED:
-        base = v.last_accepted_run_date
-    else:                                   # OPEN: no trustworthy older end
-        base = None
+        return window_token(
+            v.onset_run_date, v.onset_run_date,
+            v.last_accepted_run_id, v.onset_run_id,
+        )
+    base = v.last_accepted_run_date if kind is _blame.WindowKind.BOUNDED else None
     return window_token(base, v.onset_run_date)
 
 

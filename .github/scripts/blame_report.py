@@ -3,9 +3,12 @@
 Build the blame sidecar for a nightly report and write it as ``blame.json``.
 
 Thin CLI over :func:`k4bench.blame.builder.build_blame_report`: reads the
-already-built ``report.json``, and for each confirmed regression with a real
-``(baseline, onset]`` release window, diffs the two releases' package maps and
-asks GitHub which pull requests landed in each changed repo — writing
+already-built ``report.json``, and for each confirmed regression with a
+bounded blame window, diffs the two releases' package maps (plus k4Bench's own
+commit range between the window's runs — a same-release window, where the
+stack is identical by construction, is attributed exactly when the harness
+moved) and asks GitHub which pull requests landed in each changed repo —
+writing
 
     {output-dir}/blame.json   — the sidecar the dashboard/email read back
 
@@ -106,6 +109,53 @@ def _make_packages_for_release(
         return None
 
     return packages_for_release
+
+
+def _local_run_commit(
+    roots: list[str], detector: str, platform: str, release: str, sample: str,
+    run_id: str,
+) -> tuple[str, str | None] | None:
+    """k4Bench's own ``(commit_sha, github_run_url)`` at one exact run, or
+    ``None``.
+
+    Read from the one path the verdict identifies — no glob, unlike
+    :func:`_local_packages`: the harness's commit varies per run, not per
+    release, and a same-day manual dispatch or partial re-run can leave
+    sibling groups carrying different commits, so "any run of that night" is
+    not a safe stand-in for this group's own run."""
+    for root in roots:
+        path = (
+            Path(root) / detector / platform / f"key4hep-{release}" / sample
+            / run_id / "run_info.json"
+        )
+        try:
+            info = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        sha = info.get("commit_sha")
+        if sha:
+            return str(sha), info.get("github_run_url") or None
+    return None
+
+
+def _make_k4bench_commit_for_run(roots: list[str], data_url: str | None):
+    """A ``(detector, platform, release, sample, run_id) -> (commit_sha,
+    github_run_url)`` lookup for the harness itself: local trees first, then
+    the same WebEOS fallback shape as :func:`_make_packages_for_release`."""
+    def k4bench_commit_for_run(
+        detector: str, platform: str, release: str, sample: str, run_id: str
+    ) -> tuple[str, str | None] | None:
+        local = _local_run_commit(roots, detector, platform, release, sample, run_id)
+        if local:
+            return local
+        if data_url:
+            from k4bench.remote import fetch_run_commit
+            return fetch_run_commit(
+                data_url, detector, platform, f"key4hep-{release}", sample, run_id
+            )
+        return None
+
+    return k4bench_commit_for_run
 
 
 def _historical_diffs(
@@ -231,7 +281,9 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     blame = build_blame_report(
-        report, packages_for_release=packages_for_release, github=github,
+        report, packages_for_release=packages_for_release,
+        k4bench_commit_for_run=_make_k4bench_commit_for_run(roots, args.data_url),
+        github=github,
         ranker=ranker,
         historical_diffs=_historical_diffs(
             historical_diffs_enabled(), HISTORICAL_DIFFS_ENV,

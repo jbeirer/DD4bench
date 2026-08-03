@@ -763,3 +763,44 @@ def test_the_prompt_carries_the_region_breakdown_of_the_largest_movers():
     )))
     assert "Where the change landed inside the detector" in prompt
     assert "HCAL_barrel: 0.31 -> 4.52 s/event (+4.21)" in prompt
+
+
+# ── The harness in the prompt ─────────────────────────────────────────────────
+
+def test_the_system_prompt_names_the_harness_alternative():
+    from k4bench.blame.rank import _SYSTEM_PROMPT
+    assert "benchmark harness itself changed" in _SYSTEM_PROMPT
+
+
+def test_the_harness_group_is_explained_and_kept_out_of_the_stack_count():
+    import dataclasses
+
+    candidates = (
+        RankCandidate(repo="key4hep/k4geo", number=10, title="Lower the step limit"),
+        RankCandidate(repo="key4hep/k4Bench", number=134, title="fix the patcher"),
+    )
+    request = dataclasses.replace(
+        _request(candidates=candidates), harness_repo="key4hep/k4Bench"
+    )
+    prompt = _build_user_prompt(request)
+    # The harness's candidate group carries the note that it is not simulation
+    # code, and its movement is stated in prose.
+    assert "## key4hep/k4Bench" in prompt
+    assert "benchmark harness itself" in prompt
+    assert "does not run inside the simulation" in prompt
+    assert "its pull requests are listed below" in prompt
+    # The moved/stood-still count stays a statement about the simulation stack:
+    # one stack repo moved, and the harness is not folded into it.
+    assert "1 of 1 tracked package(s) moved" in prompt
+
+
+def test_a_harness_move_with_no_surviving_candidate_is_still_stated():
+    import dataclasses
+
+    request = dataclasses.replace(_request(), harness_repo="key4hep/k4Bench")
+    prompt = _build_user_prompt(request)
+    assert "none of its pull requests are listed as candidates" in prompt
+
+
+def test_no_harness_movement_leaves_the_prompt_silent_about_it():
+    assert "benchmark harness" not in _build_user_prompt(_request())

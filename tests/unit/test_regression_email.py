@@ -553,6 +553,18 @@ def test_window_token_matches_the_dashboards_query_value():
     assert window_token("2026-06-25", "2026-06-27") == "2026-06-25..2026-06-27"
     # An open window (no settled baseline) still names its onset.
     assert window_token(None, "2026-06-27") == "..2026-06-27"
+    # A cross-release token ignores run ids entirely — its releases already
+    # identify it, and appending runs would break every link already sent.
+    assert window_token(
+        "2026-06-25", "2026-06-27", "2026-06-25", "2026-06-27"
+    ) == "2026-06-25..2026-06-27"
+    # A same-release window is qualified by its two runs: one release can hold
+    # several of them, and the release pair alone cannot tell them apart.
+    assert window_token(
+        "2026-06-27", "2026-06-27", "2026-06-27", "2026-06-28"
+    ) == "2026-06-27..2026-06-27@2026-06-27..2026-06-28"
+    # Runs absent (a report predating run-id capture): the old value stands.
+    assert window_token("2026-06-27", "2026-06-27") == "2026-06-27..2026-06-27"
 
 
 def test_single_change_window_gets_no_separate_changes_lead_in():
@@ -874,3 +886,39 @@ def test_an_unassessed_ranking_renders_exactly_as_before():
     v = _windowed(first_confirmed_run_id="2026-06-27")
     html = to_html(_report(_group(v)), blame=_blame(_candidate(1, 88.0)))
     assert "⚖️" not in html
+
+
+def test_two_windows_inside_one_release_render_as_two_sections():
+    # Two run windows inside one release are two different changes. Grouped on
+    # the release pair alone they would merge into one section — one window text
+    # and one merged candidate list describing two different commit ranges.
+    first = _v(metric="median_time_s",
+               onset_run_id="2026-06-26", onset_run_date="2026-06-27",
+               last_accepted_run_id="2026-06-25", last_accepted_run_date="2026-06-27",
+               first_confirmed_run_id="2026-06-27")
+    second = _v(metric="wall_time_s",
+                onset_run_id="2026-06-28", onset_run_date="2026-06-27",
+                last_accepted_run_id="2026-06-26", last_accepted_run_date="2026-06-27",
+                first_confirmed_run_id="2026-06-27")
+    for body in (to_html(_report(_group(first, second))),
+                 to_markdown(_report(_group(first, second)))):
+        # Each window names the runs that bound it, so the reader can tell the
+        # two changes apart rather than seeing "within release" twice.
+        assert "within release 2026-06-27 (2026-06-25 → 2026-06-26)" in body
+        assert "within release 2026-06-27 (2026-06-26 → 2026-06-28)" in body
+
+
+def test_a_same_release_deep_link_carries_the_run_window():
+    import re
+    v = _v(metric="median_time_s",
+           onset_run_id="2026-06-28", onset_run_date="2026-06-27",
+           last_accepted_run_id="2026-06-27", last_accepted_run_date="2026-06-27",
+           first_confirmed_run_id="2026-06-27")
+    html = to_html(_report(_group(v)), dashboard_url="https://dash.example/")
+    hrefs = dict(
+        (text, href)
+        for href, text in re.findall(r'<a href="([^"]*)"[^>]*>([^<]*)</a>', html)
+    )
+    review = hrefs["Review these 1 regression"]
+    # The token the dashboard reads back for *this* window, runs included.
+    assert "window=2026-06-27..2026-06-27%402026-06-27..2026-06-28" in review
