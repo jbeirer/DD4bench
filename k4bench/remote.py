@@ -363,6 +363,50 @@ def fetch_stack_packages(
     return None
 
 
+def fetch_run_commit(
+    base_url: str, detector: str, platform: str, run_id: str
+) -> tuple[str, str | None] | None:
+    """Return k4Bench's own ``(commit_sha, github_run_url)`` at one *run*, or
+    ``None``.
+
+    The run-keyed sibling of :func:`fetch_stack_packages`, for the one field
+    that varies per run rather than per release: the commit of the harness that
+    produced the run. The run date does not name a stack directory, so this
+    walks the detector's stacks (newest first — a run id being asked about is
+    almost always recent) and their samples until some run at *run_id* answers.
+    Any run of that night answers equally: one nightly invocation benchmarks
+    every sample at one k4Bench commit.
+
+    ``None`` covers "no such run found" and "that run predates the field" —
+    the harness's position is unknown either way.
+    """
+    root = f"{base_url.rstrip('/')}/{detector}/{platform}"
+    try:
+        stacks = list_stacks(base_url, detector, platform)
+    except requests.RequestException as exc:
+        _log.debug("fetch_run_commit: no stacks under %s — %s", root, exc)
+        return None
+
+    for stack in stacks:
+        try:
+            samples = sorted(_list_subdirs(f"{root}/{stack}"))
+        except requests.RequestException:
+            continue
+        for sample in samples:
+            url = f"{root}/{stack}/{sample}/{run_id}/run_info.json"
+            try:
+                resp = _get_session().get(url, timeout=_TIMEOUT)
+                resp.raise_for_status()
+                info = resp.json()
+            except (requests.RequestException, ValueError) as exc:
+                _log.debug("fetch_run_commit: %s — %s", url, exc)
+                continue
+            sha = info.get("commit_sha")
+            if sha:
+                return str(sha), info.get("github_run_url") or None
+    return None
+
+
 def list_report_dates(base_url: str) -> list[str]:
     """Return available nightly regression-report dates (newest first).
 

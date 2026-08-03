@@ -16,6 +16,12 @@ module offline-testable and lets CI reuse work it has already done:
 * ``github`` — a :class:`~k4bench.blame.github.GitHubClient`, or ``None`` to skip
   PR resolution entirely (no token available): the diffs are still recorded, the
   repos just carry no candidates.
+* ``k4bench_commit_for_run(platform, run_id) -> (sha, run_url) | None`` — the
+  harness's own commit at one *run*. k4Bench is not in any release's package
+  map (it measures the stack, it is not part of it), yet its changes move
+  measurements too; this lookup is what lets the window's diff include it.
+  ``None`` — not injected, or a run that cannot be read — means the harness's
+  movement is unknown and no entry claims anything about it.
 
 Windows that cannot be attributed are dropped, not recorded empty: an open-ended
 window (no settled baseline), a same-release window (nothing upstream moved), and
@@ -55,6 +61,7 @@ from k4bench.blame.models import (
     RepoBlame,
     StepAssessment,
 )
+from k4bench.blame.prompt import HARNESS_PACKAGE
 from k4bench.blame.rank import (
     MetricStep,
     RankCandidate,
@@ -69,6 +76,38 @@ from k4bench.regression.models import MetricVerdict, NightlyReport
 _log = logging.getLogger(__name__)
 
 PackagesForRelease = Callable[[str, str], "dict | None"]
+
+#: ``(platform, run_id) -> (commit_sha, github_run_url)`` — what one *run*
+#: recorded about the k4Bench checkout that produced it, or ``None`` when that
+#: run's ``run_info.json`` cannot be read. Keyed by run rather than by release
+#: because the harness's commit varies per run: several consecutive runs
+#: routinely share one Key4hep release, each benchmarked by a different
+#: k4Bench commit, so the release-keyed :data:`PackagesForRelease` shape would
+#: answer with whichever run it happened to read first. ``github_run_url`` may
+#: be ``None`` on runs that predate the field; the commit alone still places
+#: the run in the default repository.
+K4benchCommitForRun = Callable[[str, str], "tuple[str, str | None] | None"]
+
+#: Where the harness lives when a run's own provenance does not say. Every
+#: current run records its workflow URL and the repository is parsed from it
+#: (:func:`_repo_url_from_run_url`); this constant covers only runs written
+#: before that field existed.
+_K4BENCH_REPO_URL = "https://github.com/key4hep/k4Bench.git"
+
+#: Paths in the harness repository that can change what a benchmark measures:
+#: the geometry patcher, the runner and metric collection, the analysis that
+#: reads the measurements back, and the benchmark configuration (event counts
+#: live there). A harness pull request touching none of these — dashboard,
+#: docs, unrelated CI — provably cannot move a measurement and is dropped from
+#: the candidates; the :class:`RepoBlame` still records that the harness moved.
+_HARNESS_SIGNAL_PATHS = (
+    "k4bench/geometry/",
+    "k4bench/runner/",
+    "k4bench/benchmark/",
+    "k4bench/analysis/",
+    ".github/benchmarks/",
+    ".github/workflows/nightly.yml",
+)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -101,6 +140,7 @@ def build_blame_report(
     report: NightlyReport,
     *,
     packages_for_release: PackagesForRelease,
+    k4bench_commit_for_run: K4benchCommitForRun | None = None,
     github: GitHubClient | None = None,
     ranker: Ranker | None = None,
     generated_at: str | None = None,
@@ -125,6 +165,8 @@ def build_blame_report(
     """
     verdicts = [v for v in report.regressions if _attributable(v)]
     packages_for_release = _memoized(packages_for_release)
+    if k4bench_commit_for_run is not None:
+        k4bench_commit_for_run = _memoized(k4bench_commit_for_run)
 
     #: Every confirmed metric that stepped across a given (detector, platform,
     #: sample) run group's release boundary, gathered upfront so the ranker
@@ -151,6 +193,15 @@ def build_blame_report(
     diff_cache: dict[tuple[str, str, str], list[PackageChange] | None] = {}
     unchanged_cache: dict[tuple[str, str, str], int] = {}
     resolution_cache: dict[tuple[str, str, str], RepoResolution] = {}
+    #: The harness's own movement, resolved once per rank group. Keyed like
+    #: :data:`verdicts_by_rank_group` — on *release* dates — while the range
+    #: itself comes from the group's run ids (:func:`_harness_change`), so a
+    #: group whose verdicts disagree on run ids is resolved once, consistently,
+    #: rather than by whichever verdict reaches the loop first. Deliberately
+    #: separate from :data:`diff_cache`: that one is release-keyed and shared
+    #: with the historical walk, whose boundaries have no run ids at all, and
+    #: the harness must never leak into it.
+    harness_cache: dict[tuple[str, str, str, str, str], PackageChange | None] = {}
     #: One rank inference per rank group, shared by every metric that stepped
     #: across it (they see the same diff and candidate set) — the dashboard and
     #: the email show one verdict per group, not one per metric. Keyed like
@@ -358,9 +409,29 @@ def build_blame_report(
                 packages_for_release, *window
             )
         changes = diff_cache[window]
+        if changes is None:
+            # Upstream provenance is unreadable. Skip even when the harness is
+            # known to have moved: an entry naming only k4Bench while the stack
+            # is unknown would read as "the stack was checked and stood still".
+            continue
+        rank_group = (
+            v.detector, v.platform, v.sample,
+            v.last_accepted_run_date, v.onset_run_date,
+        )
+        if rank_group not in harness_cache:
+            harness_cache[rank_group] = _harness_change(
+                k4bench_commit_for_run, verdicts_by_rank_group[rank_group]
+            )
+        harness = harness_cache[rank_group]
+        if harness is not None:
+            # Appended per verdict, never written into the release-keyed diff
+            # or its caches: the harness range belongs to this group's runs.
+            # ``n_unchanged`` stays untouched too — it counts the *stack*, and
+            # the harness is not one of its packages.
+            changes = [*changes, harness]
         if not changes:
-            # None (provenance missing) or [] (releases differ but packages
-            # identical) — nothing to attribute either way.
+            # The releases differ but every tracked package is identical, and
+            # the harness (if it could be read at all) did not move either.
             continue
 
         repos: list[RepoBlame] = []
@@ -369,6 +440,14 @@ def build_blame_report(
             resolution, rate_limited = _resolve(
                 change, github, resolution_cache, rate_limited
             )
+            if change is harness and resolution.candidates:
+                resolution = dataclasses.replace(
+                    resolution,
+                    candidates=[
+                        c for c in resolution.candidates
+                        if _harness_candidate_signal(c.files)
+                    ],
+                )
             repos.append(_repo_blame(change, resolution))
             for pr in resolution.candidates:
                 texts[(pr.repo, pr.number)] = PRText(
@@ -379,10 +458,6 @@ def build_blame_report(
         assessment: StepAssessment | None = None
         historical: tuple[HistoricalRef, ...] = ()
         if ranker is not None:
-            rank_group = (
-                v.detector, v.platform, v.sample,
-                v.last_accepted_run_date, v.onset_run_date,
-            )
             group_verdicts = verdicts_by_rank_group[rank_group]
             result = _rank_group(
                 ranker, group_verdicts, repos, texts,
@@ -429,24 +504,112 @@ def build_blame_report(
     )
 
 
-def _memoized(packages_for_release: PackagesForRelease) -> PackagesForRelease:
-    """*packages_for_release* answering each ``(platform, release)`` once.
+def _memoized(lookup):
+    """A two-string-keyed lookup answering each key once — serving both the
+    ``(platform, release)`` package lookup and the ``(platform, run_id)``
+    harness-commit lookup.
 
     The history tails multiplied the question: a window's own diff asks for two
     releases, a twelve-release tail asks for twelve, and every metric of every
     detector on a platform asks for the same ones. The underlying lookup globs a
     run cache or fetches over the network, and neither should happen twice for
-    one release. ``None`` (no provenance) is cached too — it is an answer, and
+    one key. ``None`` (nothing readable) is cached too — it is an answer, and
     re-asking would re-pay for it."""
-    cache: dict[tuple[str, str], dict | None] = {}
+    cache: dict[tuple[str, str], object] = {}
 
-    def lookup(platform: str, release: str) -> dict | None:
-        key = (platform, release)
+    def memoized(first: str, second: str):
+        key = (first, second)
         if key not in cache:
-            cache[key] = packages_for_release(platform, release)
+            cache[key] = lookup(first, second)
         return cache[key]
 
-    return lookup
+    return memoized
+
+
+def _repo_url_from_run_url(run_url: str | None) -> str | None:
+    """The harness repository behind a run's recorded workflow URL, or ``None``.
+
+    ``github_run_url`` looks like
+    ``https://github.com/key4hep/k4Bench/actions/runs/30603409866`` — the first
+    two path segments are the repository. Derived rather than assumed so a fork
+    running its own benchmarks blames its own pull requests, not upstream's."""
+    if not run_url:
+        return None
+    prefix = "https://github.com/"
+    if not run_url.startswith(prefix):
+        return None
+    segments = [s for s in run_url[len(prefix):].split("/") if s]
+    if len(segments) < 2:
+        return None
+    return f"https://github.com/{segments[0]}/{segments[1]}.git"
+
+
+def _harness_change(
+    k4bench_commit_for_run, verdicts: list[MetricVerdict]
+) -> PackageChange | None:
+    """k4Bench's own movement across one rank group's window, or ``None``.
+
+    The endpoints come from the *run ids* already on the verdicts — the base
+    end is the run named by ``last_accepted_run_id``, the onset end the run
+    named by ``onset_run_id`` — never from a release-keyed lookup: a release is
+    routinely measured by several runs at different harness commits, and "the
+    first readable run under the release" would pick one essentially at random.
+
+    A rank group is keyed on release dates, so nothing enforces that its
+    verdicts agree on run ids. When they disagree, the narrowest range
+    consistent with all of them wins (newest base run, oldest onset run) — a
+    false negative is cheaper than accusing a pull request that merged after
+    the step was already measured — and the disagreement is logged.
+
+    ``None`` — no lookup injected, an endpoint that cannot be read, or a
+    harness that did not move — must leave the report exactly as it was before
+    this lookup existed."""
+    if k4bench_commit_for_run is None:
+        return None
+    v = verdicts[0]
+    base_ids = {m.last_accepted_run_id for m in verdicts if m.last_accepted_run_id}
+    onset_ids = {m.onset_run_id for m in verdicts if m.onset_run_id}
+    if not base_ids or not onset_ids:
+        return None
+    if len(base_ids) > 1 or len(onset_ids) > 1:
+        _log.warning(
+            "blame: %s/%s %s..%s — verdicts sharing this rank group carry "
+            "disagreeing run ids (base %s, onset %s); using the narrowest "
+            "harness range consistent with all of them",
+            v.detector, v.sample, v.last_accepted_run_date, v.onset_run_date,
+            sorted(base_ids), sorted(onset_ids),
+        )
+    base = k4bench_commit_for_run(v.platform, max(base_ids))
+    onset = k4bench_commit_for_run(v.platform, min(onset_ids))
+    if base is None or onset is None:
+        return None
+    base_sha, base_url = base
+    onset_sha, onset_url = onset
+    if not base_sha or not onset_sha or base_sha == onset_sha:
+        return None
+    return PackageChange(
+        name=HARNESS_PACKAGE,
+        base_commit=base_sha,
+        head_commit=onset_sha,
+        version="",  # the harness has no stack version string
+        repo_url=(
+            _repo_url_from_run_url(onset_url)
+            or _repo_url_from_run_url(base_url)
+            or _K4BENCH_REPO_URL
+        ),
+    )
+
+
+def _harness_candidate_signal(files: tuple[str, ...]) -> bool:
+    """Whether a harness pull request could move a measurement at all.
+
+    Most k4Bench pull requests in any window are dashboard or documentation
+    work; only changes under :data:`_HARNESS_SIGNAL_PATHS` can alter what a
+    benchmark loads, runs or records. A candidate with **no** file list is
+    kept — an unreadable change cannot be proven harmless."""
+    if not files:
+        return True
+    return any(f.startswith(_HARNESS_SIGNAL_PATHS) for f in files)
 
 
 def _diff_window(
@@ -793,6 +956,9 @@ def _rank_request(
         outcomes=outcomes,
         n_unchanged=n_unchanged,
         geometry_tree=geometry_path,
+        harness_repo=next(
+            (r.repo or "" for r in repos if r.package == HARNESS_PACKAGE), ""
+        ),
         history=history,
     )
 

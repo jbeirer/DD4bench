@@ -49,6 +49,31 @@ def direction_phrase(direction: str, pct_change: float | None) -> str:
     return word
 
 
+# ── The benchmark harness as a judged repository ─────────────────────────────
+
+#: The package name the builder records the benchmark harness under when its
+#: own commits moved across a blame window. Not a Key4hep stack package — the
+#: harness measures the stack rather than running inside it — which is exactly
+#: why the prompts must explain it (:data:`HARNESS_PACKAGE_NOTE`) instead of
+#: letting it read as one more simulation library.
+HARNESS_PACKAGE = "k4bench"
+
+#: What a model must know about the harness before judging its pull requests:
+#: it is categorically unlike the simulation packages. Rendered under the
+#: harness's candidate group, indented to sit inside the package section.
+HARNESS_PACKAGE_NOTE = (
+    "  This repository is the benchmark harness itself — it does not run "
+    "inside the simulation; it decides how the simulation is invoked and "
+    "measured. A change here can alter the geometry actually loaded (the "
+    "geometry patcher), alter how the run is executed or its metrics are "
+    "collected (the runner and benchmark drivers), or alter the benchmark "
+    "configuration itself, including how many events are simulated — which "
+    "can make run-total metrics not comparable across the window at all, "
+    "rather than merely moving them. Judge its pull requests through those "
+    "mechanisms, not as simulation code."
+)
+
+
 # ── The rules both passes are judged under ────────────────────────────────────
 
 #: The trust boundary. Everything a pull request's author wrote — title, paths,
@@ -96,9 +121,12 @@ NOISE_RULE = (
     "release boundary where no tracked package changed at all — is not evidence "
     "that any code changed. A level that came back to baseline in later "
     "releases, a series flagged every few releases, a step landing exactly "
-    "where the benchmark host changed: each is a reason the true answer may be "
-    "that no pull request caused this. 'None of these' is a correct and useful "
-    "answer, and a confident wrong culprit is worse than no culprit. "
+    "where the benchmark host changed, a step landing where the benchmark "
+    "harness itself changed: each is a reason the true answer may be that "
+    "nothing in the simulation stack caused this. A harness change is not "
+    "noise, though — when the harness's own pull requests are among the "
+    "candidates, weigh them like any other. 'None of these' is a correct and "
+    "useful answer, and a confident wrong culprit is worse than no culprit. "
 )
 
 #: The verdicts :data:`ASSESSMENT_RULE` allows, and the parsers accept.
@@ -116,8 +144,12 @@ ASSESSMENT_RULE = (
     '"likely_noise" (the step is within what this series does on its own, it '
     'returned to baseline, the series trips regularly, or the benchmark host '
     'changed underneath it), or "insufficient_evidence" (too little history to '
-    'tell). If you answer "likely_noise", no candidate should score above 25: '
-    'there is most likely nothing to attribute. '
+    'tell). A step explained by a change to the benchmark harness itself — how '
+    'the run is invoked, measured or configured — is a real change to the '
+    'measurement, not noise: assess it accordingly and score the harness\'s '
+    'pull requests like any other candidate. If you answer "likely_noise", no '
+    'candidate should score above 25: there is most likely nothing to '
+    'attribute. '
 )
 
 

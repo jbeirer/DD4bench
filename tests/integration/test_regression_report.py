@@ -371,9 +371,15 @@ def test_blame_report_with_ranker_over_local_tree(tmp_path, monkeypatch):
     from k4bench.blame.rank import Ranking, RankResult, StepAssessment
     from k4bench.regression.render import from_json as report_from_json
 
-    # Provenance from the local tree, via the real CLI helper (no network).
+    # Provenance from the local tree, via the real CLI helpers (no network).
+    # The tree's runs record no harness commit, so the run-keyed lookup answers
+    # ``None`` throughout — the injected-but-unreadable path must behave
+    # exactly like the not-injected one.
     blame_cli = _load_script(_BLAME_SCRIPT)
     packages_for_release = blame_cli._make_packages_for_release(
+        [str(data_dir)], None, {_PLAT: ["DET"]}
+    )
+    k4bench_commit_for_run = blame_cli._make_k4bench_commit_for_run(
         [str(data_dir)], None, {_PLAT: ["DET"]}
     )
 
@@ -402,6 +408,7 @@ def test_blame_report_with_ranker_over_local_tree(tmp_path, monkeypatch):
     report = report_from_json(json.loads((out_dir / "report.json").read_text()))
     blame = build_blame_report(
         report, packages_for_release=packages_for_release,
+        k4bench_commit_for_run=k4bench_commit_for_run,
         github=GitHubClient(), ranker=_FakeRanker(),
     )
     (out_dir / "blame.json").write_text(json.dumps(blame.to_json(), indent=2))

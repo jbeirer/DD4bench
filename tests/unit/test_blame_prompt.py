@@ -317,3 +317,28 @@ def test_not_touching_it_is_not_rendered_as_exculpatory():
     # not support.
     assert geometry_reach(("core/driver.cpp",), "FCCee/ALLEGRO/") == ""
     assert geometry_reach(("FCCee/ALLEGRO/x.xml",), "") == ""
+
+
+# ── The harness as an alternative explanation ─────────────────────────────────
+
+def test_the_rules_offer_the_harness_change_as_an_alternative_explanation():
+    # A step caused by the benchmark harness previously had nowhere to land but
+    # "the benchmark host changed" — the only alternative the rules offered —
+    # and came back likely_noise with a confident wrong story. Both shared
+    # rules must name the harness beside the host.
+    from k4bench.blame.prompt import ASSESSMENT_RULE, NOISE_RULE
+    assert "benchmark host changed" in NOISE_RULE
+    assert "benchmark harness itself changed" in NOISE_RULE
+    assert "benchmark host changed" in ASSESSMENT_RULE
+    assert "benchmark harness itself" in ASSESSMENT_RULE
+    # A harness-caused step is a real change to the measurement, not noise.
+    assert "not noise" in ASSESSMENT_RULE
+
+
+def test_the_harness_note_explains_the_mechanisms_a_harness_change_can_use():
+    from k4bench.blame.prompt import HARNESS_PACKAGE, HARNESS_PACKAGE_NOTE
+    assert HARNESS_PACKAGE == "k4bench"
+    assert "does not run inside the simulation" in HARNESS_PACKAGE_NOTE
+    assert "geometry" in HARNESS_PACKAGE_NOTE
+    assert "how many events are simulated" in HARNESS_PACKAGE_NOTE
+    assert "not comparable across the window" in HARNESS_PACKAGE_NOTE
