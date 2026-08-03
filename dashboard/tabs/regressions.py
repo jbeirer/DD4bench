@@ -86,7 +86,7 @@ def render(
         )
         return None
 
-    nights, _, stacks_dates = _candidate_nights(
+    nights, is_release, stacks_dates = _candidate_nights(
         data_url, detector, platform, sample, stack, dates,
     )
     if nights is None:
@@ -124,7 +124,12 @@ def render(
         badge=lambda n: _night_badge(reports[n], detector, platform, sample),
         default=default_night,
         latest=max(dates),
-        label=f"Report night · release {_release(stack)}",
+        # On the fallbacks the nights are not known to be the sidebar
+        # release's, so the label must not claim them for it.
+        label=(
+            f"Report night · release {_release(stack)}" if is_release
+            else "Report night"
+        ),
         reset_scope=(detector, platform, sample, stack),
         caption_release=lambda n: _night_release(
             reports[n], detector, platform, sample, stack,

@@ -260,6 +260,7 @@ def test_confirmed_rerun_defaults_over_a_later_quiet_night():
         stacks_dates={STACK: [NIGHT, "2026-07-11"]},
     )
     picker = _night_picker(at)
+    assert picker.label == f"Report night · release {NIGHT}"
     assert set(picker.options) == {"✅ 2026-07-11", f"🔴 {NIGHT}"}
     assert picker.value == NIGHT                       # the confirmed night wins
     assert _report_param(at) == NIGHT
@@ -616,6 +617,9 @@ def test_run_listing_failure_falls_back_with_a_visible_warning():
     assert any("Could not check" in w.value for w in at.warning)
     by_label = {m.label: m.value for m in at.metric}
     assert by_label["🔴 Regressed"] == "2"  # still rendered, from the fallback
+    # The fallback night is not known to be the sidebar release's, so the
+    # picker label must not claim it for it.
+    assert _night_picker(at).label == "Report night"
     # The scope note above the tab must not contradict that warning by naming
     # the selected release as the one on screen.
     override = at.session_state["_scope_override"]
@@ -638,6 +642,9 @@ def test_foreign_release_night_attributes_against_that_nights_release():
     assert any("What changed upstream" in str(m.value) for m in at.markdown)
     captions = " ".join(c.value for c in at.caption)
     assert "Change entered: **2026-07-01 → 2026-07-04**" in captions
+    # The fallback night is not known to be the sidebar release's, so the
+    # picker label must not claim it for it.
+    assert _night_picker(at).label == "Report night"
     override = at.session_state["_scope_override"]
     assert override is not None
     assert override.release == f"{NIGHT} — the selected report night's release"
