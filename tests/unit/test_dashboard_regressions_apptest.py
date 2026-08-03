@@ -1112,16 +1112,18 @@ def _same_release_confirmed() -> MetricVerdict:
 
 
 def test_same_release_deep_link_opens_that_window():
-    """The email emits ``R..R`` for a same-release window (both ends set), so
+    """The email emits ``R..R@baseRun..onsetRun`` for a same-release window, so
     the dashboard must key that window the same way — otherwise the mail's link
-    lands on whichever window leads instead."""
+    lands on whichever window leads instead. The run ids are part of the token
+    because one release can hold several such windows (see
+    :func:`k4bench.regression.render.window_token`)."""
     at = _run(
         _report([_group(verdicts=[_windowed_confirmed(), _same_release_confirmed()])]),
         stacks_dates={STACK: [NIGHT]},
-        query_params={"window": "2026-07-04..2026-07-04"},
+        query_params={"window": "2026-07-04..2026-07-04@2026-07-03..2026-07-04"},
     )
     (picker,) = [c for c in at.segmented_control if c.label == "Change window"]
-    assert picker.value == "2026-07-04..2026-07-04"
+    assert picker.value == "2026-07-04..2026-07-04@2026-07-03..2026-07-04"
     captions = " ".join(c.value for c in at.caption)
     assert "Change entered within release **2026-07-04**" in captions
 
@@ -1140,7 +1142,32 @@ def test_open_and_same_release_windows_on_one_onset_stay_distinct():
     (picker,) = [c for c in at.segmented_control if c.label == "Change window"]
     assert sorted(picker.options) == [
         "up to 2026-07-04 · **1 regression**",
-        "within 2026-07-04 · **1 regression**",
+        "within 2026-07-04 (2026-07-03 → 2026-07-04) · **1 regression**",
+    ]
+
+
+def test_two_windows_inside_one_release_stay_distinct():
+    """Two run windows inside one release are two different changes — different
+    runs, different harness commits, different pull requests. Keyed on the
+    release pair alone they would collapse onto one pill and one deep link."""
+    first = _verdict(
+        "median_time_s", Severity.CONFIRMED, 0.15,
+        onset_run_id="2026-07-03", onset_run_date="2026-07-04",
+        last_accepted_run_id="2026-07-02", last_accepted_run_date="2026-07-04",
+    )
+    second = _verdict(
+        "wall_time_s", Severity.CONFIRMED, 0.20,
+        onset_run_id="2026-07-05", onset_run_date="2026-07-04",
+        last_accepted_run_id="2026-07-03", last_accepted_run_date="2026-07-04",
+    )
+    at = _run(
+        _report([_group(verdicts=[first, second])]),
+        stacks_dates={STACK: [NIGHT]},
+    )
+    (picker,) = [c for c in at.segmented_control if c.label == "Change window"]
+    assert sorted(picker.options) == [
+        "within 2026-07-04 (2026-07-02 → 2026-07-03) · **1 regression**",
+        "within 2026-07-04 (2026-07-03 → 2026-07-05) · **1 regression**",
     ]
 
 
@@ -1181,7 +1208,7 @@ def test_quiet_rerun_pills_report_what_the_release_confirmed():
     (picker,) = [c for c in at.segmented_control if c.label == "Change window"]
     assert sorted(picker.options) == [
         "2026-07-01 → 2026-07-04 · **1 confirmed** · none tonight",
-        "within 2026-07-04 · **1 confirmed** · none tonight",
+        "within 2026-07-04 (2026-07-03 → 2026-07-04) · **1 confirmed** · none tonight",
     ]
 
 

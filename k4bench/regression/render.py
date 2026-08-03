@@ -104,7 +104,12 @@ def _dashboard_link(dashboard_url: str, **params: str) -> str:
 WINDOW_WATCH_TOKEN = "watch"
 
 
-def window_token(base_release: str | None, onset_release: str | None) -> str:
+def window_token(
+    base_release: str | None,
+    onset_release: str | None,
+    base_run: str | None = None,
+    onset_run: str | None = None,
+) -> str:
     """A change window as a compact, URL-safe ``?window=`` value —
     ``2026-06-25..2026-06-27``, or ``..2026-06-27`` when the older end is open.
 
@@ -113,8 +118,19 @@ def window_token(base_release: str | None, onset_release: str | None) -> str:
     metrics and candidate PRs the mail was talking about. ``..`` rather than the
     displayed ``→`` keeps the value readable in a URL bar instead of
     percent-encoded.
+
+    A **same-release** window is qualified by its two run dates
+    (``2026-07-29..2026-07-29@2026-07-29..2026-07-30``): one release can hold
+    several such windows, and the release pair alone does not tell them apart —
+    two different changes would share one token and a deep link would land on
+    whichever the view happened to order first. The runs are appended only
+    there, so every cross-release and open token keeps the exact value it
+    already had.
     """
-    return f"{base_release or ''}..{onset_release or ''}"
+    window = f"{base_release or ''}..{onset_release or ''}"
+    if base_release and base_release == onset_release and base_run and onset_run:
+        return f"{window}@{base_run}..{onset_run}"
+    return window
 
 
 def window_href(
@@ -125,6 +141,8 @@ def window_href(
     sample: str,
     base_release: str | None,
     onset_release: str | None,
+    base_run: str | None = None,
+    onset_run: str | None = None,
     stack: str | None = None,
     report_night: str = "",
 ) -> str | None:
@@ -134,13 +152,15 @@ def window_href(
 
     Shared by every renderer that points at a window (the nightly email, the
     pull-request comments in :mod:`k4bench.blame.comment`), so one link shape is
-    defined once beside the ``?window=`` vocabulary it uses.
+    defined once beside the ``?window=`` vocabulary it uses. *base_run* and
+    *onset_run* qualify a same-release window, which its releases alone cannot
+    identify (see :func:`window_token`).
     """
     if not dashboard_url or not onset_release:
         return None
     params = dict(
         detector=detector, platform=platform, sample=sample,
-        window=window_token(base_release, onset_release),
+        window=window_token(base_release, onset_release, base_run, onset_run),
     )
     if stack:
         params["stack"] = stack

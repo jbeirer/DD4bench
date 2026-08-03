@@ -506,6 +506,45 @@ class BlameEntry:
         )
 
 
+#: The shape of a rank-group key: the run group's identity, the release window,
+#: and — for a same-release window only — the *run* window inside it.
+RankGroupKey = tuple[str, str, str, str, str, str | None, str | None]
+
+
+def rank_group_key(verdict) -> RankGroupKey:
+    """The group *verdict* is diffed, ranked, cached and rendered under.
+
+    Release dates alone identify a cross-release window: every metric of one
+    run group that stepped across one release boundary shares that boundary's
+    package diff and candidate set, so they belong together.
+
+    A **same-release** window has no such boundary to share. Its releases are
+    equal by definition, so keying on them alone would collapse genuinely
+    different change windows — ``run1 → run2`` and ``run2 → run3`` inside one
+    release are two different pairs of runs, two different harness commit
+    ranges, and two different sets of pull requests. Collapsed, a shared range
+    derived from them degenerates (the newest base run can meet the oldest
+    onset run, or overtake it) and both windows lose or misstate their
+    attribution. So the run ids join the key exactly there, and nowhere else —
+    a cross-release group keeps its existing identity, with the run slots
+    ``None`` so the tuple shape never varies.
+
+    Lives in this module, beside the schema, because the same grouping has to
+    hold everywhere these windows are formed or shown — the blame builder, the
+    dashboard's window picker, the nightly email's ranking cards. Three private
+    re-derivations of one rule is how those three drift apart. *verdict* is
+    duck-typed for the same reason the rest of this module is: it keeps the
+    schema free of a dependency on the engine's models.
+    """
+    key = (
+        verdict.detector, verdict.platform, verdict.sample,
+        verdict.last_accepted_run_date, verdict.onset_run_date,
+    )
+    if verdict.last_accepted_run_date == verdict.onset_run_date:
+        return (*key, verdict.last_accepted_run_id, verdict.onset_run_id)
+    return (*key, None, None)
+
+
 @dataclass(frozen=True)
 class BlameReport:
     """One night's blame across every confirmed regression."""

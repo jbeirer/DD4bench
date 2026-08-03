@@ -44,6 +44,7 @@ from k4bench.blame.models import (
     BlameReport,
     CandidatePR,
     StepAssessment,
+    rank_group_key,
 )
 from k4bench.regression.models import (
     MetricVerdict,
@@ -406,6 +407,7 @@ def _window_href(
         detector=section.detector, platform=section.platform,
         sample=section.sample,
         base_release=section.base_release, onset_release=section.onset_release,
+        base_run=section.base_run_id, onset_run=section.onset_run_id,
         stack=section.k4h_release, report_night=report_night,
     )
 
@@ -611,14 +613,19 @@ _MAX_CARD_COMPARE_LINKS = 3
 @dataclass
 class RankingCard:
     """One deduplicated ranking for a rank group
-    ``(detector, platform, sample, base_release, onset_release)`` — rendered
-    once no matter how many metrics share it."""
+    (:func:`~k4bench.blame.models.rank_group_key`) — rendered once no matter how
+    many metrics share it."""
 
     detector: str
     platform: str
     sample: str
     base_release: str | None
     onset_release: str
+    #: The group this card was built for — the key
+    #: :func:`_window_sections` matches its section on. Carried rather than
+    #: recomputed from the release pair, which does not identify a same-release
+    #: window.
+    rank_group: tuple
     n_signals: int
     total_window_signals: int
     n_new: int
@@ -653,8 +660,7 @@ def _ranking_cards(group: RunGroupReport, index: _BlameIndex) -> list[RankingCar
         entry, reused_from = index.lookup(v)
         if entry is None:
             continue
-        key = (v.detector, v.platform, v.sample, entry.base_release, entry.onset_release)
-        buckets.setdefault(key, []).append((v, entry, reused_from))
+        buckets.setdefault(rank_group_key(v), []).append((v, entry, reused_from))
 
     cards: list[RankingCard] = []
     for key, items in buckets.items():
@@ -683,8 +689,7 @@ def _ranking_cards(group: RunGroupReport, index: _BlameIndex) -> list[RankingCar
         ranked.sort(key=lambda c: (-c.score, c.repo, c.number))
         compare_links = sorted(compares)
         window_verdicts = [
-            v for v in group.regressions
-            if v.last_accepted_run_date == key[3] and v.onset_run_date == key[4]
+            v for v in group.regressions if rank_group_key(v) == key
         ]
         # A card's attribution is "reused" only when every signal came from one
         # historical night (a pure same-release reconfirmation cluster).
@@ -695,6 +700,7 @@ def _ranking_cards(group: RunGroupReport, index: _BlameIndex) -> list[RankingCar
         cards.append(RankingCard(
             detector=key[0], platform=key[1], sample=key[2],
             base_release=key[3], onset_release=key[4],
+            rank_group=key,
             n_signals=len(items),
             total_window_signals=len(window_verdicts),
             n_new=sum(1 for v, _entry, _reused in items if v.is_new_confirmation),
@@ -1011,6 +1017,12 @@ class WindowSection:
     onset_release: str | None
     verdicts: list[MetricVerdict]
     card: RankingCard | None
+    #: The window's two *run* ids, set only for a same-release window — where
+    #: the release pair does not identify the window and several can coexist in
+    #: one release (see :func:`~k4bench.blame.models.rank_group_key`). They
+    #: qualify the deep link and name the window for the reader.
+    base_run_id: str | None = None
+    onset_run_id: str | None = None
 
     @property
     def n_new(self) -> int:
@@ -1034,23 +1046,24 @@ def _window_sections(group: RunGroupReport, index: _BlameIndex) -> list[WindowSe
     Each metric appears in exactly one section — that is what makes two windows
     read as two changes rather than two theories about one.
     """
-    cards = {
-        (c.base_release, c.onset_release): c
-        for c in _ranking_cards(group, index)
-    }
+    cards = {c.rank_group: c for c in _ranking_cards(group, index)}
+    # Bucketed on the shared window rule, so two change windows inside one
+    # release stay two sections — they have different runs, different harness
+    # commits and different candidate PRs.
     buckets: dict[tuple, list[MetricVerdict]] = {}
     for v in group.regressions:
-        buckets.setdefault((v.last_accepted_run_date, v.onset_run_date), []).append(v)
+        buckets.setdefault(rank_group_key(v), []).append(v)
 
     sections = [
         WindowSection(
             detector=group.detector, platform=group.platform, sample=group.sample,
             k4h_release=group.k4h_release,
-            base_release=base, onset_release=onset,
+            base_release=key[3], onset_release=key[4],
+            base_run_id=key[5], onset_run_id=key[6],
             verdicts=sorted(verdicts, key=_rep_sort_key),
-            card=cards.get((base, onset)),
+            card=cards.get(key),
         )
-        for (base, onset), verdicts in buckets.items()
+        for key, verdicts in buckets.items()
     ]
     sections.sort(key=lambda s: (
         not bool(s.n_new), -s.n_new, -s.n_reconfirmed,
@@ -1060,9 +1073,17 @@ def _window_sections(group: RunGroupReport, index: _BlameIndex) -> list[WindowSe
 
 
 def _section_window_text(section: WindowSection) -> str:
-    """The section's window, named by its Key4hep releases."""
+    """The section's window, named by its Key4hep releases — and, for a
+    same-release window, by the two runs that bound it: one release can hold
+    several such windows, and "within release R" twice over would read as one
+    change described twice."""
     if section.same_release:
-        return f"within release {section.onset_release}"
+        runs = (
+            f" ({section.base_run_id} → {section.onset_run_id})"
+            if section.base_run_id and section.onset_run_id
+            and section.base_run_id != section.onset_run_id else ""
+        )
+        return f"within release {section.onset_release}{runs}"
     return _window_text(section.base_release, section.onset_release)
 
 

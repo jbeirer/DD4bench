@@ -201,11 +201,17 @@ def window_phrase(base: str | None, onset: str) -> str:
     Written once, here, because the second pass revises the first's judgement
     of the same window and must be describing the same thing."""
     if base and base == onset:
+        # Deliberately not "only the harness, the host or noise": the nightly
+        # pulls a mutable container tag and fetches its input files at run
+        # time, so an identical release does *not* pin the environment or the
+        # data. Naming a closed set of causes here would invite the model to
+        # rule out a real one it was never shown.
         return (
             f"within release {onset} — both runs sourced the SAME Key4hep "
             f"release, so the upstream simulation stack is identical by "
-            f"construction; only the benchmark harness, the host or noise can "
-            f"differ between them"
+            f"construction; differences may come from the benchmark harness or "
+            f"its configuration, the input files, the runner/container "
+            f"environment, the host, or measurement noise"
         )
     if base:
         return f"{base} → {onset}"

@@ -1375,3 +1375,107 @@ def test_a_same_release_window_survives_unreadable_stack_provenance(monkeypatch)
     )
     assert [r.package for r in blame.entries[0].repos] == ["k4bench"]
     assert blame.entries[0].n_unchanged == 0
+
+
+def test_two_run_windows_inside_one_release_get_their_own_harness_range(monkeypatch):
+    # The grouping key's whole reason for existing. Metric A stepped between
+    # run1 and run2; metric B between run2 and run3. Both windows sit inside
+    # release R, so a key built from release dates alone puts them in one group
+    # — and the shared range then narrows to max(base)=run2 meeting
+    # min(onset)=run2, an empty interval that silently drops the attribution
+    # from BOTH metrics. Non-overlapping windows are worse: the narrowing
+    # inverts and yields a backwards compare URL.
+    _stub_resolve(monkeypatch, lambda *a, **k: RepoResolution())
+    R = "2026-07-04"
+    a = dataclasses.replace(
+        _verdict(base=R, onset=R, metric="wall_time_s"),
+        last_accepted_run_id="2026-07-04", onset_run_id="2026-07-05",
+    )
+    b = dataclasses.replace(
+        _verdict(base=R, onset=R, metric="peak_rss_mb"),
+        last_accepted_run_id="2026-07-05", onset_run_id="2026-07-06",
+    )
+    lookup = _commits({
+        _hkey(R, "2026-07-04"): ("1" * 40, _RUN_URL),
+        _hkey(R, "2026-07-05"): ("2" * 40, _RUN_URL),
+        _hkey(R, "2026-07-06"): ("3" * 40, _RUN_URL),
+    })
+    blame = build_blame_report(
+        _report([a, b]), packages_for_release=_provenance({
+            (_PLAT, R): {"k4geo": _pkgs("a" * 40)},
+        }),
+        k4bench_commit_for_run=lookup, github=GitHubClient(),
+    )
+    ranges = {
+        e.metric: next(r for r in e.repos if r.package == "k4bench")
+        for e in blame.entries
+    }
+    assert len(blame.entries) == 2
+    assert (ranges["wall_time_s"].base_commit,
+            ranges["wall_time_s"].head_commit) == ("1" * 40, "2" * 40)
+    assert (ranges["peak_rss_mb"].base_commit,
+            ranges["peak_rss_mb"].head_commit) == ("2" * 40, "3" * 40)
+
+
+def test_two_run_windows_in_one_release_are_ranked_separately(monkeypatch):
+    # Two windows means two candidate sets, so they must not share one
+    # inference: a single prompt would describe one range while scoring the
+    # other's pull requests.
+    def resolve(client, slug, base, head):
+        number = {"1" * 40: 10, "2" * 40: 20}.get(base, 99)
+        return RepoResolution(candidates=[
+            CandidatePR(repo=slug, number=number, title="t", author="a", url="u",
+                        files=("k4bench/runner/executor.py",)),
+        ])
+    _stub_resolve(monkeypatch, resolve)
+    R = "2026-07-04"
+    a = dataclasses.replace(
+        _verdict(base=R, onset=R, metric="wall_time_s"),
+        last_accepted_run_id="2026-07-04", onset_run_id="2026-07-05",
+    )
+    b = dataclasses.replace(
+        _verdict(base=R, onset=R, metric="peak_rss_mb"),
+        last_accepted_run_id="2026-07-05", onset_run_id="2026-07-06",
+    )
+    lookup = _commits({
+        _hkey(R, "2026-07-04"): ("1" * 40, _RUN_URL),
+        _hkey(R, "2026-07-05"): ("2" * 40, _RUN_URL),
+        _hkey(R, "2026-07-06"): ("3" * 40, _RUN_URL),
+    })
+    ranker = _FakeRanker({("key4hep/k4Bench", 10): Ranking(80.0, "x"),
+                          ("key4hep/k4Bench", 20): Ranking(70.0, "y")})
+    build_blame_report(
+        _report([a, b]), packages_for_release=_provenance({
+            (_PLAT, R): {"k4geo": _pkgs("a" * 40)},
+        }),
+        k4bench_commit_for_run=lookup, github=GitHubClient(), ranker=ranker,
+    )
+    assert len(ranker.requests) == 2   # one call per window, not one shared
+    assert [{c.number for c in req.candidates} for req in ranker.requests] == [
+        {10}, {20},
+    ]
+
+
+def test_a_degenerate_harness_range_is_refused(monkeypatch, caplog):
+    # A cross-release group can still disagree on run ids (its key does not
+    # carry them). If the narrowing ever produced a base run at or after the
+    # onset run, the compare URL would be reversed — silently, confidently
+    # wrong. Refuse instead.
+    from k4bench.blame.builder import _harness_change
+
+    v1 = dataclasses.replace(
+        _verdict(), last_accepted_run_id="2026-07-03", onset_run_id="2026-07-06",
+    )
+    v2 = dataclasses.replace(
+        _verdict(metric="peak_rss_mb"),
+        last_accepted_run_id="2026-07-07", onset_run_id="2026-07-08",
+    )
+    called = []
+
+    def lookup(*key):
+        called.append(key)
+        return ("1" * 40, _RUN_URL)
+
+    assert _harness_change(lookup, [v1, v2]) is None
+    assert "is not an interval" in caplog.text
+    assert called == []  # refused before spending a provenance read

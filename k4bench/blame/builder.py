@@ -62,8 +62,10 @@ from k4bench.blame.models import (
     BlameEntry,
     BlameReport,
     HistoricalRef,
+    RankGroupKey,
     RepoBlame,
     StepAssessment,
+    rank_group_key,
 )
 from k4bench.blame.prompt import HARNESS_PACKAGE
 from k4bench.blame.rank import (
@@ -159,6 +161,8 @@ def _attributable(v: MetricVerdict) -> bool:
     return bool(onset and base and base <= onset)
 
 
+
+
 def build_blame_report(
     report: NightlyReport,
     *,
@@ -204,27 +208,26 @@ def build_blame_report(
     #: only detector/sample are independent enough to require splitting. Each
     #: verdict keeps its own label in the prompt (see
     #: :class:`~k4bench.blame.rank.MetricStep`) so the model can still tell
-    #: configs apart without the batch being fragmented over them.
-    verdicts_by_rank_group: dict[tuple[str, str, str, str, str], list[MetricVerdict]] = {}
+    #: configs apart without the batch being fragmented over them. A
+    #: same-release window additionally keys on its two *run* ids — see
+    #: :func:`rank_group_key`, which owns the whole rule.
+    verdicts_by_rank_group: dict[RankGroupKey, list[MetricVerdict]] = {}
     for v in verdicts:
-        rank_group = (
-            v.detector, v.platform, v.sample,
-            v.last_accepted_run_date, v.onset_run_date,
-        )
-        verdicts_by_rank_group.setdefault(rank_group, []).append(v)
+        verdicts_by_rank_group.setdefault(rank_group_key(v), []).append(v)
 
     diff_cache: dict[tuple[str, str, str], list[PackageChange] | None] = {}
     unchanged_cache: dict[tuple[str, str, str], int] = {}
     resolution_cache: dict[tuple[str, str, str], RepoResolution] = {}
-    #: The harness's own movement, resolved once per rank group. Keyed like
-    #: :data:`verdicts_by_rank_group` — on *release* dates — while the range
-    #: itself comes from the group's run ids (:func:`_harness_change`), so a
-    #: group whose verdicts disagree on run ids is resolved once, consistently,
+    #: The harness's own movement, resolved once per rank group and keyed like
+    #: :data:`verdicts_by_rank_group` (:func:`rank_group_key`) — which is what
+    #: keeps two different run windows inside one release from sharing a range
+    #: they do not have. The range itself comes from the group's run ids
+    #: (:func:`_harness_change`), so a group is resolved once, consistently,
     #: rather than by whichever verdict reaches the loop first. Deliberately
     #: separate from :data:`diff_cache`: that one is release-keyed and shared
     #: with the historical walk, whose boundaries have no run ids at all, and
     #: the harness must never leak into it.
-    harness_cache: dict[tuple[str, str, str, str, str], PackageChange | None] = {}
+    harness_cache: dict[RankGroupKey, PackageChange | None] = {}
     #: One rank inference per rank group, shared by every metric that stepped
     #: across it (they see the same diff and candidate set) — the dashboard and
     #: the email show one verdict per group, not one per metric. Keyed like
@@ -232,7 +235,7 @@ def build_blame_report(
     #: the diff/candidate PRs really are platform+release-scoped (every
     #: detector on a platform shares one package set), but the *prompt text*
     #: names one detector/sample and must not be shared across them.
-    rank_cache: dict[tuple[str, str, str, str, str], RankResult] = {}
+    rank_cache: dict[RankGroupKey, RankResult] = {}
     #: Non-confirming configurations per ``(scope, window)`` — the controls the
     #: ranker weighs reach against. Cached because one window's controls are the
     #: same for every metric of a run group, and computing them walks the whole
@@ -446,10 +449,7 @@ def build_blame_report(
             # known to have moved: an entry naming only k4Bench while the stack
             # is unknown would read as "the stack was checked and stood still".
             continue
-        rank_group = (
-            v.detector, v.platform, v.sample,
-            v.last_accepted_run_date, v.onset_run_date,
-        )
+        rank_group = rank_group_key(v)
         if rank_group not in harness_cache:
             harness_cache[rank_group] = _harness_change(
                 k4bench_commit_for_run, verdicts_by_rank_group[rank_group]
@@ -590,11 +590,13 @@ def _harness_change(
     detector and sample — so a same-day re-run that left a sibling group at a
     different commit cannot leak into this group's range.
 
-    A rank group is keyed on release dates, so nothing enforces that its
-    verdicts agree on run ids. When they disagree, the narrowest range
-    consistent with all of them wins (newest base run, oldest onset run) — a
-    false negative is cheaper than accusing a pull request that merged after
-    the step was already measured — and the disagreement is logged.
+    A *same-release* group agrees on its run ids by construction — they are
+    part of its key (:func:`rank_group_key`). A cross-release group is keyed on
+    release dates only, so nothing enforces agreement there; when its verdicts
+    disagree, the narrowest range consistent with all of them wins (newest base
+    run, oldest onset run) — a false negative is cheaper than accusing a pull
+    request that merged after the step was already measured — and the
+    disagreement is logged.
 
     ``None`` — no lookup injected, an endpoint that cannot be read, a harness
     that did not move, or two endpoints belonging to different repositories
@@ -617,11 +619,24 @@ def _harness_change(
             v.detector, v.sample, v.last_accepted_run_date, v.onset_run_date,
             sorted(base_ids), sorted(onset_ids),
         )
+    base_id, onset_id = max(base_ids), min(onset_ids)
+    if base_id >= onset_id:
+        # The narrowing collapsed or inverted the range. Run ids are dates, so
+        # a base run at or after the onset run describes no interval at all —
+        # and a reversed compare URL is silently, confidently wrong, which is
+        # the one output this whole feature exists to avoid.
+        _log.warning(
+            "blame: %s/%s %s..%s — the harness range narrowed to %s..%s, which "
+            "is not an interval; not attributing the harness for this window",
+            v.detector, v.sample, v.last_accepted_run_date, v.onset_run_date,
+            base_id, onset_id,
+        )
+        return None
     base = k4bench_commit_for_run(
-        v.detector, v.platform, v.last_accepted_run_date, v.sample, max(base_ids)
+        v.detector, v.platform, v.last_accepted_run_date, v.sample, base_id
     )
     onset = k4bench_commit_for_run(
-        v.detector, v.platform, v.onset_run_date, v.sample, min(onset_ids)
+        v.detector, v.platform, v.onset_run_date, v.sample, onset_id
     )
     if base is None or onset is None:
         return None
@@ -841,8 +856,8 @@ def _rank_group(
     verdicts: list[MetricVerdict],
     repos: list[RepoBlame],
     texts: dict[tuple[str, int], PRText],
-    rank_group: tuple[str, str, str, str, str],
-    rank_cache: dict[tuple[str, str, str, str, str], RankResult],
+    rank_group: RankGroupKey,
+    rank_cache: dict[RankGroupKey, RankResult],
     *,
     outcomes: tuple,
     changed_count: Callable[[str, str | None, str], int | None],
@@ -853,8 +868,9 @@ def _rank_group(
     """The ranker's judgement of one rank group: a score per candidate, and its
     read of the step itself.
 
-    Memoized on *rank_group* — (detector, platform, sample, base, onset),
-    never just the release boundary: every confirmed metric of *one run group*
+    Memoized on *rank_group* (:func:`rank_group_key`) — detector, platform,
+    sample and the window, plus the window's run ids when its two ends are one
+    release; never just the release boundary: every confirmed metric of *one run group*
     that stepped across one release boundary shares one diff and one candidate
     set, so it needs a single inference rather than one per metric — *every*
     metric in *verdicts* rides in the one prompt (see
