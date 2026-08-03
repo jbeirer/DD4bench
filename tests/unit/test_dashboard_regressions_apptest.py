@@ -4,9 +4,9 @@ The tab shows exactly the run group matching the sidebar's (detector,
 platform, sample) — the cross-detector picture lives in the Overview tab —
 opens the trend preview on the most severe flag, and offers the sidebar
 release's report nights: the default is the most attention-worthy night (a
-confirmed regression outranks a watch outranks a quiet rerun), a pill picker
-always shows every night on offer (even a single one), and ``?report=`` pins
-one directly. All remote calls are stubbed; nothing touches the network.
+confirmed regression outranks a watch outranks a quiet rerun), the night
+picker always renders (even for a single night on offer), and ``?report=``
+pins one directly. All remote calls are stubbed; nothing touches the network.
 """
 
 from __future__ import annotations
@@ -133,6 +133,18 @@ def _run(report_json=None, detector="CLD", platform=PLAT, sample="single_e",
     return at
 
 
+def _night_picker(at: AppTest):
+    """The report-night selectbox."""
+    return at.selectbox(key="regr_night")
+
+
+def _preview(at: AppTest):
+    """The trend-preview selectbox — its key is per-scope, so select by label,
+    which also asserts there is exactly one."""
+    (box,) = [s for s in at.selectbox if s.label == "Trend preview"]
+    return box
+
+
 # ── the sidebar scope selects one run group ───────────────────────────────────
 
 def test_scoped_group_renders_flat_without_expanders():
@@ -142,7 +154,7 @@ def test_scoped_group_renders_flat_without_expanders():
     # preview lists one option per flagged metric, and the other detector's
     # group leaves no trace.
     assert not at.expander
-    (preview,) = at.selectbox
+    preview = _preview(at)
     assert len(preview.options) == 4  # "—" + 3 flagged metrics (OK earns none)
     assert "IDEA" not in at.markdown[0].value if at.markdown else True
 
@@ -159,13 +171,15 @@ def test_banner_counts_the_groups_verdicts():
 
 def test_trend_preview_defaults_to_the_worst_confirmed_flag():
     at = _run(_report([_group(verdicts=_FLAGGED)]))
-    # A single-night release still shows the report-night pill (one option),
+    # A single-night release still shows the report-night picker (one option),
     # separate from the trend-preview selectbox. The preview opens on the
     # largest-|Δ| CONFIRMED metric — not "—", and not the larger-|Δ| WATCH —
     # with its Δ vs baseline right in the option text.
-    (night_pill,) = at.segmented_control
-    assert list(night_pill.options) == [NIGHT]
-    (preview,) = at.selectbox
+    picker = _night_picker(at)
+    assert picker.label.startswith("Report night")
+    # A selectbox option carries its display label — the badge and the night.
+    assert list(picker.options) == [f"🔴 {NIGHT}"]
+    preview = _preview(at)
     assert preview.value.metric == "peak_rss_mb"
     assert preview.value.pct_change == -0.35
     assert preview.options[1] == "🔴 Regression · peak RSS · baseline — Δ -35.0%"
@@ -218,8 +232,8 @@ def _confirmed_report() -> dict:
 def test_newest_release_shows_the_latest_report():
     # The selected release owns the triple's newest run → the latest report,
     # even when it is newer than that run (a missing-run night's failure must
-    # stay visible). Only the latest night has a report, so the picker shows
-    # just that one pill.
+    # stay visible). Only the latest night has a report, so the picker offers
+    # just that one night.
     at = _run(
         reports_map={"2026-07-11": _report([_group(
             verdicts=[], job_failures=["no run uploaded for 2026-07-11"],
@@ -229,8 +243,8 @@ def test_newest_release_shows_the_latest_report():
     )
     by_label = {m.label: m.value for m in at.metric}
     assert by_label["❌ Failures"] == "1"
-    (picker,) = at.segmented_control
-    assert list(picker.options) == ["2026-07-11"]
+    picker = _night_picker(at)
+    assert list(picker.options) == ["❌ 2026-07-11"]
     assert not any("Historical view" in c.value for c in at.caption)
 
 
@@ -245,9 +259,8 @@ def test_confirmed_rerun_defaults_over_a_later_quiet_night():
         dates=("2026-07-11", NIGHT),
         stacks_dates={STACK: [NIGHT, "2026-07-11"]},
     )
-    (picker,) = at.segmented_control
-    assert picker.key == "regr_night"
-    assert set(picker.options) == {"2026-07-11", NIGHT}
+    picker = _night_picker(at)
+    assert set(picker.options) == {"✅ 2026-07-11", f"🔴 {NIGHT}"}
     assert picker.value == NIGHT                       # the confirmed night wins
     assert _report_param(at) == NIGHT
     by_label = {m.label: m.value for m in at.metric}
@@ -263,7 +276,7 @@ def test_later_confirmation_defaults_over_an_earlier_watch():
         dates=("2026-07-11", NIGHT),
         stacks_dates={STACK: [NIGHT, "2026-07-11"]},
     )
-    (picker,) = at.segmented_control
+    picker = _night_picker(at)
     assert picker.value == "2026-07-11"
     by_label = {m.label: m.value for m in at.metric}
     assert by_label["🔴 Regressed"] == "2"
@@ -276,7 +289,7 @@ def test_multiple_quiet_reruns_default_to_the_newest():
         dates=("2026-07-11", NIGHT),
         stacks_dates={STACK: [NIGHT, "2026-07-11"]},
     )
-    (picker,) = at.segmented_control
+    picker = _night_picker(at)
     assert picker.value == "2026-07-11"
     assert _report_param(at) == "2026-07-11"
 
@@ -295,7 +308,7 @@ def test_latest_report_missing_run_failure_stays_the_default():
         dates=("2026-07-11", NIGHT),
         stacks_dates={STACK: [NIGHT]},
     )
-    (picker,) = at.segmented_control
+    picker = _night_picker(at)
     assert picker.value == "2026-07-11"
     by_label = {m.label: m.value for m in at.metric}
     assert by_label["❌ Failures"] == "1"
@@ -310,7 +323,7 @@ def test_report_query_param_overrides_the_default():
         stacks_dates={STACK: [NIGHT, "2026-07-11"]},
         query_params={"report": "2026-07-11"},
     )
-    (picker,) = at.segmented_control
+    picker = _night_picker(at)
     assert picker.value == "2026-07-11"
     by_label = {m.label: m.value for m in at.metric}
     assert by_label["🔴 Regressed"] == "0"
@@ -335,17 +348,17 @@ def test_switching_report_night_replaces_visible_trend_option():
         stacks_dates={STACK: [NIGHT, "2026-07-11"]},
         query_params={"report": NIGHT},
     )
-    assert at.selectbox[0].value.metric == "wall_time_s"
-    assert "wall time" in at.selectbox[0].options[1]
-    assert "20.0%" in at.selectbox[0].options[1]
+    assert _preview(at).value.metric == "wall_time_s"
+    assert "wall time" in _preview(at).options[1]
+    assert "20.0%" in _preview(at).options[1]
 
-    at.segmented_control(key="regr_night").set_value("2026-07-11").run()
+    _night_picker(at).set_value("2026-07-11").run()
     assert not at.exception, at.exception
-    assert len(at.selectbox) == 1
-    assert at.selectbox[0].value.metric == "peak_rss_mb"
-    assert "peak RSS" in at.selectbox[0].options[1]
-    assert "45.0%" in at.selectbox[0].options[1]
-    assert all("wall time" not in option for option in at.selectbox[0].options)
+    preview = _preview(at)  # exactly one — no stale sibling from the old night
+    assert preview.value.metric == "peak_rss_mb"
+    assert "peak RSS" in preview.options[1]
+    assert "45.0%" in preview.options[1]
+    assert all("wall time" not in option for option in preview.options)
 
 
 def test_invalid_report_query_param_falls_back_to_the_default():
@@ -355,7 +368,7 @@ def test_invalid_report_query_param_falls_back_to_the_default():
         stacks_dates={STACK: [NIGHT, "2026-07-11"]},
         query_params={"report": "2099-01-01"},
     )
-    (picker,) = at.segmented_control
+    picker = _night_picker(at)
     assert picker.value == NIGHT
     assert _report_param(at) == NIGHT
 
@@ -384,7 +397,7 @@ def test_switching_picker_keeps_release_attribution_but_changes_verdicts():
     )
     assert "AI-generated PR ranking" in " ".join(c.value for c in at.caption)
 
-    at.segmented_control(key="regr_night").set_value("2026-07-11").run()
+    _night_picker(at).set_value("2026-07-11").run()
     assert not at.exception, at.exception
     assert {m.label: m.value for m in at.metric}["🔴 Regressed"] == "0"
     assert "AI-generated PR ranking" in " ".join(c.value for c in at.caption)
@@ -408,9 +421,9 @@ def test_historical_view_caption_when_not_the_latest_report():
     captions = " ".join(c.value for c in at.caption)
     assert "Historical view" in captions and "2026-07-07" in captions
     # The confirmed night (07-07) is the default over the earlier quiet 07-06.
-    (picker,) = at.segmented_control
+    picker = _night_picker(at)
     assert picker.value == "2026-07-07"
-    assert set(picker.options) == {"2026-07-07", "2026-07-06"}
+    assert set(picker.options) == {"🔴 2026-07-07", "✅ 2026-07-06"}
 
 
 # ── report-night state must not leak across sidebar scopes ────────────────────
@@ -471,17 +484,17 @@ def test_switching_detector_redefaults_the_picker():
     )
     at.run()
     assert not at.exception, at.exception
-    assert at.segmented_control[0].value == NIGHT              # CLD's confirmed night
+    assert _night_picker(at).value == NIGHT                    # CLD's confirmed night
     assert {m.label: m.value for m in at.metric}["🔴 Regressed"] == "2"
-    at.selectbox[0].set_value("—").run()                       # hide CLD's preview
-    assert at.selectbox[0].value is None
+    _preview(at).set_value("—").run()                          # hide CLD's preview
+    assert _preview(at).value is None
 
     at.session_state["_i"] = 1                                 # switch to IDEA
     at.run()
     assert not at.exception, at.exception
-    assert at.segmented_control[0].value == "2026-07-11"       # re-defaulted, not 07-10
+    assert _night_picker(at).value == "2026-07-11"             # re-defaulted, not 07-10
     assert {m.label: m.value for m in at.metric}["🔴 Regressed"] == "2"
-    assert at.selectbox[0].value is not None                   # IDEA's worst flag reopens
+    assert _preview(at).value is not None                      # IDEA's worst flag reopens
 
 
 def test_multi_single_multi_navigation_does_not_strand_state():
@@ -505,19 +518,19 @@ def test_multi_single_multi_navigation_does_not_strand_state():
         default_timeout=30,
     )
     at.run()                                                   # multi (CLD)
-    assert at.segmented_control[0].value == NIGHT
+    assert _night_picker(at).value == NIGHT
     assert at.session_state["regr_night"] == NIGHT
 
     at.session_state["_i"] = 1                                 # single (SiD, older release)
     at.run()
     assert not at.exception, at.exception
-    assert at.segmented_control[0].value == "2026-07-08"       # the one pill on offer
+    assert _night_picker(at).value == "2026-07-08"             # the one night on offer
     assert at.session_state["regr_night"] == "2026-07-08"      # not stranded from CLD's scope
 
     at.session_state["_i"] = 0                                 # back to multi (CLD)
     at.run()
     assert not at.exception, at.exception
-    assert at.segmented_control[0].value == NIGHT              # re-defaults cleanly
+    assert _night_picker(at).value == NIGHT                    # re-defaults cleanly
 
 
 # ── one malformed historical report must not blank the tab ────────────────────
@@ -532,10 +545,10 @@ def test_malformed_historical_report_does_not_blank_the_tab():
         dates=("2026-07-11", NIGHT),
         stacks_dates={STACK: [NIGHT, "2026-07-11"]},
     )
-    # Only the valid night parsed, so the picker shows just that one pill, and
-    # its confirmed banner shows.
-    (picker,) = at.segmented_control
-    assert list(picker.options) == [NIGHT]
+    # Only the valid night parsed, so the picker offers just that one night,
+    # and its confirmed banner shows.
+    picker = _night_picker(at)
+    assert list(picker.options) == [f"🔴 {NIGHT}"]
     assert {m.label: m.value for m in at.metric}["🔴 Regressed"] == "2"
     assert any("could not be loaded" in c.value for c in at.caption)
 
@@ -944,7 +957,7 @@ def test_rerun_confirming_a_later_window_shows_both_changes():
     assert not any("Pull request" in d.value.columns for d in at.dataframe)
     # The trend preview offers only the metric whose change entered in *this*
     # window — the picker scopes the plot, not just the attribution.
-    (preview,) = at.selectbox
+    preview = _preview(at)
     assert [o for o in preview.options if o != "—"] == [
         "🔴 Regression · median event time · baseline — Δ +15.0%"
     ]
@@ -962,7 +975,7 @@ def test_rerun_confirming_a_later_window_shows_both_changes():
     pr_frames = [d.value for d in at.dataframe if "Pull request" in d.value.columns]
     assert len(pr_frames) == 1
     assert list(pr_frames[0]["Pull request"]) == ["key4hep/k4geo#1234"]
-    (preview,) = at.selectbox
+    preview = _preview(at)
     assert [o for o in preview.options if o != "—"] == [
         "🔴 Regression · wall time · baseline — Δ +20.0%"
     ]
@@ -1024,7 +1037,7 @@ def test_watch_metrics_stay_reachable_beside_the_change_windows():
     ]
     at = picker.set_value("watch").run()
     assert not at.exception, at.exception
-    (preview,) = at.selectbox
+    preview = _preview(at)
     assert [o for o in preview.options if o != "—"] == [
         "⚠️ Watch · mean event time · baseline — Δ +50.0%"
     ]

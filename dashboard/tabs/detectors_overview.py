@@ -40,6 +40,7 @@ from k4bench.regression.models import NightlyReport, RunGroupReport, Severity
 from k4bench.regression.render import _detector_badge, from_json
 from remote_cache import _cached_fetch_reports, _cached_list_report_dates
 from tabs import _blame, _nightly_email
+from tabs._night_picker import render_night_picker
 from tabs._regression_flags import (
     SEVERITY_RANK,
     add_severity_markers,
@@ -49,7 +50,7 @@ from tabs._regression_flags import (
 )
 from tabs._regression_trend import render_metric_picker
 from tabs._reliability import render_reliability_scope
-from ui_chrome import EXAMPLE_DETECTORS, _drop_stale_selection, seed_query_param
+from ui_chrome import EXAMPLE_DETECTORS, seed_query_param
 from ui_utils import (
     _DASHES,
     _METRIC_LABELS,
@@ -1164,35 +1165,23 @@ def _select_report_night(
 
     The options are the nights this tab has loaded anyway (the sidebar's trend
     window plus the newest report), so picking one costs no download. The
-    picker re-defaults when the sidebar scope changes: two scopes can share the
-    same night *dates* while flagging their regression on different ones, so a
-    night carried over from the previous scope could open on a quiet report and
-    hide exactly the regression this view exists to surface. The reset drops
-    ``?report=`` along with the stored night — this picker writes its selection
-    back to the URL, so leaving the parameter behind would re-seed the old
-    night on the same run (see :func:`ui_utils._reset_widget_on_scope`).
+    picker re-defaults when the sidebar scope changes (see
+    :func:`tabs._night_picker.render_night_picker` for why a carried-over
+    night must not survive one).
     """
     nights = sorted(scoped_groups, reverse=True)
-    _reset_widget_on_scope(_NIGHT_KEY, (platform, sample), query_param="report")
-    _drop_stale_selection(_NIGHT_KEY, nights)   # night out of the window → re-default
-    seed_query_param(_NIGHT_KEY, "report", nights)
-    if _NIGHT_KEY not in st.session_state:
-        st.session_state[_NIGHT_KEY] = nights[0]
-    night = st.selectbox(
-        "Report night",
+    return render_night_picker(
         nights,
-        format_func=lambda n: f"{_detector_badge(scoped_groups[n])} {n}",
         key=_NIGHT_KEY,
-        width=260,
+        badge=lambda n: _detector_badge(scoped_groups[n]),
+        default=nights[0],
+        latest=latest_night,
+        reset_scope=(platform, sample),
         help="Which night's report the verdicts below come from — the badge is "
              "that night's worst state across the scoped detectors. Defaults "
              "to the newest; the trend window sets how far back the picker "
              "reaches. The figures' history and the landscape are unaffected.",
-    ) or nights[0]
-    st.query_params["report"] = night
-    if night != latest_night:
-        st.caption(f"Historical view · report night **{night}**")
-    return night
+    )
 
 
 def _render_status_view(

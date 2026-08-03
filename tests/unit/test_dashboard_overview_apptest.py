@@ -291,8 +291,9 @@ def test_status_view_renders_banner_and_roster():
     roster = at.dataframe[0].value
     assert sorted(roster["Detector"]) == ["CLD_o2_v08", "IDEA_o1_v03", "SiD"]
     # All quiet → no flagged metric to preview (the night picker is the view's
-    # only selectbox).
+    # only selectbox, wearing the shared picker's label).
     assert [s.key for s in at.selectbox] == ["det_ov_report_night"]
+    assert at.selectbox[0].label == "Report night"
     assert not at.get("plotly_chart")
 
 
@@ -844,6 +845,7 @@ def test_email_view_night_picker_offers_every_loaded_night_newest_first():
     picker = at.selectbox(key="det_ov_email_night")
     # Newest first, each badged with that night's worst state across *every*
     # detector in the report, and deep-linkable through ?report=.
+    assert picker.label == "Report night"
     assert picker.options == ["✅ 2026-07-11", "✅ 2026-07-10", "✅ 2026-07-09"]
     assert picker.value == "2026-07-11"
     assert at.query_params["report"] == ["2026-07-11"]

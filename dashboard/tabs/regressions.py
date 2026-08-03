@@ -52,6 +52,7 @@ from remote_cache import (
 from k4bench.blame.models import BlameReport, BlameSchemaError
 from k4bench.provenance.diff import diff_packages
 from tabs import _blame
+from tabs._night_picker import render_night_picker
 from tabs._regression_flags import (
     attention_key,
     render_candidate_ranking,
@@ -62,7 +63,6 @@ from tabs._regression_trend import (
 )
 from tabs.stack_changes import _release, deep_link, packages_for_release
 from ui_chrome import _drop_stale_selection, seed_query_param
-from ui_utils import _reset_widget_on_scope
 
 _log = logging.getLogger(__name__)
 
@@ -118,8 +118,25 @@ def render(
             "report)."
         )
     default_night = _pick_night(reports, detector, platform, sample)
-    night = _select_night(reports, default_night, detector, platform, sample, stack)
-    st.query_params["report"] = night
+    night = render_night_picker(
+        sorted(reports, reverse=True),
+        key=_NIGHT_KEY,
+        badge=lambda n: _night_badge(reports[n], detector, platform, sample),
+        default=default_night,
+        latest=max(dates),
+        label=f"Report night · release {_release(stack)}",
+        reset_scope=(detector, platform, sample, stack),
+        caption_release=lambda n: _night_release(
+            reports[n], detector, platform, sample, stack,
+        ),
+        help="Every night of a release is judged against the same baseline, "
+             "so a confirmed regression repeats on each night that trips — "
+             "but nights can still differ (the first strike is only a WATCH, "
+             "and a marginal night can come out OK). Defaults to the most "
+             "attention-worthy night; pick another to see that night's verdicts. "
+             "Package and PR attribution stays fixed across the release's "
+             "reruns.",
+    )
     report = reports[night]
 
     # A (detector, platform, sample) triple is one run group — the report's
@@ -129,11 +146,6 @@ def render(
     # sidebar's; empty when the run group records no release at all.
     group = _night_group(report, detector, platform, sample)
     effective = group.k4h_release if group is not None else ""
-    if night != max(dates):
-        st.caption(
-            f"Historical view · release **{_release(effective or stack)}** · "
-            f"report night **{night}**"
-        )
     if group is None:
         _render_no_group_notice(report, detector, sample, night)
         return None
@@ -461,56 +473,20 @@ def _night_badge(
     return _detector_badge([g]) if g is not None else "❔"
 
 
+#: Session key of the report-night picker. Shares ``?report=`` with the
+#: Overview's pickers — one parameter meaning "the report night being read".
 _NIGHT_KEY = "regr_night"
 
 
-def _forget_stale_scope(scope: tuple[str, ...]) -> None:
-    """Reset the night picker when the sidebar scope changes.
-
-    The picker uses one session key across every detector/platform/sample/
-    release, but two scopes can share the same night *dates* while flagging
-    their regression on *different* ones — so a night carried over from the
-    previous scope could open a new one on a quiet report and hide exactly the
-    regression this view exists to surface. On a scope change we drop both the
-    stored night and the ``?report=`` we wrote for the old scope, so the new
-    scope re-defaults. The incoming ``?report=`` on the first load (no prior
-    scope recorded) is preserved, keeping deep links intact."""
-    _reset_widget_on_scope(_NIGHT_KEY, scope, query_param="report")
-
-
-def _select_night(
-    reports: dict[str, NightlyReport], default_night: str,
-    detector: str, platform: str, sample: str, stack: str,
+def _night_release(
+    report: NightlyReport, detector: str, platform: str, sample: str, stack: str
 ) -> str:
-    """Return the report night to render, always as a pill so the exact night
-    on screen is never implicit — one pill and no caption for a release
-    benchmarked on a single night, several pills otherwise. The picker
-    defaults to *default_night* (the most attention-worthy), is authoritative
-    via ``?report=`` for deep links, and re-defaults cleanly when the sidebar
-    scope changes."""
-    _forget_stale_scope((detector, platform, sample, stack))
-    nights = sorted(reports, reverse=True)
-    key = _NIGHT_KEY
-    _drop_stale_selection(key, nights)          # stale night → re-default
-    seed_query_param(key, "report", nights)     # ?report= wins when it's valid
-    if key not in st.session_state:
-        st.session_state[key] = default_night
-    night = st.segmented_control(
-        "Report night",
-        nights,
-        format_func=lambda n: f"{_night_badge(reports[n], detector, platform, sample)} {n}",
-        key=key,
-        help="Every night of a release is judged against the same baseline, "
-             "so a confirmed regression repeats on each night that trips — "
-             "but nights can still differ (the first strike is only a WATCH, "
-             "and a marginal night can come out OK). Defaults to the most "
-             "attention-worthy night; pick another to see that night's verdicts. "
-             "Package and PR attribution stays fixed across the release's "
-             "reruns.",
-    )
-    if night is None:  # segmented_control lets the active pill be deselected
-        night = default_night
-    return night
+    """The release a historical night's caption names: the night's own run
+    group's, which the fallback nights need not share with the sidebar's.
+    Falls back to the sidebar's when the night has no group for the triple
+    (a scope miss) or the group records no release."""
+    g = _night_group(report, detector, platform, sample)
+    return _release((g.k4h_release if g is not None else "") or stack)
 
 
 def _render_no_group_notice(

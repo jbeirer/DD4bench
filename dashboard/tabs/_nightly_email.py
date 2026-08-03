@@ -47,7 +47,7 @@ from k4bench.regression.email import to_html
 from k4bench.regression.models import NightlyReport
 from k4bench.regression.render import _detector_badge
 from remote_cache import _cached_fetch_blame
-from ui_chrome import _drop_stale_selection, seed_query_param
+from tabs._night_picker import render_night_picker
 
 _log = logging.getLogger(__name__)
 
@@ -157,22 +157,17 @@ def render(
         return
 
     nights = sorted(reports, reverse=True)
-    _drop_stale_selection(NIGHT_KEY, nights)   # night out of the window → re-default
-    seed_query_param(NIGHT_KEY, "report", nights)
-    night = st.selectbox(
-        "Report night",
+    night = render_night_picker(
         nights,
-        format_func=lambda n: f"{_detector_badge(reports[n].groups)} {n}",
         key=NIGHT_KEY,
-        width=260,
+        badge=lambda n: _detector_badge(reports[n].groups),
+        default=nights[0],
+        latest=latest_night,
         help="Which night's report is shown — the badge is that night's worst "
              "state across every detector it benchmarked, not just the "
              "sidebar's scope. Defaults to the newest; the trend window sets "
              "how far back the picker reaches.",
-    ) or nights[0]
-    st.query_params["report"] = night
-    if night != latest_night:
-        st.caption(f"Historical view · report night **{night}**")
+    )
 
     report = reports[night]
     historical_blame_raw = {}
