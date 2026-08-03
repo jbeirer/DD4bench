@@ -24,6 +24,7 @@ crash.
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, field, fields
 from typing import Any
 
@@ -239,6 +240,13 @@ ASSESSMENT_VERDICTS = frozenset({
 })
 
 
+#: A reason that already ends in a sentence. The punctuation need not be the
+#: last character: the model habitually closes on a quoted phrase, a
+#: parenthesis, or a bolded metric name, and a stop appended behind any of those
+#: is the doubled stop this pattern exists to prevent.
+_TERMINATED = re.compile(r"[.!?…][\"'”’)\]}*_`]*$")
+
+
 @dataclass(frozen=True)
 class StepAssessment:
     """What the ranker made of the *movement* itself, before any question of who
@@ -275,7 +283,7 @@ class StepAssessment:
         reason = self.reason.strip()
         if not reason:
             return ""
-        return reason if reason[-1] in ".!?…" else reason + "."
+        return reason if _TERMINATED.search(reason) else reason + "."
 
     def to_dict(self) -> dict[str, Any]:
         return {"verdict": self.verdict, "reason": self.reason}

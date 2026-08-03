@@ -362,6 +362,25 @@ def test_the_reason_reads_as_one_sentence_however_the_model_ended_it():
     assert StepAssessment("likely_noise").reason_sentence == ""
 
 
+def test_a_reason_ending_behind_a_quote_or_emphasis_is_already_terminated():
+    # The stop is not always the last character: the model closes on quoted
+    # phrases, parentheses and bolded metric names, and a stop appended behind
+    # any of those is the doubled stop this property exists to prevent.
+    for ended in (
+        'the log says "host swapped."',
+        "the series is **noisy.**",
+        "the step is confined to `without_ScreenSol`.",
+        "the host changed (see the runner note.)",
+    ):
+        assert StepAssessment("likely_noise", ended).reason_sentence == ended
+
+    # Closing punctuation with no sentence behind it still needs terminating.
+    assert StepAssessment("likely_noise", 'the log says "host swapped"') \
+        .reason_sentence == 'the log says "host swapped".'
+    assert StepAssessment("likely_noise", "the series is **noisy**") \
+        .reason_sentence == "the series is **noisy**."
+
+
 def test_a_malformed_assessment_costs_only_the_assessment():
     raw = _entry().to_dict()
     raw["assessment"] = "likely_noise"  # a string where the object belongs
