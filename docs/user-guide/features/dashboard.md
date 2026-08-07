@@ -121,9 +121,10 @@ time/memory/CPU/output, or more throughput. The default **Full detector**
 (`baseline_all`) comparison is the usual subdetector-removal study; the wording
 remains baseline-relative if you select another reference. Throughput remains
 available in the metric selector as the rate-oriented view of wall time. Hover a
-bar for rounded raw measurements and their absolute change. The ranking keeps
-the strongest 12 compact by default. When more than 12 configurations are
-comparable, switch on **All configs** beside it to expand the chart.
+bar for rounded raw measurements and their absolute change. The compact ranking
+keeps the 12 largest absolute impacts, so it retains both major gains and major
+regressions. When more than 12 configurations are comparable, switch on **All
+configs** beside it to expand the chart.
 
 With the full-detector baseline, the removal impacts are ablation estimates
 rather than additive accounting. Removing material changes particle transport,

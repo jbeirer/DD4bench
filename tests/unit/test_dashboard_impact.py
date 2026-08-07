@@ -101,6 +101,26 @@ def test_invalid_baseline_leaves_metric_unscored(baseline):
     assert percentages["Wall Time"].isna().all()
 
 
+def test_negative_measurements_are_ignored_but_zero_remains_comparable():
+    metrics = [
+        impact._METRICS_BY_COLUMN["wall_time_s"],
+        impact._METRICS_BY_COLUMN["events_per_sec"],
+    ]
+    raw = pd.DataFrame(
+        {
+            "wall_time_s": [10.0, -1.0, 0.0],
+            "events_per_sec": [1.0, -1.0, 0.0],
+        },
+        index=["baseline_all", "without_Invalid", "without_Zero"],
+    )
+
+    percentages = impact._impact_percentages(raw, "baseline_all", metrics)
+
+    assert percentages.loc["without_Invalid"].isna().all()
+    assert percentages.loc["without_Zero", "Wall Time"] == pytest.approx(100.0)
+    assert percentages.loc["without_Zero", "Throughput"] == pytest.approx(-100.0)
+
+
 def test_ranking_is_signed_descending_stable_and_excludes_baseline():
     raw, _, percentages = _comparison_frames()
 
@@ -120,6 +140,46 @@ def test_ranking_is_signed_descending_stable_and_excludes_baseline():
     assert ranking.loc[0, "raw_delta"] == -2.0
 
 
+def test_compact_ranking_keeps_the_largest_absolute_regressions():
+    metric = impact._METRICS_BY_COLUMN["wall_time_s"]
+    configs = ["baseline_all", *[f"without_Detector_{i:02d}" for i in range(1, 14)]]
+    raw = pd.DataFrame(
+        {"wall_time_s": [100.0, *[100.0 + i for i in range(1, 14)]]},
+        index=configs,
+    )
+    scores = pd.DataFrame(
+        {"Wall Time": [0.0, *[-float(i) for i in range(1, 14)]]},
+        index=configs,
+    )
+
+    ranking = impact._ranking_rows(
+        scores, raw, "baseline_all", metric, limit=12,
+    )
+
+    assert list(ranking["impact"]) == pytest.approx(
+        [-float(i) for i in range(2, 14)]
+    )
+    assert -13.0 in set(ranking["impact"])
+    assert -1.0 not in set(ranking["impact"])
+
+
+def test_compact_ranking_prefers_adverse_at_an_equal_magnitude_cutoff():
+    metric = impact._METRICS_BY_COLUMN["wall_time_s"]
+    raw = pd.DataFrame(
+        {"wall_time_s": [100.0, 90.0, 110.0]},
+        index=["baseline_all", "without_Gain", "without_Adverse"],
+    )
+    scores = pd.DataFrame(
+        {"Wall Time": [0.0, 10.0, -10.0]}, index=raw.index,
+    )
+
+    ranking = impact._ranking_rows(
+        scores, raw, "baseline_all", metric, limit=1,
+    )
+
+    assert list(ranking["config"]) == ["without_Adverse"]
+
+
 def test_winner_ties_use_a_stable_alphabetical_configuration():
     impact_frame = pd.DataFrame(
         {"Wall Time": [0.0, 20.0, 20.0]},
@@ -133,6 +193,23 @@ def test_winner_ties_use_a_stable_alphabetical_configuration():
     )
 
     assert winners == [{"metric": "Wall Time", "config": "without_A", "impact": 20.0}]
+
+
+def test_winner_cards_show_the_largest_absolute_impact():
+    impact_frame = pd.DataFrame(
+        {"Wall Time": [0.0, 20.0, -30.0]},
+        index=["baseline_all", "without_Gain", "without_Adverse"],
+    )
+
+    winners = impact._winner_rows(
+        impact_frame,
+        "baseline_all",
+        [impact._METRICS_BY_COLUMN["wall_time_s"]],
+    )
+
+    assert winners == [
+        {"metric": "Wall Time", "config": "without_Adverse", "impact": -30.0},
+    ]
 
 
 def test_impact_figure_is_a_semantic_zero_anchored_leaderboard():
@@ -273,6 +350,53 @@ def test_failed_partial_metrics_cannot_become_the_best_alternative():
     assert len(at.get("plotly_chart")) == 1
 
 
+def test_latest_failed_duplicate_does_not_resurrect_an_older_success():
+    rows = [
+        {"label": "baseline_all", "returncode": 0, "wall_time_s": 10.0},
+        {"label": "without_ECal", "returncode": 0, "wall_time_s": 8.0},
+        {"label": "without_ECal", "returncode": 1, "wall_time_s": 0.1},
+    ]
+
+    at = AppTest.from_function(
+        _app,
+        args=(str(_DASHBOARD_DIR), rows),
+        default_timeout=30,
+    ).run()
+
+    warning_text = "\n".join(warning.value for warning in at.warning)
+    assert not at.exception, at.exception
+    assert list(at.selectbox(key="impact_baseline").options) == ["baseline_all"]
+    assert "Multiple result rows" in warning_text
+    assert "without_ECal" in warning_text
+    assert "Excluded failed or incomplete" in warning_text
+    assert not at.metric
+    assert not at.get("plotly_chart")
+
+
+def test_latest_successful_duplicate_remains_authoritative():
+    rows = [
+        {"label": "baseline_all", "returncode": 0, "wall_time_s": 10.0},
+        {"label": "without_ECal", "returncode": 1, "wall_time_s": 0.1},
+        {"label": "without_ECal", "returncode": 0, "wall_time_s": 8.0},
+    ]
+
+    at = AppTest.from_function(
+        _app,
+        args=(str(_DASHBOARD_DIR), rows),
+        default_timeout=30,
+    ).run()
+
+    warning_text = "\n".join(warning.value for warning in at.warning)
+    assert not at.exception, at.exception
+    assert list(at.selectbox(key="impact_baseline").options) == [
+        "baseline_all", "without_ECal",
+    ]
+    assert "Multiple result rows" in warning_text
+    assert "Excluded failed or incomplete" not in warning_text
+    assert {metric.delta for metric in at.metric} == {"ECal"}
+    assert len(at.get("plotly_chart")) == 1
+
+
 def test_baseline_all_is_the_default_even_when_another_label_sorts_first():
     rows = [
         {"label": "aaa_alternative", "returncode": 0, "wall_time_s": 8.0},
@@ -338,7 +462,10 @@ def test_large_rankings_use_one_show_all_toggle_instead_of_a_dropdown():
     assert not at.exception, at.exception
     assert len(at.selectbox) == 1  # only the baseline; no chart-density dropdown
     assert at.toggle(key="impact_show_all").label == "All configs"
-    assert any("strongest 12 of 13" in caption.value for caption in at.caption)
+    assert any(
+        "12 largest absolute impacts from 13" in caption.value
+        for caption in at.caption
+    )
 
     at.toggle(key="impact_show_all").set_value(True).run()
 

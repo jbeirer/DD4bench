@@ -1,15 +1,16 @@
-"""Human labels for the identifiers that name a benchmark run.
+"""Shared contracts and human labels for benchmark-run identifiers.
 
-A run is identified by three machine strings — a detector name, an EOS sample
-directory (``p8_ee_Zbb_ecm91``) and an LCG/Spack platform triplet
-(``x86_64-almalinux9-gcc14.2.0-opt``). This module turns the latter two into
-something a person reads, and is the single place that knows their layouts.
+A run carries machine strings for its configuration, detector, EOS sample
+directory (``p8_ee_Zbb_ecm91``) and LCG/Spack platform triplet
+(``x86_64-almalinux9-gcc14.2.0-opt``). This module owns the stable configuration
+vocabulary and turns the latter two scope identifiers into something a person
+reads.
 
-It lives at the top level, and depends on nothing, because its three consumers
-sit in different layers and must not import each other: the e-group email and
-the dashboard *display* these labels, while the blame ranker puts them in the
-prompt a model judges with (:mod:`k4bench.blame.rank`). That last consumer is
-why the vocabulary below is behaviour, not styling — widening
+It lives at the top level, and depends on nothing, because its consumers sit in
+different layers and must not import each other: the benchmark writes these
+identifiers, the e-group email and dashboard display them, and the blame ranker
+puts them in the prompt a model judges with (:mod:`k4bench.blame.rank`). That
+last consumer is why the vocabulary below is behaviour, not styling — widening
 :data:`_PARTICLE_LABELS` changes what the model is told is being simulated, so
 it is versioned and tested here rather than tweaked as presentation.
 
@@ -22,6 +23,12 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+
+#: Label of the unpatched full-detector run. This is part of the on-disk data
+#: contract: result CSV/JSON files and historical reports use it as a key.
+#: Keeping it in this dependency-free label module lets readers of that data
+#: share the contract without importing the benchmark orchestrator.
+BASELINE_LABEL = "baseline_all"
 
 #: Recognized generator/beam/particle tokens for :func:`pretty_sample`. Any
 #: sample name that doesn't match one of the two known layouts below (or that

@@ -15,7 +15,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from k4bench.analysis.plots._theme import _TEMPLATE
-from k4bench.benchmark.ddsim import BASELINE_LABEL
+from k4bench.labels import BASELINE_LABEL
 from ui_chrome import _drop_stale_selection
 
 
@@ -104,6 +104,9 @@ def _impact_percentages(
 
     for metric in present:
         values = pd.to_numeric(raw[metric.column], errors="coerce")
+        # Every supported measurement is non-negative. Treat impossible values
+        # as missing so a corrupt ``-1`` time cannot become a spectacular gain.
+        values = values.where(values.ge(0))
         baseline = values.loc[baseline_label]
         if not np.isscalar(baseline):
             # Duplicate labels are resolved before this helper in ``render``;
@@ -134,7 +137,7 @@ def _winner_rows(
     baseline_label: str,
     present: list[_MetricSpec],
 ) -> list[dict[str, str | float | None]]:
-    """Return one deterministic best alternative for every available metric."""
+    """Return the largest-magnitude alternative for every available metric."""
     alternatives = impact.drop(index=baseline_label, errors="ignore")
     winners: list[dict[str, str | float | None]] = []
     for metric in present:
@@ -142,13 +145,20 @@ def _winner_rows(
         if valid.empty:
             winners.append({"metric": metric.label, "config": None, "impact": None})
             continue
-        # Alphabetical tie-breaking keeps cards stable if rounded input values
-        # produce identical impacts (throughput commonly does this).
-        best_value = float(valid.max())
-        tied = sorted(str(label) for label in valid.index[valid.eq(best_value)])
+        largest_magnitude = float(valid.abs().max())
+        tied = [
+            (str(label), float(value))
+            for label, value in valid.items()
+            if abs(float(value)) == largest_magnitude
+        ]
+        # Prefer the adverse result at an exact magnitude tie, then use the
+        # label for deterministic cards (rounded throughput often ties).
+        best_config, best_value = sorted(
+            tied, key=lambda item: (item[1] >= 0, item[0]),
+        )[0]
         winners.append({
             "metric": metric.label,
-            "config": tied[0],
+            "config": best_config,
             "impact": best_value,
         })
     return winners
@@ -188,20 +198,32 @@ def _ranking_rows(
         "value": alternative_values.to_numpy(dtype=float),
     })
     ranking = ranking.loc[
-        np.isfinite(ranking["impact"]) & np.isfinite(ranking["value"])
+        np.isfinite(ranking["impact"])
+        & np.isfinite(ranking["value"])
+        & ranking["value"].ge(0)
     ].copy()
     if ranking.empty:
         return empty
     ranking["display_name"] = ranking["config"].map(_display_name)
     ranking["baseline"] = baseline
     ranking["raw_delta"] = ranking["value"] - baseline
-    ranking = ranking[_RANKING_COLUMNS]
+    # Choose the most consequential changes in either direction for the compact
+    # view. Then restore signed order so gains read top-to-bottom into adverse
+    # changes while the largest regression can never be hidden as "row 13".
+    ranking["_magnitude"] = ranking["impact"].abs()
+    ranking = ranking.sort_values(
+        ["_magnitude", "impact", "display_name", "config"],
+        ascending=[False, True, True, True],
+        kind="stable",
+    )
+    if limit is not None:
+        ranking = ranking.head(limit)
     ranking = ranking.sort_values(
         ["impact", "display_name", "config"],
         ascending=[False, True, True],
         kind="stable",
     ).reset_index(drop=True)
-    return ranking if limit is None else ranking.head(limit).reset_index(drop=True)
+    return ranking[_RANKING_COLUMNS]
 
 
 def _format_measurement(value: float, unit: str, *, signed: bool = False) -> str:
@@ -382,16 +404,6 @@ def render(results_df: pd.DataFrame | None) -> None:
         st.warning("No configurations in the selected run.")
         return
 
-    snapshot, failed_snap = _successful_rows(snapshot)
-    if failed_snap:
-        st.warning(
-            "Excluded failed or incomplete configurations from impact scoring: "
-            + ", ".join(failed_snap)
-        )
-    if snapshot.empty:
-        st.warning("No successful configurations are available for impact scoring.")
-        return
-
     duplicate_labels = sorted(
         snapshot.loc[snapshot["label"].duplicated(keep=False), "label"].unique()
     )
@@ -402,6 +414,18 @@ def render(results_df: pd.DataFrame | None) -> None:
             + "; using the last row for each configuration."
         )
         snapshot = snapshot.drop_duplicates("label", keep="last")
+
+    # Resolve the latest row first. Filtering failures before de-duplication
+    # could resurrect an older successful result when the latest attempt failed.
+    snapshot, failed_snap = _successful_rows(snapshot)
+    if failed_snap:
+        st.warning(
+            "Excluded failed or incomplete configurations from impact scoring: "
+            + ", ".join(failed_snap)
+        )
+    if snapshot.empty:
+        st.warning("No successful configurations are available for impact scoring.")
+        return
 
     snap_labels = sorted(snapshot["label"].unique())
     present = [metric for metric in _METRICS if metric.column in snapshot.columns]
@@ -518,7 +542,7 @@ def render(results_df: pd.DataFrame | None) -> None:
                 border=True,
                 height=150,
                 help=(
-                    f"{config} is the strongest valid alternative for "
+                    f"{config} has the largest absolute valid impact on "
                     f"{winner['metric']} ({float(value):+.2f}% vs {baseline_label})."
                 ),
             )
@@ -553,8 +577,8 @@ def render(results_df: pd.DataFrame | None) -> None:
                 "All configs",
                 key=_SHOW_ALL_WIDGET_KEY,
                 help=(
-                    f"Show every comparable configuration instead of the strongest "
-                    f"{_DEFAULT_RANKING_ROWS}."
+                    "Show every comparable configuration instead of the "
+                    f"{_DEFAULT_RANKING_ROWS} largest absolute impacts."
                 ),
                 on_change=_remember_show_all,
             )
@@ -571,7 +595,10 @@ def render(results_df: pd.DataFrame | None) -> None:
     count_note = (
         f"Showing all {shown} comparable configurations"
         if shown == total_valid
-        else f"Showing the strongest {shown} of {total_valid} comparable configurations"
+        else (
+            f"Showing the {shown} largest absolute impacts from "
+            f"{total_valid} comparable configurations"
+        )
     )
     ranking_caption.caption(
         f"{count_note}. Bars are ordered by signed impact; hover for rounded raw measurements."
