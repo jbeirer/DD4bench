@@ -952,8 +952,8 @@ def test_trend_notes_prefers_the_unreliable_reason_over_the_failure_one():
 def test_baseline_label_matches_benchmark():
     # The tab compares detectors on the sweep's unpatched full-detector run.
     # Pinned to the literal too: the histories on EOS carry "baseline_all"
-    # forever, so a rename in ddsim.py must not silently retarget the tab.
-    from k4bench.benchmark.ddsim import BASELINE_LABEL
+    # forever, so a rename must not silently retarget the tab.
+    from k4bench.labels import BASELINE_LABEL
     assert ov._BASELINE_LABEL == BASELINE_LABEL == "baseline_all"
 
 

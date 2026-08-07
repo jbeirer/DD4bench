@@ -70,7 +70,7 @@ names the run directory instead.
 
 | Tab | What it shows | Backed by |
 | --- | --- | --- |
-| **Config Impact** | run-level impact vs baseline within the selected run | `*_results.csv` |
+| **Config Impact** | baseline-relative configuration impact in the selected run | `*_results.csv` |
 | **Event timing** | per-event wall time distributions | `*_events.json` |
 | **Event memory** | per-event RSS and growth | `*_events.json` |
 | **Region timing** | per-subdetector stepping time, `at_location` vs `by_birth`, step counts, attribution analysis | `*_regions.json` |
@@ -87,7 +87,7 @@ Anything that changes *how* a figure is drawn — colour palette, opacity, style
 cycling, smoothing, histogram bins, error bars, mean lines, how many detectors
 a ranking keeps — lives in a **👁️ Display options** popover at the right-hand
 end of the view's control row. It looks and behaves the same in every view that
-has one (Config Impact, Event Timing, Event Memory, Region Timing's four views
+has one (Event Timing, Event Memory, Region Timing's four views
 and Run Trends), and each popover ends with **Reset to defaults**, which
 restores every control inside it in one click.
 
@@ -109,6 +109,29 @@ Palette defaults follow the data: a figure picks the smallest Matplotlib tab-N
 palette that colours every series without repeating a colour, and re-picks it
 when the number of series crosses a boundary. An explicit choice sticks until
 that happens.
+
+### Config Impact tab
+
+The four summary cards name the alternative configuration with the largest
+estimated impact on wall time, peak memory, user CPU and output size. Pick a
+metric to open its horizontal ranking: the selected baseline is the zero line,
+better-than-baseline changes extend right in blue, and worse changes extend left
+in orange. Positive has the same meaning for every metric — less
+time/memory/CPU/output, or more throughput. The default **Full detector**
+(`baseline_all`) comparison is the usual subdetector-removal study; the wording
+remains baseline-relative if you select another reference. Throughput remains
+available in the metric selector as the rate-oriented view of wall time. Hover a
+bar for rounded raw measurements and their absolute change. The compact ranking
+keeps the 12 largest absolute impacts, so it retains both major gains and major
+regressions. When more than 12 configurations are comparable, switch on **All
+configs** beside it to expand the chart.
+
+With the full-detector baseline, the removal impacts are ablation estimates
+rather than additive accounting. Removing material changes particle transport,
+so the individual percentages need not add up to the cost of the full detector.
+For a direct view of where simulation time is spent, **Region Timing** attributes
+per-subdetector Geant4 stepping time both to where tracks run and where they were
+created.
 
 ### Region timing tab
 

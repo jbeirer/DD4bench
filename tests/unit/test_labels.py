@@ -1,4 +1,4 @@
-"""Unit tests for :mod:`k4bench.labels` — the sample/platform vocabulary.
+"""Unit tests for :mod:`k4bench.labels` — shared run-label contracts.
 
 These labels are not styling. The e-group email and the dashboard display
 them, but the blame ranker puts them in the prompt a model judges regressions
@@ -15,12 +15,19 @@ import pytest
 
 from k4bench import labels
 from k4bench.labels import (
+    BASELINE_LABEL,
     RELEASE_PREFIX,
     describe_platform,
     pretty_platform,
     pretty_release,
     pretty_sample,
 )
+
+
+# ── Configuration labels ─────────────────────────────────────────────────────
+
+def test_full_detector_label_matches_the_on_disk_contract():
+    assert BASELINE_LABEL == "baseline_all"
 
 
 # ── Samples ───────────────────────────────────────────────────────────────────

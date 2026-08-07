@@ -34,7 +34,7 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 from k4bench.analysis.plots._theme import PALETTE, _TEMPLATE
-from k4bench.benchmark.ddsim import BASELINE_LABEL
+from k4bench.labels import BASELINE_LABEL
 from k4bench.regression.engine import Z_THRESHOLD
 from k4bench.regression.models import NightlyReport, RunGroupReport, Severity
 from k4bench.regression.render import _detector_badge, from_json
@@ -66,7 +66,7 @@ from ui_utils import (
 _log = logging.getLogger(__name__)
 
 #: The one config compared across detectors — the unpatched full-detector run
-#: every sweep starts with (``baseline_all``, see ``k4bench.benchmark.ddsim``).
+#: every sweep starts with (``baseline_all``, see ``k4bench.labels``).
 #: Variant configs measure *within*-detector impact and live in the Config
 #: Impact tab.
 _BASELINE_LABEL = BASELINE_LABEL

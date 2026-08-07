@@ -40,6 +40,7 @@ from k4bench.geometry.index import GeometryIndex
 from k4bench.geometry.errors import DetectorNotFoundError, GeometryError
 from k4bench.geometry.patcher import build_patch, patched
 from k4bench.geometry.scanner import get_detector_names
+from k4bench.labels import BASELINE_LABEL
 from k4bench.results.model import RunResult
 from k4bench.runner.executor import run_ddsim
 from k4bench.runner.steering import reconcile_steering_file
@@ -159,12 +160,6 @@ def run_sweep(config: BenchmarkConfig) -> list[RunResult]:
 # ---------------------------------------------------------------------------
 # Label helpers
 # ---------------------------------------------------------------------------
-
-#: Label of the unpatched full-detector run every sweep starts with. Part of
-#: the on-disk data contract: results on EOS carry it in their CSV/JSON keys,
-#: and the dashboard's Detectors Overview compares detectors on exactly this
-#: label — renaming it would orphan all existing histories.
-BASELINE_LABEL = "baseline_all"
 
 _MAX_LABEL_DETECTORS = 5
 
