@@ -36,6 +36,11 @@ from plotly.subplots import make_subplots
 from k4bench.analysis.plots._theme import PALETTE, _TEMPLATE
 from k4bench.labels import BASELINE_LABEL
 from k4bench.regression.engine import Z_THRESHOLD
+from k4bench.regression.common_mode import (
+    COMMON_MODE_UNIT,
+    is_common_mode,
+    pretty_config,
+)
 from k4bench.regression.models import NightlyReport, RunGroupReport, Severity
 from k4bench.regression.render import _detector_badge, from_json
 from remote_cache import _cached_fetch_reports, _cached_list_report_dates
@@ -1033,13 +1038,19 @@ def _flag_choices(groups: list[RunGroupReport]) -> list:
     return sorted(choices, key=attention_key)
 
 
-def _flag_axis_title(metric: str) -> str:
+def _flag_axis_title(verdict) -> str:
     """Axis title in the report's *stored* units (MB for memory): the flag
     trend draws the verdict's own baseline band, so the axis must match those
-    raw numbers rather than the GB display the figure panels use."""
-    name = _METRIC_LABELS.get(metric, metric)
+    raw numbers rather than the GB display the figure panels use.
+
+    A common-mode verdict is judged on a ratio and so carries no metric unit at
+    all (see :data:`~k4bench.regression.common_mode.COMMON_MODE_UNIT`)."""
+    name = _METRIC_LABELS.get(verdict.metric, verdict.metric)
     name = name[:1].upper() + name[1:]
-    unit = _METRIC_UNITS.get(metric, "")
+    unit = (
+        COMMON_MODE_UNIT if is_common_mode(verdict.label)
+        else _METRIC_UNITS.get(verdict.metric, "")
+    )
     return f"{name} ({unit})" if unit else name
 
 
@@ -1074,7 +1085,7 @@ def _flag_trend_figure(
             hovertemplate=(
                 f"<b>{verdict.detector}</b><br>"
                 "Tag: %{customdata} (%{x|%Y-%m-%d})<br>"
-                f"{_flag_axis_title(verdict.metric)}: %{{y:.4g}}<extra></extra>"
+                f"{_flag_axis_title(verdict)}: %{{y:.4g}}<extra></extra>"
             ),
         ))
     med, mad = verdict.baseline_median, verdict.baseline_mad or 0.0
@@ -1109,7 +1120,7 @@ def _flag_trend_figure(
         template=_TEMPLATE,
         height=360,
         margin=dict(l=10, r=10, t=30, b=90),
-        yaxis_title=_flag_axis_title(verdict.metric),
+        yaxis_title=_flag_axis_title(verdict),
         showlegend=False,
     )
     return fig
@@ -1202,7 +1213,7 @@ def _render_flag_trend(
         _flag_trend_figure(series, v, failures),
         width="stretch", key="det_ov_flag_chart",
     )
-    st.caption(f"**{v.reason}** — {v.detector} · {v.label}")
+    st.caption(f"**{v.reason}** — {v.detector} · {pretty_config(v.label)}")
 
 
 #: Session key of the report-night picker. Shares ``?report=`` with the

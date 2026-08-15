@@ -123,3 +123,28 @@ def test_event_trend_omits_the_columns_when_there_are_too_few_events(tmp_path):
     # The noise is measurable from five events; the trim is not.
     assert "trimmed_mean_time_s" not in df.columns or row.isna()["trimmed_mean_time_s"]
     assert row["event_mix_rse"] == pytest.approx(0.0)
+
+
+def test_trimmed_noise_is_measured_on_the_trimmed_sample():
+    from k4bench.analysis.trend import trimmed_event_mix_rse
+
+    # A tail inside the 5% the trim drops: the untrimmed total is noisy, the
+    # trimmed sample it leaves behind is not.
+    times = np.array([1.0] * 97 + [40.0] * 3)
+    assert event_mix_rse(times) > 0.05
+    assert trimmed_event_mix_rse(times) == pytest.approx(0.0)
+
+
+def test_trimmed_noise_still_sees_a_tail_the_trim_does_not_reach():
+    from k4bench.analysis.trend import trimmed_event_mix_rse
+
+    # Honest in the other direction too: a tail wider than the trim survives it,
+    # and the trimmed statistic is correctly reported as still noisy.
+    times = np.array([1.0] * 90 + [40.0] * 10)
+    assert trimmed_event_mix_rse(times) > 0.05
+
+
+def test_trimmed_noise_abstains_where_the_trimmed_mean_does():
+    from k4bench.analysis.trend import trimmed_event_mix_rse
+
+    assert trimmed_event_mix_rse(np.ones(MIN_TRIM_EVENTS - 1)) is None

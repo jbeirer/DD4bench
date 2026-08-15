@@ -66,6 +66,25 @@ def trimmed_mean(times: np.ndarray, fraction: float = TRIM_FRACTION) -> float | 
     return float(kept.mean())
 
 
+def trimmed_event_mix_rse(
+    times: np.ndarray, fraction: float = TRIM_FRACTION,
+) -> float | None:
+    """:func:`event_mix_rse` of the same events :func:`trimmed_mean` keeps.
+
+    The trimmed mean exists to be the low-noise statistic, so gating it with
+    the *untrimmed* total's noise would hand it back the tail it just dropped
+    and desensitize the one series meant to be sensitive. Its noise has to be
+    measured on the sample it is actually computed from.
+    """
+    n = len(times)
+    if n < MIN_TRIM_EVENTS:
+        return None
+    n_drop = int(n * fraction)
+    if n_drop <= 0:
+        return None
+    return event_mix_rse(np.sort(times)[: n - n_drop])
+
+
 def event_mix_rse(times: np.ndarray) -> float | None:
     """Relative standard error of the run total implied by *times* themselves.
 
@@ -323,15 +342,16 @@ def build_event_timing_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
     For each run directory, event timing is loaded for all available configs.
     Per config per run, summary statistics are computed (event 0 excluded):
         mean_time_s, median_time_s, p95_time_s, trimmed_mean_time_s,
-        event_mix_rse,
+        event_mix_rse, trimmed_event_mix_rse,
         mean_rss_mb, median_rss_mb, p95_rss_mb, max_rss_mb
 
-    ``trimmed_mean_time_s`` (:func:`trimmed_mean`) and ``event_mix_rse``
-    (:func:`event_mix_rse`) are the two columns the regression engine needs to
-    tell Monte-Carlo event-mix noise apart from a software change: the first is
-    a low-noise view of the typical event, the second is this run's own measure
-    of how much its total is allowed to wobble for event-mix reasons alone.
-    Both are absent (NaN) for a config with too few events to support them.
+    ``trimmed_mean_time_s`` (:func:`trimmed_mean`) and the two ``*_rse`` columns
+    are what the regression engine needs to tell Monte-Carlo event-mix noise
+    apart from a software change: the first is a low-noise view of the typical
+    event, the others measure how much a re-drawn event mix moves the untrimmed
+    total and the trimmed mean respectively. Each timing metric is gated by the
+    noise of the sample it was computed from, never by the other's. All are
+    absent (NaN) for a config with too few events to support them.
 
     Returns a long-form DataFrame with those columns plus
         run_id, run_date, k4h_release_date, k4h_release, label
@@ -384,6 +404,9 @@ def build_event_timing_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
                     rse = event_mix_rse(times)
                     if rse is not None:
                         row["event_mix_rse"] = rse
+                    trimmed_rse = trimmed_event_mix_rse(times)
+                    if trimmed_rse is not None:
+                        row["trimmed_event_mix_rse"] = trimmed_rse
             if "rss_end_mb" in df_ev.columns:
                 r = df_ev["rss_end_mb"].dropna()
                 nr = len(r)

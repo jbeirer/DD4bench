@@ -770,9 +770,14 @@ def test_the_trimmed_mean_is_judged_and_the_tail_noise_is_recorded(tmp_path):
     trimmed = next(v for v in group.verdicts
                    if v.metric == "trimmed_mean_time_s"
                    and v.label == _SWEEP_LABELS[0])
+    total = next(v for v in group.verdicts
+                 if v.metric == "mean_time_s" and v.label == _SWEEP_LABELS[0])
     assert trimmed.value == pytest.approx(1.0)
-    assert trimmed.noise_rse is not None and trimmed.noise_rse > 0
-    # The measured noise is small here, so the family floor still governs.
+    # Each metric carries the noise of the sample it was computed from, and
+    # dropping the tail is what makes the trimmed one the quieter of the two.
+    assert trimmed.noise_rse is not None and total.noise_rse is not None
+    assert trimmed.noise_rse < total.noise_rse
+    # Both are small here, so the family floor still governs.
     assert trimmed.effect_floor == pytest.approx(EFFECT_FLOOR["time"])
 
 
@@ -838,3 +843,43 @@ def test_losing_a_fixed_seed_is_announced_too(tmp_path):
     ]
     group = _report_for(tuple(str(d) for d in run_dirs))
     assert any("fresh ddsim seed" in note for note in group.notes)
+
+
+def test_the_noise_floor_does_not_reach_memory_metrics(tmp_path):
+    # event_mix_rse is measured from per-event *times*. Memory is set by what
+    # the geometry allocates, not by which events were slow, so a tail-heavy
+    # timing distribution must not widen the memory floor.
+    tail_heavy = [1.0] * 90 + [40.0] * 10
+    group = _report_for(_sweep_history(
+        tmp_path, 12, event_times={label: tail_heavy for label in _SWEEP_LABELS},
+    ))
+    floors = {
+        (v.label, v.metric): v.effect_floor for v in group.verdicts
+        if v.effect_floor is not None
+    }
+    label = _SWEEP_LABELS[0]
+    assert floors[(label, "wall_time_s")] > EFFECT_FLOOR["time"]
+    assert floors[(label, "peak_rss_mb")] == pytest.approx(EFFECT_FLOOR["memory"])
+    assert floors[(label, "mean_rss_mb")] == pytest.approx(EFFECT_FLOOR["memory"])
+
+
+def test_the_trimmed_metric_is_gated_by_the_trimmed_sample_s_own_noise(tmp_path):
+    # The trimmed mean exists to be the sensitive series. Gating it with the
+    # untrimmed total's noise would hand back the tail the trim removed, so its
+    # floor must be far tighter than the totals' on the same config. The tail
+    # here is inside the 5% the trim drops, so the trimmed sample is flat.
+    tail_heavy = [1.0] * 97 + [40.0] * 3
+    group = _report_for(_sweep_history(
+        tmp_path, 12, event_times={label: tail_heavy for label in _SWEEP_LABELS},
+    ))
+    floors = {
+        (v.label, v.metric): v.effect_floor for v in group.verdicts
+        if v.effect_floor is not None
+    }
+    label = _SWEEP_LABELS[0]
+    assert floors[(label, "mean_time_s")] > EFFECT_FLOOR["time"]
+    # Trimming removes the tail entirely here, so its noise is nil and the
+    # family floor governs.
+    assert floors[(label, "trimmed_mean_time_s")] == pytest.approx(
+        EFFECT_FLOOR["time"]
+    )

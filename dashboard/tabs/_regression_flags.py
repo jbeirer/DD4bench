@@ -22,6 +22,11 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from k4bench.blame.models import RANKING_DISCLOSURE, BlameReport, CandidatePR
+from k4bench.regression.common_mode import (
+    format_shift,
+    is_common_mode,
+    pretty_config,
+)
 from k4bench.regression.models import Direction, MetricVerdict, Severity
 from k4bench.labels import pretty_sample
 from k4bench.regression.render import _badge, _fmt, _fmt_pct
@@ -235,7 +240,7 @@ def metric_option(
     parts = [_badge(verdict)]
     if include_detector:
         parts.append(verdict.detector)
-    parts += [pretty_metric(verdict), verdict.label]
+    parts += [pretty_metric(verdict), pretty_config(verdict.label)]
     if include_scope:
         parts.append(f"{verdict.detector}, {pretty_sample(verdict.sample)}")
     if include_window:
@@ -296,11 +301,15 @@ def flag_table(
             rec["Detector"] = v.detector
             rec["Sample"] = pretty_sample(v.sample)
         rec.update({
-            "Config": v.label,
+            "Config": pretty_config(v.label),
             "Metric": pretty_metric(v),
             "Dir": _DIR_ARROWS.get(v.direction.value, "—"),
             "Δ vs baseline": None if v.pct_change is None else abs(v.pct_change) * 100,
-            "Current / baseline": f"{_fmt(v.value)} / {_fmt(v.baseline_median)}",
+            "Current / baseline": (
+                f"{format_shift(v.value)} / {format_shift(v.baseline_median)}"
+                if is_common_mode(v.label)
+                else f"{_fmt(v.value)} / {_fmt(v.baseline_median)}"
+            ),
         })
         if blame_window:
             rec["Blame window"] = _blame_window_text(v)

@@ -47,10 +47,35 @@ COMMON_MODE_LABEL = "__all_configs__"
 MIN_COMMON_MODE_CONFIGS = 4
 
 
+#: Unit of a common-mode value. The series is a *ratio* — how the run group as
+#: a whole sat relative to its own typical level — so it carries no seconds and
+#: no megabytes however timing-shaped or memory-shaped the metric it was
+#: decomposed from. Rendering one with the metric's own unit would present a
+#: factor of 1.2 as "1.2 s", which is not a smaller version of the truth but a
+#: different claim, so every renderer asks :func:`is_common_mode` first.
+COMMON_MODE_UNIT = "× baseline"
+
+
+def is_common_mode(label: str) -> bool:
+    """Whether *label* names the run group's common mode rather than a config."""
+    return label == COMMON_MODE_LABEL
+
+
 def pretty_config(label: str) -> str:
     """Human-readable configuration label, for the one label that is not a
     configuration. Anything else is returned unchanged."""
-    return "all configs (common mode)" if label == COMMON_MODE_LABEL else label
+    return "all configs (common mode)" if is_common_mode(label) else label
+
+
+def format_shift(value: float | None) -> str:
+    """A common-mode factor as display text (``×1.204``), never a unit."""
+    if value is None:
+        return "—"
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return "—"
+    return "—" if value != value else f"×{value:.4g}"  # NaN-safe
 
 
 def common_mode_shifts(df: pd.DataFrame, metric: str) -> dict[str, float]:

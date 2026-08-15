@@ -46,7 +46,11 @@ from k4bench.blame.models import (
     StepAssessment,
     rank_group_key,
 )
-from k4bench.regression.common_mode import pretty_config
+from k4bench.regression.common_mode import (
+    format_shift,
+    is_common_mode,
+    pretty_config,
+)
 from k4bench.regression.models import (
     MetricVerdict,
     NightlyReport,
@@ -130,6 +134,18 @@ def _fmt_value(metric: str, value: float | None) -> str:
     if kind == "int":
         return f"{int(round(value))}"
     return _fmt(value)
+
+
+def _fmt_verdict_value(v: MetricVerdict, value: float | None) -> str:
+    """One of *v*'s own values with the unit that value actually has.
+
+    A common-mode verdict is judged on a ratio, not on the metric it was
+    decomposed from, so it must not borrow that metric's unit (see
+    :data:`~k4bench.regression.common_mode.COMMON_MODE_UNIT`).
+    """
+    if is_common_mode(v.label):
+        return format_shift(value)
+    return _fmt_value(v.metric, value)
 
 
 # ── Dates ─────────────────────────────────────────────────────────────────────
@@ -1458,9 +1474,9 @@ def _html_detail_row(v: MetricVerdict) -> str:
         f'<td style="padding:4px;vertical-align:top;">'
         f'{_html_metric_and_config(v)}</td>'
         f'<td style="padding:4px;vertical-align:top;overflow-wrap:anywhere;">'
-        f"{_esc(_fmt_value(v.metric, v.baseline_median))}</td>"
+        f"{_esc(_fmt_verdict_value(v, v.baseline_median))}</td>"
         f'<td style="padding:4px;vertical-align:top;overflow-wrap:anywhere;">'
-        f"{_esc(_fmt_value(v.metric, v.value))}</td>"
+        f"{_esc(_fmt_verdict_value(v, v.value))}</td>"
         f'<td style="padding:4px;vertical-align:top;overflow-wrap:anywhere;'
         f'font-weight:600;">{_esc(_fmt_pct(v.pct_change))}</td>'
         "</tr>"
@@ -1736,7 +1752,7 @@ def _md_detail_group(
             status = f"{_status_tag(v)}" + (f" ({note})" if note else "")
             lines.append(
                 f"| {status} | {_metric_label(v)} · {pretty_config(v.label)} "
-                f"| {_fmt_value(v.metric, v.baseline_median)} | {_fmt_value(v.metric, v.value)} "
+                f"| {_fmt_verdict_value(v, v.baseline_median)} | {_fmt_verdict_value(v, v.value)} "
                 f"| {_fmt_pct(v.pct_change)} |"
             )
     if plan.omitted:

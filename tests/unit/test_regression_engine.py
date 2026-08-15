@@ -734,7 +734,7 @@ def test_verdict_reports_the_noise_it_was_judged_against():
     )
     confirmed = verdicts[-1]
     assert confirmed.noise_rse == pytest.approx(0.02)
-    assert "intrinsic event-mix noise ±2.0%" in confirmed.reason
+    assert "intrinsic event-mix noise ±2.0% this run" in confirmed.reason
 
 
 def test_absolute_floor_family_ignores_a_relative_noise_estimate():
@@ -766,3 +766,15 @@ def test_common_mode_annotations_are_carried_onto_the_verdict():
     assert confirmed.value == pytest.approx(120.5)
     assert confirmed.raw_value == pytest.approx(120.5 * 1.1)
     assert confirmed.common_mode_shift == pytest.approx(0.1)
+
+
+def test_reason_attributes_the_widened_floor_to_the_baseline_not_tonight():
+    # The floor comes from the baseline runs' median noise. A reader must not
+    # be able to mistake it for three times the noise printed beside it.
+    values = _STEADY + [130.0, 130.4]
+    noise = [0.04] * len(_STEADY) + [0.001, 0.001]
+    confirmed = evaluate_series(_noisy_history(values, noise), series=_TIME)[-1]
+    assert confirmed.noise_rse == pytest.approx(0.001)
+    assert confirmed.effect_floor == pytest.approx(3 * 0.04)
+    assert "±0.1% this run" in confirmed.reason
+    assert "widened from 5.0% by the baseline's event-mix noise" in confirmed.reason

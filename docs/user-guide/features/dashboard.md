@@ -207,6 +207,32 @@ step-change detector (`k4bench/regression/`):
   efficiency, and a wider floor for the noisier region metrics. Requiring both
   keeps a very steady metric (tiny MAD) from flagging on a change too small to
   care about.
+- **The floor follows the measured noise.** A run total is the sum of its
+  per-event costs, and where that distribution is heavy-tailed the total moves
+  every night simply because ddsim simulated a different mix of events. Each run
+  measures its own **intrinsic event-mix noise** from its event file, and the
+  effect floor widens to three times that where it exceeds the fixed floor —
+  never below it, so a quiet series keeps exactly the floor it always had. The
+  flag's reason line quotes the noise it had to beat.
+- **Shared moves are reported once.** When every config of a run group moves
+  together — a host or stack effect rather than a detector one — that is one
+  event, not one per config. The group-wide shift is judged as its own series,
+  reported under **all configs (common mode)**, and divided out of each config's
+  series so what remains is that config's own movement. Nothing is discarded:
+  averaging over the group makes a stack-wide change *easier* to catch, not
+  harder. That row's value is a **ratio**, not a measurement — 1.00 is the run
+  group at its usual level, 1.20 is every config 20 % above it — so it is shown
+  as `×1.20` and plotted on a `× baseline` axis, never in seconds or MB. A
+  config's own row reports its residual after the shift is removed, with the
+  measurement it came from and the shift kept alongside it in `report.json`
+  (`raw_value`, `common_mode_shift`).
+- **Trimmed alongside total.** Timing is judged on the mean, the median *and* a
+  **5 % trimmed mean** that drops the slowest events. The trimmed statistic is
+  the low-noise one; the untrimmed totals stay judged because the tail is
+  exactly where a tail-confined regression would appear.
+- **One measurement, one test.** `user_cpu_s` tracks `wall_time_s` closely
+  enough that judging both would count the same event twice, so it is recorded
+  and plottable but never flagged.
 - **Watch, then regression.** The first night to clear both gates is a
   **⚠️ Watch**. It only becomes a confirmed **🔴 Regression** once the *next*
   reliable night moves the same way again — a two-strike rule that is the main

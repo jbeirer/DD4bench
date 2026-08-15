@@ -33,7 +33,14 @@ from k4bench.regression.engine import Z_THRESHOLD
 from k4bench.regression.models import MetricVerdict, Severity
 from k4bench.labels import pretty_sample
 from k4bench.regression.render import _metric_name
-from k4bench.regression.report_builder import EVENT_METRICS, RUN_METRICS
+from k4bench.regression.common_mode import (
+    COMMON_MODE_LABEL,
+    COMMON_MODE_UNIT,
+    common_mode_shifts,
+    is_common_mode,
+    pretty_config,
+)
+from k4bench.regression.report_builder import EVENT_METRICS, RUN_VALUE_METRICS
 from k4bench.results.reliability_evidence import run_reliability_map
 from tabs import _blame
 from tabs._regression_flags import add_severity_markers, metric_option
@@ -120,7 +127,7 @@ def _drilldown_caption(
 ) -> str:
     context = f"{item.detector} · " if include_scope else ""
     return (
-        f"**{item.reason}** — {context}{item.label}, "
+        f"**{item.reason}** — {context}{pretty_config(item.label)}, "
         f"{pretty_sample(item.sample)}"
     )
 
@@ -135,7 +142,13 @@ def _series_key(verdict: MetricVerdict) -> str:
 def _yaxis_label(item: MetricVerdict) -> str:
     name = _METRIC_LABELS.get(item.metric, item.metric)
     name = name[:1].upper() + name[1:]
-    unit = _METRIC_UNITS.get(item.metric, "")
+    # A common-mode series is a ratio, so it carries the group's unit and not
+    # the metric's — plotting a factor of 1.2 on an axis labelled "s" would
+    # claim something the number does not say.
+    unit = (
+        COMMON_MODE_UNIT if is_common_mode(item.label)
+        else _METRIC_UNITS.get(item.metric, "")
+    )
     return f"{name} ({unit})" if unit else name
 
 
@@ -221,14 +234,12 @@ def _metric_history(
         df = cached_load_trend_event_timing(run_dirs)
         if not _is_valid_df(df):
             return None
-        df = df[df["label"] == verdict.label]
     else:
         df = results_df
         if not _is_valid_df(df):
             return None
-        if verdict.metric in RUN_METRICS:
+        if verdict.metric in RUN_VALUE_METRICS:
             df = with_cpu_efficiency(df)
-        df = df[df["label"] == verdict.label]
 
     # A failed config can leave plausible partial run metrics and event data;
     # keep those values for an explicit FAILURE marker, but reject an event
@@ -239,7 +250,32 @@ def _metric_history(
 
     if verdict.metric not in df.columns:
         return None
+    df = (
+        _common_mode_frame(df, verdict.metric)
+        if verdict.label == COMMON_MODE_LABEL
+        else df[df["label"] == verdict.label]
+    )
     return df.sort_values("x_date"), reliability, failed_configs, orphan_configs
+
+
+def _common_mode_frame(df: pd.DataFrame, metric: str) -> pd.DataFrame:
+    """The run group's common-mode series, one row per run.
+
+    A group-level verdict names no configuration, so there is no column of
+    measurements to plot. Its evidence is the shift series itself, rebuilt here
+    from the same frame and the same function the report judged it with, so the
+    chart shows what the verdict was actually about.
+    """
+    shifts = common_mode_shifts(df, metric)
+    dates = dict(zip(df["run_id"].astype(str), df["x_date"], strict=True))
+    return pd.DataFrame(
+        [
+            {"run_id": run_id, "x_date": dates[run_id],
+             "label": COMMON_MODE_LABEL, metric: shift}
+            for run_id, shift in shifts.items() if run_id in dates
+        ],
+        columns=["run_id", "x_date", "label", metric],
+    )
 
 
 def _missing_run_reason(

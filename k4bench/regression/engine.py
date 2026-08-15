@@ -568,9 +568,16 @@ def evaluate_series(
                 reason = f"{change} vs baseline median {med:.4g} (robust z={z_txt})"
                 if noise is not None:
                     # A percentage means little without the wobble it beat.
-                    reason += f", intrinsic event-mix noise ±{noise:.1%}"
+                    reason += f", intrinsic event-mix noise ±{noise:.1%} this run"
                 if floor > base_floor:
-                    reason += f", effect floor widened to {floor:.1%} by that noise"
+                    # Named separately from the run's own noise above: the floor
+                    # is set by the baseline runs' median noise, and a reader who
+                    # tried to derive one from the other would not get this
+                    # number.
+                    reason += (
+                        f", effect floor {floor:.1%} (widened from "
+                        f"{base_floor:.1%} by the baseline's event-mix noise)"
+                    )
                 if first_confirmed is not None and first_confirmed != _identity(row):
                     # A re-measurement of an already-confirmed change reads as
                     # a repeat, not fresh news.

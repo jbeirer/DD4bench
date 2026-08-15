@@ -133,29 +133,49 @@ REPORTED_ONLY_METRICS: dict[str, str] = {
 RUN_VALUE_METRICS: dict[str, str] = {**RUN_METRICS, **REPORTED_ONLY_METRICS}
 
 #: Per-config, per-run column carrying that run's own intrinsic Monte-Carlo
-#: noise (see :func:`k4bench.analysis.trend.event_mix_rse`). It is measured
-#: from the event file, but it describes the *run*, so it sets the effect floor
-#: for that config's run-level series as well as its event-level ones.
+#: noise (see :func:`k4bench.analysis.trend.event_mix_rse`).
 NOISE_COLUMN = "event_mix_rse"
+
+#: Metrics measured from a *subset* of the events, with the noise column
+#: measured from that same subset. A statistic must be gated by the noise of
+#: the sample it was computed from: gating the trimmed mean with the untrimmed
+#: total's noise would hand back the tail the trim removed and desensitize the
+#: one series that exists to be sensitive.
+NOISE_COLUMN_BY_METRIC: dict[str, str] = {
+    "trimmed_mean_time_s": "trimmed_event_mix_rse",
+}
+
+#: Metric families the noise floor applies to. Only ``time``: the noise is
+#: measured from the spread of per-event *execution times*, so it quantifies
+#: how much a re-drawn event mix moves a *timing* number and nothing else.
+#: Resident memory is set by what the geometry and the physics tables allocate,
+#: not by which events happened to be slow, so widening its floor with a timing
+#: statistic would desensitize memory regressions for an unrelated reason —
+#: most on exactly the tail-heavy configs where the timing noise is largest.
+#: It is a run-level property, though, so a config's run *timing* series
+#: (``wall_time_s``) is gated by it just as its per-event ones are.
+NOISE_FAMILIES = frozenset({"time"})
 
 def _reliable_column(run_ids: pd.Series, reliability: dict[str, bool | None]) -> list:
     """Per-row tri-state reliability, kept as Python objects (no NaN coercion)."""
     return [reliability.get(rid) for rid in run_ids]
 
 
-def noise_map(event_df: pd.DataFrame | None) -> dict[tuple[str, str], float]:
-    """``{(run_id, label): event_mix_rse}`` for every config-run that measured
-    its own intrinsic noise.
+def noise_map(
+    event_df: pd.DataFrame | None, column: str = NOISE_COLUMN,
+) -> dict[tuple[str, str], float]:
+    """``{(run_id, label): noise}`` from *column*, for every config-run that
+    measured its own intrinsic noise.
 
     Keyed by config-run rather than by run, because the noise is a property of
     what a configuration simulates: within one sweep the configurations differ
     by orders of magnitude in how tail-heavy they are.
     """
-    if event_df is None or event_df.empty or NOISE_COLUMN not in event_df.columns:
+    if event_df is None or event_df.empty or column not in event_df.columns:
         return {}
-    sub = event_df[["run_id", "label", NOISE_COLUMN]].dropna()
+    sub = event_df[["run_id", "label", column]].dropna()
     return {
-        (str(row.run_id), str(row.label)): float(getattr(row, NOISE_COLUMN))
+        (str(row.run_id), str(row.label)): float(getattr(row, column))
         for row in sub.itertuples(index=False)
     }
 
@@ -325,10 +345,13 @@ def evaluate_group_series(
     going unjudged.
     """
     out: dict[SeriesId, list[MetricVerdict]] = {}
-    noise = noise_map(event_df)
+    noise_by_column = {
+        column: noise_map(event_df, column)
+        for column in {NOISE_COLUMN, *NOISE_COLUMN_BY_METRIC.values()}
+    }
 
     def _walk(df: pd.DataFrame, metrics: dict[str, str]) -> None:
-        labels = [str(label) for label in sorted(df["label"].dropna().unique())]
+        labels = sorted(df["label"].dropna().unique())
         run_dates = dict(zip(df["run_id"].astype(str), df["x_date"], strict=True))
         # Too few configurations for a cross-config median to mean anything:
         # judge every series exactly as measured.
@@ -344,11 +367,16 @@ def evaluate_group_series(
                 if decomposable and family not in ABSOLUTE_FLOOR_FAMILIES
                 else {}
             )
+            metric_noise = (
+                noise_by_column[NOISE_COLUMN_BY_METRIC.get(metric, NOISE_COLUMN)]
+                if family in NOISE_FAMILIES else {}
+            )
             for label in labels:
-                sid = SeriesId(detector, platform, sample, label, family, metric)
+                name = str(label)
+                sid = SeriesId(detector, platform, sample, name, family, metric)
                 history = _series_history(
                     df, df["label"] == label, metric, reliability,
-                    label=label, shifts=shifts, noise=noise,
+                    label=name, shifts=shifts, noise=metric_noise,
                 )
                 verdicts = evaluate_series(history, series=sid)
                 if verdicts:

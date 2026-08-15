@@ -270,15 +270,26 @@ ddsim_args = sys.argv[9] if len(sys.argv) > 9 else ""
 # comparing software if the seed is the same on both — recording it is what
 # lets a report state that rather than assume it. None means the run drew a
 # fresh seed, i.e. the workload is not reproducible.
+#
+# The *last* occurrence wins, because that is what argparse gives ddsim and the
+# benchmark configs concatenate detector-level args before sample-level ones —
+# so a sample overriding the detector's seed would otherwise be recorded as the
+# seed it replaced, and the record would name a workload that never ran.
 def _random_seed(args: str):
     tokens = shlex.split(args)
-    for flag, value in zip(tokens, tokens[1:]):
-        if flag == "--random.seed":
-            try:
-                return int(value)
-            except ValueError:
-                return None
-    return None
+    seed = None
+    for i, token in enumerate(tokens):
+        if token.startswith("--random.seed="):
+            raw = token.partition("=")[2]
+        elif token == "--random.seed" and i + 1 < len(tokens):
+            raw = tokens[i + 1]
+        else:
+            continue
+        try:
+            seed = int(raw)
+        except ValueError:
+            seed = None
+    return seed
 
 run_info = {
     "date":             date,
