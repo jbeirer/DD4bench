@@ -821,7 +821,8 @@ def _render_group(
         and v.label not in failure_labels
     ]
     n_unknown = sum(
-        1 for v in group.verdicts if v.severity is Severity.UNKNOWN
+        1 for v in group.verdicts
+        if v.severity is Severity.UNKNOWN and v.label not in failure_labels
     )
     if n_unknown:
         st.caption(f"❔ {n_unknown} metric(s) not judged — insufficient history.")

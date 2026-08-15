@@ -144,6 +144,21 @@ def test_subject_singular_failure_wording():
     assert "1 failure(s)" not in subject(r) and "1 failures" not in subject(r)
 
 
+def test_failed_display_metrics_do_not_count_as_insufficient_history():
+    failure = _v(Severity.FAILURE, metric="returncode", pct_change=None)
+    recorded = _v(
+        Severity.UNKNOWN,
+        metric="wall_time_s",
+        pct_change=-0.95,
+        value=5.0,
+        baseline_median=100.0,
+    )
+
+    summary = email._quiet_summary(_group(recorded, failure))
+
+    assert "insufficient history" not in summary
+
+
 def test_failure_count_precedes_regression_counts_in_subject():
     r = _report(_group(
         _v(Severity.FAILURE, metric="returncode", pct_change=None),

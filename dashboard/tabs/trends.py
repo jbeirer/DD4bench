@@ -343,8 +343,8 @@ def _trends_body(
     HTTPS fetch whose shutdown can race a rerun.
     """
     # Keep failed values for diagnostic plotting, but carry their status as a
-    # separate display dimension. They are removed from reliability filtering,
-    # verdict joins and line values below, then overlaid as FAILURE markers.
+    # separate display dimension. They remain ordinary line values, are removed
+    # from reliability/verdict joins, then overlaid as FAILURE markers.
     trend_df = trend_df.copy()
     trend_df["_config_failed"] = failed_config_mask(trend_df)
 

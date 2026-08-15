@@ -196,8 +196,8 @@ def add_severity_markers(
 
 def attention_key(v: MetricVerdict) -> tuple:
     """Worst-first ordering shared by the ledger tables and the trend
-    previews: confirmed before watch, then the largest |Δ|, unknown magnitude
-    last."""
+    previews: failure, confirmed, watch, then the largest |Δ| within a class;
+    unknown magnitude sorts last."""
     severity_order = {
         Severity.FAILURE: 0,
         Severity.CONFIRMED: 1,
