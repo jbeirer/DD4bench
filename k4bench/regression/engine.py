@@ -7,8 +7,11 @@ so every gate errs toward *not* flagging:
    strictly before the night under test. Runs failing the conservative host
    reliability check (:mod:`k4bench.results.reliability`) never enter the
    baseline and are never themselves evaluated — contention is not a
-   regression. Below :data:`MIN_BASELINE_RUNS` reliable points the verdict is
-   ``UNKNOWN``, never a flag (no evidence ⇒ no verdict).
+   regression. Configs identified as failed are likewise removed by the report
+   assembly before a metric series reaches this engine, so their partial
+   measurements are gaps rather than baseline points. Below
+   :data:`MIN_BASELINE_RUNS` reliable points the verdict is ``UNKNOWN``, never a
+   flag (no evidence ⇒ no verdict).
 2. **Robust statistics**: the baseline center/spread are the median and the
    normal-consistent MAD (:data:`MAD_NORMAL_CONSISTENCY` × MAD), not
    mean/stddev, so one contaminated night that slipped past the reliability

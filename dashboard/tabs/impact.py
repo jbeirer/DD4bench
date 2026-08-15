@@ -14,6 +14,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from k4bench.analysis.loader import failed_config_mask
 from k4bench.analysis.plots._theme import _TEMPLATE
 from k4bench.labels import BASELINE_LABEL
 from ui_chrome import _drop_stale_selection
@@ -77,12 +78,9 @@ def _successful_rows(snapshot: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     Old result files without a ``returncode`` column remain usable because their
     success state is unknowable rather than known-bad.
     """
-    if "returncode" not in snapshot.columns:
-        return snapshot, []
-    returncodes = pd.to_numeric(snapshot["returncode"], errors="coerce")
-    successful = returncodes.fillna(-1).eq(0)
-    excluded = sorted(snapshot.loc[~successful, "label"].astype(str).unique())
-    return snapshot.loc[successful].copy(), excluded
+    failed = failed_config_mask(snapshot)
+    excluded = sorted(snapshot.loc[failed, "label"].astype(str).unique())
+    return snapshot.loc[~failed].copy(), excluded
 
 
 def _impact_percentages(

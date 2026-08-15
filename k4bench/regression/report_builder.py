@@ -19,6 +19,14 @@ from pathlib import Path
 
 import pandas as pd
 
+from k4bench.analysis.loader import (
+    config_rows_for_keys,
+    failed_config_keys,
+    failed_config_mask,
+    judgeable_config_keys,
+    judgeable_config_rows,
+    with_cpu_efficiency,
+)
 from k4bench.analysis.trend import (
     build_event_timing_trend,
     build_machine_info_trend,
@@ -117,18 +125,6 @@ def _series_history(
     })
 
 
-def _with_cpu_efficiency(results_df: pd.DataFrame) -> pd.DataFrame:
-    """Attach a derived ``cpu_efficiency`` column (same formula as the
-    reliability evidence: total CPU time over wall time)."""
-    cols = set(results_df.columns)
-    if "user_cpu_s" not in cols or "wall_time_s" not in cols:
-        return results_df
-    df = results_df.copy()
-    total = df["user_cpu_s"] + df["sys_cpu_s"] if "sys_cpu_s" in cols else df["user_cpu_s"]
-    df["cpu_efficiency"] = total / df["wall_time_s"].replace(0, float("nan"))
-    return df
-
-
 def unjudged_value_verdicts(
     *,
     detector: str,
@@ -147,8 +143,7 @@ def unjudged_value_verdicts(
     them even with "Exclude unreliable runs" off. This records tonight's raw
     value for every ``(label, metric)`` not *already* judged, marked ``UNKNOWN``
     (never a flag), so the value is preserved for display. A normally-judged
-    (reliable) run already has a verdict per metric, so *already* covers it and
-    this adds nothing.
+    run is already covered.
     """
     out: list[MetricVerdict] = []
 
@@ -174,7 +169,7 @@ def unjudged_value_verdicts(
                     reason="unreliable host — value recorded but not judged",
                 ))
 
-    results = _with_cpu_efficiency(results_df) if results_df is not None else None
+    results = with_cpu_efficiency(results_df) if results_df is not None else None
     _emit(results, RUN_METRICS)
     _emit(event_df, EVENT_METRICS)
     return out
@@ -247,7 +242,7 @@ def evaluate_group_series(
             out[series] = _with_history(history, verdicts, hosts or {})
 
     if results_df is not None and not results_df.empty:
-        df = _with_cpu_efficiency(results_df)
+        df = with_cpu_efficiency(results_df)
         for label in sorted(df["label"].dropna().unique()):
             mask = df["label"] == label
             for metric, family in RUN_METRICS.items():
@@ -277,15 +272,27 @@ def _failed_config_verdicts(
     run_id: str,
     run_date: str,
 ) -> list[MetricVerdict]:
-    """FAILURE verdicts for configs whose returncode is non-zero (or missing)
-    in tonight's run — same rule as the dashboard's ``_failed_labels``."""
+    """FAILURE verdicts for configs whose returncode is non-zero, missing, or
+    invalid in tonight's run — same rule as the dashboard's ``_failed_labels``."""
     if "returncode" not in results_df.columns:
         return []
     tonight = results_df[results_df["run_id"] == run_id]
-    failed = tonight[tonight["returncode"].fillna(-1) != 0]
+    failed = tonight.loc[failed_config_mask(tonight)]
     verdicts = []
-    for row in failed.itertuples(index=False):
-        rc = None if pd.isna(row.returncode) else float(row.returncode)
+    normalized_rc = pd.to_numeric(failed["returncode"], errors="coerce")
+    for row, raw_rc in zip(
+        failed.itertuples(index=False), normalized_rc, strict=True,
+    ):
+        rc = None if pd.isna(raw_rc) else float(raw_rc)
+        if rc is None:
+            reason = (
+                "config recorded a missing or invalid returncode — "
+                "its metrics were not judged"
+            )
+        else:
+            reason = (
+                f"config exited with returncode {int(rc)} — its metrics were not judged"
+            )
         verdicts.append(MetricVerdict(
             detector=detector, platform=platform, sample=sample,
             label=str(row.label), metric_family="status", metric="returncode",
@@ -293,10 +300,7 @@ def _failed_config_verdicts(
             value=rc, baseline_median=None, baseline_mad=None,
             pct_change=None, z_score=None,
             severity=Severity.FAILURE, direction=Direction.NONE,
-            reason=(
-                "config exited with a missing returncode" if rc is None
-                else f"config exited with returncode {int(rc)}"
-            ),
+            reason=reason,
         ))
     return verdicts
 
@@ -428,9 +432,17 @@ def _group_report_from_frames(
         geometry_path=geometry_path,
     )
 
+    # A failed process can leave plausible partial metrics in both its result
+    # CSV and event file; an event file can even outlive a missing result CSV.
+    # Treat either config-night as a gap throughout the fetched history: it must
+    # neither earn a verdict nor age into a baseline. The raw frames remain the
+    # source for metadata and failure/missing-config reporting below.
+    judgeable_results_df = judgeable_config_rows(results_df, results_df)
+    judgeable_event_df = judgeable_config_rows(event_df, results_df)
+
     series = evaluate_group_series(
         detector=detector, platform=platform, sample=sample,
-        results_df=results_df, event_df=event_df,
+        results_df=judgeable_results_df, event_df=judgeable_event_df,
         reliability=reliability, hosts=hosts,
     )
     # Only verdicts issued *for tonight's run* belong in tonight's report; a
@@ -445,13 +457,67 @@ def _group_report_from_frames(
         if v is not None
     ]
 
-    # Record raw values for metrics the engine didn't judge tonight — an
-    # unreliable run is skipped, so this is the only way its values reach the
-    # report for the dashboard to plot (marked UNKNOWN, never flagged).
+    config_failures = (
+        _failed_config_verdicts(
+            detector=detector, platform=platform, sample=sample,
+            results_df=results_df, run_id=tonight, run_date=tonight,
+        )
+        if not no_results else []
+    )
+
+    # Reuse the normal detector walk to attach the healthy-only baseline band
+    # and Δ to a failed measurement for display. This is a separate walk over
+    # judgeable history plus only tonight's failed rows: the raw value gets the
+    # same chart geometry as a healthy run but never enters real detector state,
+    # confirmation, or a later baseline.
+    failed_configs = failed_config_keys(results_df)
+    tonight_failed = {key for key in failed_configs if key[0] == str(tonight)}
+    if tonight_failed:
+        failed_results = config_rows_for_keys(results_df, tonight_failed)
+        failed_events = config_rows_for_keys(event_df, tonight_failed)
+        display_results = pd.concat(
+            [judgeable_results_df, failed_results], ignore_index=True,
+        )
+        event_frames = [
+            frame for frame in (judgeable_event_df, failed_events)
+            if frame is not None and not frame.empty
+        ]
+        display_events = (
+            pd.concat(event_frames, ignore_index=True) if event_frames else None
+        )
+        display_reliability = {**reliability, tonight: True}
+        display_series = evaluate_group_series(
+            detector=detector, platform=platform, sample=sample,
+            results_df=display_results, event_df=display_events,
+            reliability=display_reliability, hosts=hosts,
+        )
+        failure_reason = {v.label: v.reason for v in config_failures}
+        group.verdicts.extend(
+            dataclasses.replace(
+                verdict,
+                severity=Severity.FAILURE,
+                direction=Direction.NONE,
+                reason=failure_reason[verdict.label],
+                onset_run_id=None,
+                onset_run_date=None,
+                last_accepted_run_id=None,
+                last_accepted_run_date=None,
+                first_confirmed_run_id=None,
+                history=(),
+                region_deltas=(),
+            )
+            for verdicts in display_series.values()
+            for verdict in verdicts
+            if verdict.run_id == tonight
+            and (str(verdict.run_id), verdict.label) in tonight_failed
+        )
+
+    # Record values the normal engine skipped because the host was unreliable.
     already = {(v.label, v.metric) for v in group.verdicts}
     group.verdicts.extend(unjudged_value_verdicts(
         detector=detector, platform=platform, sample=sample,
-        results_df=results_df, event_df=event_df, tonight=tonight, already=already,
+        results_df=judgeable_results_df, event_df=judgeable_event_df,
+        tonight=tonight, already=already,
     ))
 
     if reliability.get(tonight) is False:
@@ -460,11 +526,7 @@ def _group_report_from_frames(
             "metrics were not judged (see the Machine Info tab)"
         )
 
-    if not no_results:
-        group.verdicts.extend(_failed_config_verdicts(
-            detector=detector, platform=platform, sample=sample,
-            results_df=results_df, run_id=tonight, run_date=tonight,
-        ))
+    group.verdicts.extend(config_failures)
     group.job_failures.extend(
         _missing_config_failures(results_df, tonight, configured_labels)
     )
@@ -473,7 +535,9 @@ def _group_report_from_frames(
 
 
 def _with_region_deltas(
-    group: RunGroupReport, run_dirs: tuple[str, ...]
+    group: RunGroupReport,
+    run_dirs: tuple[str, ...],
+    judgeable_configs: set[tuple[str, str]] | None = None,
 ) -> RunGroupReport:
     """*group* with each confirmed **timing** regression told where inside the
     detector its step landed (:mod:`k4bench.regression.regions`).
@@ -502,6 +566,7 @@ def _with_region_deltas(
         window: region_deltas(
             run_dirs, label=window[0],
             base_release=window[1], onset_release=window[2],
+            judgeable_configs=judgeable_configs,
         )
         for window in windows
     }
@@ -546,7 +611,9 @@ def group_report_from_run_dirs(
     # run_info still names the stack that failed.
     if not group.k4h_release:
         group.k4h_release = tonight_meta["k4h_release"] or ""
-    return _with_region_deltas(group, run_dirs)
+    return _with_region_deltas(
+        group, run_dirs, judgeable_config_keys(results_df),
+    )
 
 
 def build_nightly_report(

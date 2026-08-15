@@ -13,16 +13,16 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from k4bench.analysis.loader import failed_config_mask
 from k4bench.labels import pretty_platform, pretty_release, pretty_sample
 from sections import SECTION_SCOPE, SectionScope
 
 
 def _failed_labels(results: "pd.DataFrame") -> list[str]:
-    """Return the labels of configs whose returncode is non-zero (or missing)."""
-    if "returncode" not in results.columns or "label" not in results.columns:
+    """Labels whose returncode is non-zero, missing, or invalid."""
+    if "label" not in results.columns:
         return []
-    rc = results["returncode"]
-    return sorted(results.loc[rc.fillna(-1) != 0, "label"].astype(str))
+    return sorted(results.loc[failed_config_mask(results), "label"].astype(str))
 
 
 # ── Log parsing helpers ──────────────────────────────────────────────────────

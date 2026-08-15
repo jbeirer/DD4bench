@@ -55,6 +55,8 @@ from tabs import _blame
 from tabs._night_picker import render_night_picker
 from tabs._regression_flags import (
     attention_key,
+    failed_config_labels,
+    failed_metric_options,
     render_candidate_ranking,
 )
 from tabs._regression_trend import (
@@ -811,9 +813,12 @@ def _render_group(
     for msg in group.notes:
         st.caption(f"❔ {msg}")
 
+    failure_labels = failed_config_labels(group.verdicts)
+    failure_metrics = failed_metric_options(group.verdicts)
     flagged = [
         v for v in group.verdicts
         if v.severity in (Severity.WATCH, Severity.CONFIRMED)
+        and v.label not in failure_labels
     ]
     n_unknown = sum(
         1 for v in group.verdicts if v.severity is Severity.UNKNOWN
@@ -825,17 +830,20 @@ def _render_group(
     # ("what does this look like?") — the upstream-changes card follows with
     # the "why", once there's a window to explain. The change-window picker
     # sits above both because it scopes both.
-    if flagged:
-        st.markdown("###### Flagged metric trend")
+    if flagged or failure_metrics:
+        st.markdown("###### Metric trend")
     # Rendered here whether or not there is a trend above it: on a rerun where
     # every metric fell back inside the band the release still has its windows,
     # and the picker simply leads the attribution instead.
     window, in_window = _select_window(
         attributions, flagged, key=f"{key}_{scope[0]}_{scope[1]}",
     )
-    if flagged:
+    if flagged or failure_metrics:
         drillable: list[MetricVerdict] = sorted(
-            (v for v in in_window if v.baseline_median is not None),
+            [
+                *failure_metrics,
+                *(v for v in in_window if v.baseline_median is not None),
+            ],
             key=attention_key,
         )
         if drillable:
@@ -857,10 +865,11 @@ def _render_group(
                     selected = render_metric_picker(
                         drillable,
                         key=drill_key,
-                        help="Recent history with the baseline band this verdict was "
-                             "judged against. Opens on the most severe flag — pick "
-                             "another, or “—” to hide the chart. Downloads data on "
-                             "first use.",
+                        help="Recent metric history. Failed measurements remain "
+                             "visible as failure markers but are excluded from "
+                             "baselines and regression judgment. Opens on the most "
+                             "severe item; pick another, or “—” to hide the chart. "
+                             "Downloads data on first use.",
                     )
                 actions = st.container(
                     horizontal=True, horizontal_alignment="right",

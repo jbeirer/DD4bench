@@ -22,16 +22,18 @@ from data import (
     cached_load_trend_machine_info,
     cached_load_trend_results,
 )
+from k4bench.analysis.loader import (
+    config_keys,
+    failed_config_keys,
+    recorded_config_rows,
+    with_cpu_efficiency,
+)
 from k4bench.analysis.plots._theme import PALETTE, _TEMPLATE
 from k4bench.regression.engine import Z_THRESHOLD
 from k4bench.regression.models import MetricVerdict, Severity
 from k4bench.labels import pretty_sample
 from k4bench.regression.render import _metric_name
-from k4bench.regression.report_builder import (
-    EVENT_METRICS,
-    RUN_METRICS,
-    _with_cpu_efficiency,
-)
+from k4bench.regression.report_builder import EVENT_METRICS, RUN_METRICS
 from k4bench.results.reliability_evidence import run_reliability_map
 from tabs import _blame
 from tabs._regression_flags import add_severity_markers, metric_option
@@ -182,7 +184,12 @@ def _metric_history(
     verdict: MetricVerdict, data_url: str, cache_dir: str, *,
     list_run_dates: Callable,
     fetch_runs_windowed: Callable,
-):
+) -> tuple[
+    pd.DataFrame,
+    dict[str, bool | None],
+    set[tuple[str, str]],
+    set[tuple[str, str]],
+] | None:
     """Fetch the shared release-budgeted history for one verdict series."""
     stacks_dates = list_run_dates(
         data_url, verdict.detector, verdict.platform, verdict.sample
@@ -205,6 +212,7 @@ def _metric_history(
         return None
 
     results_df = cached_load_trend_results(run_dirs)
+    failed_configs = failed_config_keys(results_df)
     reliability = run_reliability_map(
         results_df, cached_load_trend_machine_info(run_dirs),
     )
@@ -219,25 +227,53 @@ def _metric_history(
         if not _is_valid_df(df):
             return None
         if verdict.metric in RUN_METRICS:
-            df = _with_cpu_efficiency(df)
+            df = with_cpu_efficiency(df)
         df = df[df["label"] == verdict.label]
 
-    if df.empty or verdict.metric not in df.columns:
+    # A failed config can leave plausible partial run metrics and event data;
+    # keep those values for an explicit FAILURE marker, but reject an event
+    # file with no result row at all. Statistical judgment and baselines were
+    # already built from judgeable rows in the report builder.
+    orphan_configs = config_keys(df) - config_keys(results_df)
+    df = recorded_config_rows(df, results_df)
+
+    if verdict.metric not in df.columns:
         return None
-    return df.sort_values("x_date"), reliability
+    return df.sort_values("x_date"), reliability, failed_configs, orphan_configs
 
 
 def _missing_run_reason(
-    fetched: pd.DataFrame, excluded_runs: set[str], verdict: MetricVerdict,
+    fetched: pd.DataFrame,
+    excluded_runs: set[str],
+    verdict: MetricVerdict,
+    failed_configs: set[tuple[str, str]] | None = None,
+    orphan_configs: set[tuple[str, str]] | None = None,
 ) -> str:
     """Why the flagged run has no point, as a clause completing "it …".
 
-    Three different facts reach :func:`_blame.run_point` as the same ``None``,
-    and they call for three different reactions from the reader: an exclusion
-    they chose and can undo, a window they can widen, and a gap in the data that
-    is neither. Collapsing them into one guess would let a partial download read
-    as a reliability problem.
+    Five different facts reach :func:`_blame.run_point` as the same ``None``,
+    and they call for different reactions from the reader: a failed config, an
+    orphaned metric file with no result record, an exclusion they chose and can
+    undo, a window they can widen, and a missing metric value. Collapsing them
+    into one guess would let a partial download read as a reliability problem.
     """
+    failed = {
+        (str(run_id), str(label))
+        for run_id, label in (failed_configs or set())
+    }
+    if (str(verdict.run_id), str(verdict.label)) in failed:
+        return (
+            "came from a config with a non-zero, missing, or invalid returncode, "
+            "so its metrics were not judged"
+        )
+    orphaned = {
+        (str(run_id), str(label))
+        for run_id, label in (orphan_configs or set())
+    }
+    if (str(verdict.run_id), str(verdict.label)) in orphaned:
+        return (
+            "had no matching result record, so its metrics were not judged"
+        )
     if str(verdict.run_id) in {str(r) for r in excluded_runs}:
         return "was excluded by the unreliable-run filter above"
     present = (
@@ -264,19 +300,36 @@ def render_metric_trend(
     if history is None:
         st.warning("No history could be loaded for this metric.")
         return
-    df, reliability = history
+    df, reliability, failed_configs, orphan_configs = history
+    if df.empty:
+        reason = _missing_run_reason(
+            df, set(), verdict, failed_configs, orphan_configs,
+        )
+        st.warning(
+            f"No judgeable history could be loaded for this metric. The flagged "
+            f"run {reason}."
+        )
+        return
 
     series_key = _series_key(verdict)
     fetched = df
-    df, excluded_runs = resolve_reliability_filter(
-        df, reliability,
+    failed_mask = pd.Series([
+        (str(run_id), str(label)) in failed_configs
+        for run_id, label in zip(df["run_id"], df["label"], strict=True)
+    ], index=df.index)
+    failed_df = df.loc[failed_mask]
+    judgeable_df = df.loc[~failed_mask]
+    judgeable_df, excluded_runs = resolve_reliability_filter(
+        judgeable_df, reliability,
         key=f"{widget_namespace}_drill_excl_{series_key}",
         date_col="x_date",
         slot=reliability_slot,
     )
-    if df.empty:
+    if judgeable_df.empty and failed_df.empty:
         return
-    x, y = df["x_date"], df[verdict.metric]
+    df = pd.concat([judgeable_df, failed_df]).sort_values("x_date")
+    x = df["x_date"]
+    y = df[verdict.metric]
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(
@@ -287,21 +340,32 @@ def render_metric_trend(
             line=dict(color=PALETTE[0], width=1.5),
         ),
     ))
-    med, mad = verdict.baseline_median, verdict.baseline_mad or 0.0
-    fig.add_hline(
-        y=med, line_dash="dash", line_color=PALETTE[0], line_width=1,
-        annotation_text="baseline median", annotation_font_size=11,
-    )
-    if mad > 0:
-        fig.add_hrect(
-            y0=med - Z_THRESHOLD * mad, y1=med + Z_THRESHOLD * mad,
-            fillcolor=_BASELINE_FILL, line_width=0,
+    failed_points = failed_df.loc[failed_df[verdict.metric].notna()]
+    if not failed_points.empty:
+        add_severity_markers(
+            fig, failed_points,
+            x_col="x_date", y_col=verdict.metric, name_col="label",
+            severity=Severity.FAILURE.value, hover_y="%{y:.4g}",
         )
+    med, mad = verdict.baseline_median, verdict.baseline_mad or 0.0
+    if med is not None:
+        fig.add_hline(
+            y=med, line_dash="dash", line_color=PALETTE[0], line_width=1,
+            annotation_text="baseline median", annotation_font_size=11,
+        )
+        if mad > 0:
+            fig.add_hrect(
+                y0=med - Z_THRESHOLD * mad, y1=med + Z_THRESHOLD * mad,
+                fillcolor=_BASELINE_FILL, line_width=0,
+            )
 
-    if verdict.severity is Severity.CONFIRMED:
-        onset = _blame.onset_point(df, verdict)
+    verdict_failed = (
+        str(verdict.run_id), str(verdict.label)
+    ) in failed_configs
+    if verdict.severity is Severity.CONFIRMED and not verdict_failed:
+        onset = _blame.onset_point(judgeable_df, verdict)
         if onset is None and verdict.onset_run_id is None:
-            onset = _prev_point(df, verdict)
+            onset = _prev_point(judgeable_df, verdict)
         if onset is not None:
             add_severity_markers(
                 fig,
@@ -313,13 +377,17 @@ def render_metric_trend(
                 severity=Severity.WATCH.value, hover_y="%{y:.4g}",
             )
         if _blame.has_window(verdict):
-            _blame.add_window_band(fig, df, verdict)
+            _blame.add_window_band(fig, judgeable_df, verdict)
     # The verdict's own badge sits on the run that earned it, never at bare
     # (release, value) coordinates: the run may have been dropped by the filter
     # above, and a badge floating over a line that no longer has a point there
     # reads as a flag on whatever the eye lands on next.
-    flagged = _blame.run_point(df, verdict.run_id, verdict.metric)
-    if flagged is not None:
+    flagged = _blame.run_point(
+        failed_df if verdict_failed else judgeable_df,
+        verdict.run_id,
+        verdict.metric,
+    )
+    if flagged is not None and not verdict_failed:
         add_severity_markers(
             fig,
             pd.DataFrame({
@@ -348,8 +416,11 @@ def render_metric_trend(
     if flagged is None:
         # Without this the chart is a baseline band and an unmarked line, which
         # reads as "nothing was flagged here" — the opposite of what happened.
+        reason = _missing_run_reason(
+            fetched, excluded_runs, verdict, failed_configs, orphan_configs,
+        )
         st.caption(
             f"⚠️ The flagged run ({verdict.run_id}) carries no point on this "
-            f"chart — it {_missing_run_reason(fetched, excluded_runs, verdict)}. "
+            f"chart — it {reason}. "
             "Its marker is hidden rather than moved to another run."
         )

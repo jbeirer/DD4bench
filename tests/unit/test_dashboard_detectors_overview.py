@@ -133,12 +133,14 @@ def _report() -> NightlyReport:
 def test_metrics_frame_filters_and_columns():
     df = ov.report_metrics_frame(_report())
     assert list(df.columns) == ov._FRAME_COLUMNS
-    # Region, returncode, cpu_efficiency and None-valued rows are dropped;
-    # OK/WATCH/UNKNOWN kept.
+    # Region, returncode, cpu_efficiency and None-valued rows are dropped. The
+    # CLD config's raw values are retained but display as FAILURE because that
+    # same config carries the canonical returncode failure verdict.
     assert set(df["metric"]) <= set(ov._METRIC_ORDER)
     assert not df[df["metric"] == "mean_time_s"]["value"].eq(0.01).any()
     assert df["value"].map(math.isfinite).all()
-    assert set(df["severity"]) == {"OK", "WATCH", "UNKNOWN"}
+    assert set(df["severity"]) == {"OK", "FAILURE", "UNKNOWN"}
+    assert set(df[df["detector"] == "CLD"]["severity"]) >= {"FAILURE"}
     # The failed-only detector contributes no rows.
     assert "ALLEGRO" not in set(df["detector"])
     # Both CLD samples survive as separate scopes, each with its group's
@@ -152,6 +154,20 @@ def test_metrics_frame_empty_report_keeps_columns():
     df = ov.report_metrics_frame(NightlyReport(generated_at=""))
     assert df.empty
     assert list(df.columns) == ov._FRAME_COLUMNS
+
+
+def test_flag_choices_relabel_stale_metric_flags_for_failed_config():
+    group = _report().groups[0]
+
+    choices = ov._flag_choices([group])
+
+    assert choices
+    assert {v.severity for v in choices} == {Severity.FAILURE}
+    peak = next(v for v in choices if v.metric == "peak_rss_mb")
+    assert peak.value == 2000.0
+    assert peak.pct_change is not None
+    assert peak.baseline_median is not None
+    assert "returncode 1" in peak.reason
 
 
 # ── report_reliability_frame / reliability_history ─────────────────────────────
@@ -299,6 +315,65 @@ def _same_tag_rerun_rows() -> pd.DataFrame:
     )
 
 
+def _same_tag_failure_rows(failed_first: bool) -> pd.DataFrame:
+    healthy = _group(
+        "CLD", [_verdict(metric="mean_time_s", value=100.0)],
+        run_date="2026-07-01" if not failed_first else "2026-07-02",
+        k4h_release="key4hep-2026-07-01",
+    )
+    failed = _group(
+        "CLD", [
+            _verdict(metric="mean_time_s", value=5.0),
+            _verdict(
+                metric="returncode", metric_family="status", value=139.0,
+                severity=Severity.FAILURE,
+            ),
+        ],
+        run_date="2026-07-01" if failed_first else "2026-07-02",
+        k4h_release="key4hep-2026-07-01",
+    )
+    groups = [failed, healthy] if failed_first else [healthy, failed]
+    frames = [
+        (g.run_date, ov.report_metrics_frame(NightlyReport(generated_at="", groups=[g])))
+        for g in groups
+    ]
+    return ov.history_rows(frames, "PLAT", "single_e", "baseline_all")
+
+
+@pytest.mark.parametrize("failed_first", [True, False])
+def test_same_tag_failure_is_separate_from_healthy_line(failed_first):
+    rows = _same_tag_failure_rows(failed_first)
+    hist = ov.collapse_history(rows)
+    failures = rows[rows["severity"] == Severity.FAILURE.value]
+
+    assert hist["value"].tolist() == [100.0]
+    assert hist["severity"].tolist() == ["OK"]
+    assert failures["value"].tolist() == [5.0]
+
+    fig = ov._history_figure(
+        hist, "mean_time_s", "peak_rss_mb", {"CLD": ("#111111", "solid", "circle")},
+        ["CLD"], failures=failures,
+    )
+    line = next(t for t in fig.data if t.mode == "lines+markers")
+    failed_marks = [
+        t for t in fig.data if t.mode == "markers" and t.marker.symbol == "x"
+    ]
+    assert list(line.y) == [100.0]
+    assert failed_marks and all(list(t.y) == [5.0] for t in failed_marks)
+
+    preview = ov._flag_trend_figure(
+        hist,
+        _verdict(
+            metric="mean_time_s", value=5.0, severity=Severity.FAILURE,
+            baseline_median=100.0, baseline_mad=0.6,
+        ),
+        failures,
+    )
+    assert list(next(t for t in preview.data if t.mode == "lines+markers").y) == [100.0]
+    assert any(s.y0 == s.y1 == 100.0 for s in preview.layout.shapes)
+    assert any(s.y0 < 100.0 < s.y1 for s in preview.layout.shapes)
+
+
 def test_history_rows_keeps_one_row_per_run():
     rows = _same_tag_rerun_rows()
     # Both runs survive under their shared tag, each naming the night it ran on
@@ -359,7 +434,7 @@ def _flag_trend_series(monkeypatch, *, exclude: bool) -> pd.DataFrame:
     captured = {}
     monkeypatch.setattr(
         ov, "_flag_trend_figure",
-        lambda series, v: captured.setdefault("series", series),
+        lambda series, v, failures=None: captured.setdefault("series", series),
     )
 
     class _Container:
@@ -636,6 +711,18 @@ def test_relative_history_rescales_per_series():
     assert ov.relative_history(hist.iloc[0:0]).empty
 
 
+def test_relative_history_does_not_invent_a_failed_only_baseline():
+    failed = pd.DataFrame({
+        "night": ["2026-01-12"],
+        "detector": ["CLD"],
+        "metric": ["wall_time_s"],
+        "value": [5.0],
+        "severity": [Severity.FAILURE.value],
+    })
+
+    assert ov.relative_history(failed)["value"].isna().all()
+
+
 # ── detector_family / detector_styles ──────────────────────────────────────────
 
 def test_detector_family_split():
@@ -731,44 +818,53 @@ def _fixture_frames():
     ])
     n2 = ov.report_metrics_frame(night2)
     nights = [("2026-01-12", n1), ("2026-01-13", n2)]
-    hist = _collapsed_history(nights, "PLAT", "single_e", "baseline_all")
-    wide, _ = ov.latest_snapshot(
-        ov.history_rows(nights, "PLAT", "single_e", "baseline_all")
-    )
+    rows = ov.history_rows(nights, "PLAT", "single_e", "baseline_all")
+    hist = ov.collapse_history(rows)
+    failures = rows[rows["severity"] == Severity.FAILURE.value]
+    wide, _ = ov.latest_snapshot(rows)
     detectors = sorted(set(wide.index) | set(hist["detector"]))
     styles = ov.detector_styles(detectors, ["#111111", "#222222"])
-    return wide, hist, styles, detectors
+    return wide, hist, failures, styles, detectors
 
 
 def test_history_figure_trace_counts_and_legend():
-    wide, hist, styles, detectors = _fixture_frames()
-    _, hist_disp = ov._to_display_units(wide, hist)
-    fig = ov._history_figure(hist_disp, "mean_time_s", "peak_rss_mb", styles, detectors)
-    # CLD and IDEA both carry mean_time_s + peak_rss_mb: 4 history lines +
-    # one confirmed-regression flag (IDEA, mean_time panel) drawn as two
-    # layers (soft halo + crisp white-bordered badge — see _FLAG_MARKS).
-    # The WATCH flag (CLD, peak_rss) is hidden by default.
-    assert len(fig.data) == 6
-    # One entry per detector, deduped across the CPU and Memory panels.
-    assert sum(bool(t.showlegend) for t in fig.data) == 2
+    wide, hist, failures, styles, detectors = _fixture_frames()
+    plot = pd.concat([hist, failures], ignore_index=True)
+    _, plot_disp = ov._to_display_units(wide, plot)
+    hist_disp = plot_disp[plot_disp["severity"] != Severity.FAILURE.value]
+    failures_disp = plot_disp[plot_disp["severity"] == Severity.FAILURE.value]
+    fig = ov._history_figure(
+        hist_disp, "mean_time_s", "peak_rss_mb", styles, detectors,
+        failures=failures_disp,
+    )
+    # IDEA carries the two healthy lines. CLD's two failed measurements remain
+    # at their own values as two-layer markers, and IDEA's confirmed regression
+    # adds another two marker layers.
+    assert len(fig.data) == 8
+    assert sum(bool(t.showlegend) for t in fig.data) == 1
     assert {t.legendgroup for t in fig.data if t.legendgroup} == {"CLD", "IDEA"}
-    halo = next(t for t in fig.data if t.hoverinfo == "skip")
-    assert halo.marker.symbol == "circle" and halo.marker.line.width == 0
+    halo = next(
+        t for t in fig.data
+        if t.hoverinfo == "skip" and t.marker.symbol == "circle"
+    )
+    assert halo.marker.line.width == 0
     assert halo.legend == "legend2"  # IDEA's markers follow its family legend
-    badge = next(t for t in fig.data if t.marker.color == "#d03b3b")
+    badge = next(
+        t for t in fig.data
+        if t.marker.color == "#d03b3b" and t.marker.symbol == "circle"
+    )
     assert badge.marker.line.color == "#ffffff"  # never blends into the line
     assert list(badge.customdata) == ["IDEA"]
-    # Both flag classes sit behind toggles: watches are opt-in (amber
-    # triangle), confirmed flags can be switched off.
+    # Regression flags sit behind toggles; failure markers are always visible.
     fig_watch = ov._history_figure(hist_disp, "mean_time_s", "peak_rss_mb",
-                                   styles, detectors, show_watch=True)
-    assert len(fig_watch.data) == 8  # +halo +badge for the watch flag
-    assert any(t.marker.symbol == "triangle-up" and t.marker.line.color == "#ffffff"
-               for t in fig_watch.data)
+                                   styles, detectors, show_watch=True,
+                                   failures=failures_disp)
+    assert len(fig_watch.data) == 8  # the stale WATCH became a failure
     fig_plain = ov._history_figure(hist_disp, "mean_time_s", "peak_rss_mb",
-                                   styles, detectors, show_confirmed=False)
-    assert len(fig_plain.data) == 4  # no flags at all
-    assert not any(t.hoverinfo == "skip" for t in fig_plain.data)
+                                   styles, detectors, show_confirmed=False,
+                                   failures=failures_disp)
+    assert len(fig_plain.data) == 6  # lines + always-visible failure markers
+    assert sum(t.hoverinfo == "skip" for t in fig_plain.data) == 2
     # CPU is (1,1) = x1/y1, Memory is (1,2) = x2/y2.
     assert fig.layout.yaxis.title.text == "Mean event time (s)"
     assert fig.layout.yaxis2.title.text == "Peak RSS (GB)"
@@ -780,7 +876,7 @@ def test_history_figure_trace_counts_and_legend():
 
 
 def test_history_figure_linear_and_relative_toggles():
-    wide, hist, styles, detectors = _fixture_frames()
+    wide, hist, _failures, styles, detectors = _fixture_frames()
     _, hist_disp = ov._to_display_units(wide, hist)
     fig = ov._history_figure(hist_disp, "mean_time_s", "peak_rss_mb",
                              styles, detectors, log=False)
@@ -800,7 +896,7 @@ def test_history_figure_linear_and_relative_toggles():
 
 
 def test_history_figure_handles_partial_data():
-    wide, hist, styles, detectors = _fixture_frames()
+    wide, hist, _failures, styles, detectors = _fixture_frames()
     _, hist_disp = ov._to_display_units(wide, hist)
     # A memory metric with no values: its panel stays empty but the figure
     # still builds from the time panel.
@@ -813,7 +909,7 @@ def test_history_figure_handles_partial_data():
 
 
 def test_landscape_figure_points_units_and_axes():
-    wide, hist, styles, detectors = _fixture_frames()
+    wide, hist, _failures, styles, detectors = _fixture_frames()
     as_of = {"CLD": "2026-01-12", "IDEA": "2026-01-13"}
     wide_disp, _ = ov._to_display_units(wide, hist)
     fig = ov._landscape_figure(wide_disp, "mean_time_s", "peak_rss_mb", styles,

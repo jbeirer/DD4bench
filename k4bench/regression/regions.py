@@ -89,7 +89,11 @@ def _region_medians(run_dir: Path, label: str) -> dict[str, float]:
     return medians
 
 
-def _release_medians(run_dirs: Sequence[Path], label: str) -> dict[str, float]:
+def _release_medians(
+    run_dirs: Sequence[Path],
+    label: str,
+    judgeable_configs: set[tuple[str, str]] | None = None,
+) -> dict[str, float]:
     """Per-region medians for one release, pooled across its nights.
 
     A release measured on several nights is several measurements of one software
@@ -98,6 +102,11 @@ def _release_medians(run_dirs: Sequence[Path], label: str) -> dict[str, float]:
     night happened to be last."""
     per_night: dict[str, list[float]] = {}
     for run_dir in run_dirs:
+        if (
+            judgeable_configs is not None
+            and (str(run_dir.name), str(label)) not in judgeable_configs
+        ):
+            continue
         for region, median in _region_medians(run_dir, label).items():
             per_night.setdefault(region, []).append(median)
     return {
@@ -137,6 +146,7 @@ def region_deltas(
     base_release: str,
     onset_release: str,
     limit: int = MAX_REGIONS,
+    judgeable_configs: set[tuple[str, str]] | None = None,
 ) -> tuple[RegionDelta, ...]:
     """How each region's per-event time moved across ``(base, onset]``, largest
     movement first.
@@ -144,15 +154,16 @@ def region_deltas(
     Returns ``()`` when either end recorded no region timing at all — with only
     one side measured there is no comparison to make, and inventing one (treating
     the missing side as zero) would report every region of the detector as newly
-    appearing.
+    appearing. When *judgeable_configs* is supplied, failed or orphaned
+    config-nights absent from that set are gaps and do not enter release medians.
     """
     grouped = _dirs_by_release(run_dirs)
     base_dirs, onset_dirs = grouped.get(base_release, []), grouped.get(onset_release, [])
     if not base_dirs or not onset_dirs:
         return ()
 
-    base = _release_medians(base_dirs, label)
-    onset = _release_medians(onset_dirs, label)
+    base = _release_medians(base_dirs, label, judgeable_configs)
+    onset = _release_medians(onset_dirs, label, judgeable_configs)
     if not base or not onset:
         return ()
 

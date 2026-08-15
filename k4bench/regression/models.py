@@ -318,7 +318,16 @@ class RunGroupReport:
 
     @property
     def failures(self) -> list[MetricVerdict]:
-        return self._select(Severity.FAILURE)
+        """Canonical config failures, one status verdict per failed config.
+
+        A failed config may also carry metric-shaped FAILURE rows so trend
+        views can show its recorded values with their healthy-only baseline.
+        When the canonical ``returncode`` row exists, those display rows must
+        not multiply failure counts or email entries.
+        """
+        failed = self._select(Severity.FAILURE)
+        status = [v for v in failed if v.metric == "returncode"]
+        return status or failed
 
     @property
     def missing_run(self) -> bool:

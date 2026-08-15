@@ -235,6 +235,34 @@ def test_control_changes_rerender():
     assert not at.exception, at.exception
 
 
+def test_relative_mode_explains_failed_measurement_without_a_baseline():
+    def _failed_metrics(night: str) -> dict:
+        report = copy.deepcopy(_report(night))
+        for group in report["groups"]:
+            if group["detector"] != "SiD":
+                continue
+            failure = copy.deepcopy(group["verdicts"][0])
+            failure.update({
+                "metric": "returncode", "metric_family": "status",
+                "value": 139.0, "severity": "FAILURE",
+                "reason": "config exited with returncode 139",
+            })
+            group["verdicts"].append(failure)
+        return report
+
+    reports = {night: _failed_metrics(night) for night in DATES}
+    at = AppTest.from_function(
+        _app, args=(str(_DASHBOARD_DIR), DATES, reports, _WINDOW),
+        default_timeout=30,
+    ).run()
+    at.segmented_control(key="det_ov_scale").set_value("Relative %").run()
+
+    assert not at.exception, at.exception
+    captions = "\n".join(str(c.value) for c in at.caption)
+    assert "cannot be shown in Relative % without a successful baseline: SiD" in captions
+    assert "excluded as unreliable: SiD" not in captions
+
+
 def test_narrower_window_still_renders():
     # A window that excludes the older nights renders cleanly (still has the
     # latest night for the snapshot) — the window is just a passed-in tuple

@@ -11,6 +11,9 @@ import json
 import sys
 from pathlib import Path
 
+import pandas as pd
+
+from k4bench.analysis.loader import failed_config_mask
 from k4bench.analysis import trend
 
 
@@ -48,6 +51,29 @@ def test_build_results_trend(tmp_path):
     assert set(df["github_run_url"]) == {
         "https://ci.example/runs/2026-05-20", "https://ci.example/runs/2026-05-21",
     }
+
+
+def test_results_trend_preserves_old_schema_returncode_provenance(tmp_path):
+    legacy = _make_run(
+        tmp_path / "a", "2026-05-20", "key4hep-2026-05-20", 5.0,
+    )
+    (legacy / "baseline_results.csv").write_text(
+        "label,n_events,wall_time_s,peak_rss_mb,user_cpu_s,events_per_sec\n"
+        "baseline,10,5.0,1024.0,4.0,2.0\n"
+    )
+    modern = _make_run(
+        tmp_path / "b", "2026-05-21", "key4hep-2026-05-21", 6.0,
+    )
+
+    df = trend.build_results_trend((str(legacy), str(modern)))
+    assert df is not None
+    failed_by_run = pd.Series(
+        failed_config_mask(df).to_numpy(),
+        index=df["run_id"],
+    )
+
+    assert not bool(failed_by_run["2026-05-20"])
+    assert not bool(failed_by_run["2026-05-21"])
 
 
 def test_build_results_trend_empty():

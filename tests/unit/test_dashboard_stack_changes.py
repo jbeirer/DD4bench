@@ -1016,6 +1016,200 @@ def test_whole_platform_trend_caption_names_the_detector():
     assert "IDEA" not in local
 
 
+def test_metric_history_keeps_failed_value_and_healthy_sibling(monkeypatch):
+    import pandas as pd
+
+    from tabs import _regression_trend as trend
+
+    results = pd.DataFrame({
+        "run_id": [
+            "2026-06-26", "2026-06-27", "2026-06-26", "2026-06-27",
+        ],
+        "x_date": pd.to_datetime([
+            "2026-06-26", "2026-06-27", "2026-06-26", "2026-06-27",
+        ]),
+        "label": ["baseline", "baseline", "sibling", "sibling"],
+        "returncode": [0, 139, 0, 0],
+        "wall_time_s": [100.0, 5.0, 80.0, 81.0],
+    })
+    monkeypatch.setattr(trend, "cached_load_trend_results", lambda _dirs: results)
+    monkeypatch.setattr(
+        trend, "cached_load_trend_machine_info", lambda _dirs: None,
+    )
+
+    def _history(verdict):
+        return trend._metric_history(
+            verdict, "url", "cache",
+            list_run_dates=lambda *_args: {
+                "key4hep-2026-06-26": ["2026-06-26"],
+                "key4hep-2026-06-27": ["2026-06-27"],
+            },
+            fetch_runs_windowed=lambda *_args: ("run-dir",),
+        )
+
+    failed_df, _reliability, failed_configs, orphan_configs = _history(_confirmed())
+    assert list(failed_df["run_id"]) == ["2026-06-26", "2026-06-27"]
+    assert list(failed_df["wall_time_s"]) == [100.0, 5.0]
+    assert failed_configs == {("2026-06-27", "baseline")}
+    assert orphan_configs == set()
+
+    sibling_df, _reliability, _failed_configs, _orphan_configs = _history(
+        _confirmed(label="sibling")
+    )
+    assert list(sibling_df["run_id"]) == ["2026-06-26", "2026-06-27"]
+
+
+def test_metric_history_keeps_failed_event_value_for_failure_marker(monkeypatch):
+    import pandas as pd
+
+    from tabs import _regression_trend as trend
+
+    results = pd.DataFrame({
+        "run_id": ["2026-06-26", "2026-06-27"],
+        "x_date": pd.to_datetime(["2026-06-26", "2026-06-27"]),
+        "label": ["baseline", "baseline"],
+        "returncode": [0, 139],
+        "wall_time_s": [100.0, 5.0],
+    })
+    events = pd.DataFrame({
+        "run_id": ["2026-06-26", "2026-06-27"],
+        "x_date": pd.to_datetime(["2026-06-26", "2026-06-27"]),
+        "label": ["baseline", "baseline"],
+        "mean_time_s": [1.0, 0.05],
+    })
+    monkeypatch.setattr(trend, "cached_load_trend_results", lambda _dirs: results)
+    monkeypatch.setattr(
+        trend, "cached_load_trend_event_timing", lambda _dirs: events,
+    )
+    monkeypatch.setattr(
+        trend, "cached_load_trend_machine_info", lambda _dirs: None,
+    )
+
+    history = trend._metric_history(
+        _confirmed(metric="mean_time_s"), "url", "cache",
+        list_run_dates=lambda *_args: {
+            "key4hep-2026-06-26": ["2026-06-26"],
+            "key4hep-2026-06-27": ["2026-06-27"],
+        },
+        fetch_runs_windowed=lambda *_args: ("run-dir",),
+    )
+
+    event_df, _reliability, failed_configs, orphan_configs = history
+    assert list(event_df["run_id"]) == ["2026-06-26", "2026-06-27"]
+    assert list(event_df["mean_time_s"]) == [1.0, 0.05]
+    assert failed_configs == {("2026-06-27", "baseline")}
+    assert orphan_configs == set()
+
+
+def test_failure_only_metric_history_keeps_reason_metadata(monkeypatch):
+    import pandas as pd
+
+    from tabs import _regression_trend as trend
+
+    results = pd.DataFrame({
+        "run_id": ["2026-06-27"],
+        "x_date": pd.to_datetime(["2026-06-27"]),
+        "label": ["baseline"],
+        "returncode": [139],
+        "wall_time_s": [5.0],
+    })
+    monkeypatch.setattr(trend, "cached_load_trend_results", lambda _dirs: results)
+    monkeypatch.setattr(
+        trend, "cached_load_trend_machine_info", lambda _dirs: None,
+    )
+
+    history = trend._metric_history(
+        _confirmed(), "url", "cache",
+        list_run_dates=lambda *_args: {
+            "key4hep-2026-06-27": ["2026-06-27"],
+        },
+        fetch_runs_windowed=lambda *_args: ("run-dir",),
+    )
+
+    assert history is not None
+    frame, _reliability, failed_configs, orphan_configs = history
+    assert list(frame["wall_time_s"]) == [5.0]
+    assert failed_configs == {("2026-06-27", "baseline")}
+    assert orphan_configs == set()
+
+    warnings = []
+    figures = []
+    monkeypatch.setattr(trend.st, "warning", warnings.append)
+    monkeypatch.setattr(
+        trend.st, "plotly_chart", lambda fig, **_kwargs: figures.append(fig),
+    )
+    monkeypatch.setattr(trend.st, "caption", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(trend, "_metric_history", lambda *_args, **_kwargs: history)
+    trend.render_metric_trend(
+        _confirmed(), "url", "cache",
+        list_run_dates=lambda *_args: {},
+        fetch_runs_windowed=lambda *_args: (),
+        widget_namespace="test",
+    )
+    assert warnings == []
+    assert len(figures) == 1
+    metric_line = next(
+        trace for trace in figures[0].data if trace.mode == "lines+markers"
+    )
+    assert list(metric_line.y) == [5.0]
+    failure_badges = [
+        trace for trace in figures[0].data
+        if trace.mode == "markers" and trace.hoverinfo != "skip"
+    ]
+    assert len(failure_badges) == 1
+    assert list(failure_badges[0].y) == [5.0]
+    assert "Failed run" in failure_badges[0].hovertemplate
+    assert any(shape.type == "line" for shape in figures[0].layout.shapes)
+
+
+def test_orphan_event_history_reports_missing_result_record(monkeypatch):
+    import pandas as pd
+
+    from tabs import _regression_trend as trend
+
+    results = pd.DataFrame({
+        "run_id": ["2026-06-27"],
+        "x_date": pd.to_datetime(["2026-06-27"]),
+        "label": ["healthy-sibling"],
+        "returncode": [0],
+        "wall_time_s": [100.0],
+    })
+    events = pd.DataFrame({
+        "run_id": ["2026-06-27"],
+        "x_date": pd.to_datetime(["2026-06-27"]),
+        "label": ["baseline"],
+        "mean_time_s": [0.05],
+    })
+    monkeypatch.setattr(trend, "cached_load_trend_results", lambda _dirs: results)
+    monkeypatch.setattr(
+        trend, "cached_load_trend_event_timing", lambda _dirs: events,
+    )
+    monkeypatch.setattr(
+        trend, "cached_load_trend_machine_info", lambda _dirs: None,
+    )
+
+    history = trend._metric_history(
+        _confirmed(metric="mean_time_s"), "url", "cache",
+        list_run_dates=lambda *_args: {
+            "key4hep-2026-06-27": ["2026-06-27"],
+        },
+        fetch_runs_windowed=lambda *_args: ("run-dir",),
+    )
+
+    assert history is not None
+    frame, _reliability, failed_configs, orphan_configs = history
+    assert frame.empty and failed_configs == set()
+    assert orphan_configs == {("2026-06-27", "baseline")}
+    reason = trend._missing_run_reason(
+        frame,
+        set(),
+        _confirmed(metric="mean_time_s"),
+        failed_configs,
+        orphan_configs,
+    )
+    assert "no matching result record" in reason and "not judged" in reason
+
+
 def test_hidden_marker_note_names_the_actual_reason():
     import pandas as pd
 
@@ -1027,11 +1221,17 @@ def test_hidden_marker_note_names_the_actual_reason():
         "x_date": pd.to_datetime(["2026-06-26", "2026-06-27"]),
         "wall_time_s": [5.0, 6.0],
     })
-    # Three ways a marker goes missing, and the reader can only act on the right
-    # one — re-enable the run, widen the window, or neither.
+    # Four ways a marker goes missing, and the reader can only act on the right
+    # one — fix the config, re-enable the run, widen the window, or neither.
+    absent = fetched[fetched["run_id"] != "2026-06-27"]
+    failed = _missing_run_reason(
+        absent, {"2026-06-27"}, verdict,
+        {("2026-06-27", "baseline")},
+    )
+    assert "returncode" in failed and "not judged" in failed
     assert "excluded" in _missing_run_reason(fetched, {"2026-06-27"}, verdict)
     assert "outside" in _missing_run_reason(
-        fetched[fetched["run_id"] != "2026-06-27"], set(), verdict
+        absent, set(), verdict
     )
     # Present and kept, but the metric never landed — a download gap, not a
     # reliability call, and saying "unreliable" here would misdiagnose it.
