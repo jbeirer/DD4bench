@@ -675,85 +675,7 @@ def test_window_reports_release_dates_alongside_run_ids():
     assert confirmed.last_accepted_run_date == confirmed.onset_run_date == "2026-01-20"
 
 
-# ── Noise-aware effect floor ──────────────────────────────────────────────────
-
-def _noisy_history(values, noise, start="2026-01-01") -> pd.DataFrame:
-    """A history whose runs each report their own intrinsic event-mix noise."""
-    history = _history(values, start=start)
-    history["noise_rse"] = noise
-    return history
-
-
-def test_noise_floor_suppresses_a_step_inside_the_measured_noise():
-    # A +8% step clears the 5% family floor, but the series measures itself at
-    # ±3% intrinsic noise, so 3x that is 9% and the step is inside it.
-    values = _STEADY + [108.0, 108.4]
-    verdicts = evaluate_series(
-        _noisy_history(values, [0.03] * len(values)), series=_TIME,
-    )
-    assert _severities(verdicts[-2:]) == [Severity.OK, Severity.OK]
-    # Without the noise annotation the very same values do flag.
-    plain = evaluate_series(_history(values), series=_TIME)
-    assert _severities(plain[-2:]) == [Severity.WATCH, Severity.CONFIRMED]
-
-
-def test_noise_floor_still_lets_a_step_beyond_the_noise_through():
-    # Same measured noise, a step comfortably outside it.
-    values = _STEADY + [130.0, 130.4]
-    verdicts = evaluate_series(
-        _noisy_history(values, [0.03] * len(values)), series=_TIME,
-    )
-    assert _severities(verdicts[-2:]) == [Severity.WATCH, Severity.CONFIRMED]
-
-
-def test_noise_floor_is_never_lowered_below_the_family_floor():
-    # A very quiet series must not become *more* trigger-happy: a +3% move is
-    # under the 5% family floor and stays OK however small the measured noise.
-    values = _STEADY + [103.0, 103.2]
-    verdicts = evaluate_series(
-        _noisy_history(values, [0.0001] * len(values)), series=_TIME,
-    )
-    assert all(v.severity is Severity.OK for v in verdicts[-2:])
-    assert verdicts[-1].effect_floor == pytest.approx(EFFECT_FLOOR["time"])
-
-
-def test_noise_floor_comes_from_the_baseline_not_from_tonight():
-    # One unusually tame night must not narrow the floor: the floor is the
-    # median over the baseline runs, and this series is noisy throughout.
-    values = _STEADY + [108.0, 108.4]
-    noise = [0.03] * len(_STEADY) + [0.0001, 0.0001]
-    verdicts = evaluate_series(_noisy_history(values, noise), series=_TIME)
-    assert all(v.severity is Severity.OK for v in verdicts[-2:])
-    assert verdicts[-1].effect_floor == pytest.approx(3 * 0.03)
-
-
-def test_verdict_reports_the_noise_it_was_judged_against():
-    values = _STEADY + [130.0, 130.4]
-    verdicts = evaluate_series(
-        _noisy_history(values, [0.02] * len(values)), series=_TIME,
-    )
-    confirmed = verdicts[-1]
-    assert confirmed.noise_rse == pytest.approx(0.02)
-    assert "intrinsic event-mix noise ±2.0% this run" in confirmed.reason
-
-
-def test_absolute_floor_family_ignores_a_relative_noise_estimate():
-    # cpu_efficiency's floor is percentage points, which a relative standard
-    # error cannot be compared against — it must be left alone.
-    series = SeriesId(
-        detector="DET", platform="PLAT", sample="single_e", label="baseline",
-        metric_family="cpu_efficiency_pp", metric="cpu_efficiency",
-    )
-    values = [0.98, 0.981, 0.979, 0.98, 0.9805, 0.9795, 0.98, 0.9802, 0.9798,
-              0.98, 0.90, 0.901]
-    verdicts = evaluate_series(
-        _noisy_history(values, [0.5] * len(values)), series=series,
-    )
-    assert _severities(verdicts[-2:]) == [Severity.WATCH, Severity.CONFIRMED]
-    assert verdicts[-1].effect_floor == pytest.approx(
-        EFFECT_FLOOR["cpu_efficiency_pp"]
-    )
-
+# ── Common-mode annotations ───────────────────────────────────────────────────
 
 def test_common_mode_annotations_are_carried_onto_the_verdict():
     # The engine judges `value` and reports what it was derived from, without
@@ -766,18 +688,6 @@ def test_common_mode_annotations_are_carried_onto_the_verdict():
     assert confirmed.value == pytest.approx(120.5)
     assert confirmed.raw_value == pytest.approx(120.5 * 1.1)
     assert confirmed.common_mode_shift == pytest.approx(0.1)
-
-
-def test_reason_attributes_the_widened_floor_to_the_baseline_not_tonight():
-    # The floor comes from the baseline runs' median noise. A reader must not
-    # be able to mistake it for three times the noise printed beside it.
-    values = _STEADY + [130.0, 130.4]
-    noise = [0.04] * len(_STEADY) + [0.001, 0.001]
-    confirmed = evaluate_series(_noisy_history(values, noise), series=_TIME)[-1]
-    assert confirmed.noise_rse == pytest.approx(0.001)
-    assert confirmed.effect_floor == pytest.approx(3 * 0.04)
-    assert "±0.1% this run" in confirmed.reason
-    assert "widened from 5.0% by the baseline's event-mix noise" in confirmed.reason
 
 
 # ── Workload identity ─────────────────────────────────────────────────────────
@@ -803,57 +713,80 @@ def test_a_history_with_no_workload_column_is_judged_as_before():
     assert _severities(verdicts[-2:]) == [Severity.WATCH, Severity.CONFIRMED]
 
 
-def test_the_noise_floor_only_applies_while_the_workload_is_unfixed():
-    values = _STEADY + [108.0, 108.4]
-    noise = [0.03] * len(values)
-
-    unfixed = _noisy_history(values, noise)
-    unfixed["workload"] = [None] * len(values)
-    assert all(v.severity is Severity.OK for v in evaluate_series(
-        unfixed, series=_TIME)[-2:])
-
-    fixed = _noisy_history(values, noise)
-    fixed["workload"] = [42] * len(values)
-    judged = evaluate_series(fixed, series=_TIME)
-    assert _severities(judged[-2:]) == [Severity.WATCH, Severity.CONFIRMED]
-    assert judged[-1].effect_floor == pytest.approx(EFFECT_FLOOR["time"])
-
-
-def test_a_seed_change_keeps_the_existing_baseline_and_judges_across_it():
-    # Pinning the seed must not cost a blind period. The first fixed-seed night
-    # is judged against the mature history that already exists, so a step that
-    # coincides with the change is still detected on the normal two-strike
-    # schedule rather than disappearing into a fresh warm-up.
+def test_a_workload_change_is_not_judged_against_the_old_baseline():
+    # Pinning the seed lands the series at one particular draw and holds it
+    # there. Judged against the unseeded history, that offset would look like a
+    # step — and unlike a fluctuation it would repeat every night, so the
+    # two-strike rule would confirm it rather than protect against it.
     values = _STEADY + [120.0, 120.5]
     workloads = [None] * len(_STEADY) + [42, 42]
     verdicts = evaluate_series(
         _workload_history(values, workloads), series=_TIME,
     )
-    first_fixed = verdicts[len(_STEADY)]
-    assert first_fixed.severity is not Severity.UNKNOWN
-    # Judged against the pre-existing baseline, not against a restarted one.
-    assert first_fixed.baseline_median == pytest.approx(100.0, abs=0.5)
+    changeover = verdicts[len(_STEADY)]
+    assert changeover.severity is Severity.UNKNOWN
+    assert "workload changed" in changeover.reason
+    # And the level it changed to is the one everything after is judged against,
+    # so the changeover is never re-reported as a step either.
+    assert Severity.CONFIRMED not in _severities(verdicts)
+    assert verdicts[-1].severity is Severity.OK
+    assert verdicts[-1].baseline_median == pytest.approx(120.0, abs=0.1)
+
+
+def test_only_the_changeover_release_is_given_up():
+    # One release of sensitivity is the whole price. A genuine step arriving
+    # after the changeover is caught on the normal two-strike schedule.
+    values = _STEADY + [120.0, 120.5, 120.2, 145.0, 145.4]
+    workloads = [None] * len(_STEADY) + [42] * 5
+    verdicts = evaluate_series(
+        _workload_history(values, workloads), series=_TIME,
+    )
+    assert "re-anchoring after workload change" in verdicts[len(_STEADY) + 1].reason
     assert _severities(verdicts[-2:]) == [Severity.WATCH, Severity.CONFIRMED]
 
 
-def test_a_seed_change_does_not_reset_a_pending_watch():
-    # The seam carries no state of its own: a WATCH raised on the last unfixed
-    # night is confirmed by the first fixed one, exactly as two consecutive
-    # nights of one workload would be.
+def test_a_step_right_after_a_workload_change_gets_no_window_across_it():
+    # The window a confirmed step reports must not reach back over the boundary
+    # to a night that simulated different events. There is no lower bound on
+    # when such a change entered, and the verdict says so rather than naming a
+    # tighter one it cannot support.
+    values = _STEADY + [120.0, 145.0, 145.4]
+    workloads = [None] * len(_STEADY) + [42] * 3
+    verdicts = evaluate_series(
+        _workload_history(values, workloads), series=_TIME,
+    )
+    confirmed = verdicts[-1]
+    assert confirmed.severity is Severity.CONFIRMED
+    assert confirmed.last_accepted_run_id is None
+
+
+def test_a_pending_watch_does_not_survive_a_workload_change():
+    # A WATCH raised on the last unfixed night was measured on events the next
+    # night did not simulate, so it cannot be the first of two strikes.
     values = _STEADY + [120.0, 120.5]
     workloads = [None] * (len(_STEADY) + 1) + [42]
     verdicts = evaluate_series(
         _workload_history(values, workloads), series=_TIME,
     )
+    assert _severities(verdicts[-2:]) == [Severity.WATCH, Severity.UNKNOWN]
+
+
+def test_an_unseeded_history_is_one_workload_not_a_new_one_each_night():
+    # Unseeded nights do simulate different events, but they scatter randomly
+    # and the baseline spread already models that. Treating each as its own
+    # workload would re-anchor nightly and detect nothing, ever.
+    values = _STEADY + [120.0, 120.5]
+    verdicts = evaluate_series(
+        _workload_history(values, [None] * len(values)), series=_TIME,
+    )
     assert _severities(verdicts[-2:]) == [Severity.WATCH, Severity.CONFIRMED]
 
 
-def test_a_quiet_seed_change_is_simply_quiet():
-    # The common case: the workload changes and the level does not move enough
-    # to matter. No flag, and no warm-up either.
+def test_a_quiet_workload_change_costs_one_release_and_no_more():
+    # The common case: the workload changes and the level barely moves.
     values = _STEADY + [100.1, 99.9]
     workloads = [None] * len(_STEADY) + [42, 42]
     verdicts = evaluate_series(
         _workload_history(values, workloads), series=_TIME,
     )
-    assert _severities(verdicts[-2:]) == [Severity.OK, Severity.OK]
+    assert _severities(verdicts[-2:]) == [Severity.UNKNOWN, Severity.OK]

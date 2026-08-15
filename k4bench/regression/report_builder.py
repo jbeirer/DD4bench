@@ -109,10 +109,11 @@ RUN_METRICS: dict[str, str] = {
 #: over a few hundred events that add detection overhead without much signal
 #: beyond ``mean``/``median`` (time) and run-level ``peak_rss_mb`` (memory).
 #:
-#: ``trimmed_mean_time_s`` is the sensitive, low-noise primary of the timing
-#: family (see :func:`k4bench.analysis.trend.trimmed_mean`). It is judged
-#: *alongside* the totals rather than replacing them, because the tail it drops
-#: is where a tail-confined regression would appear first.
+#: ``trimmed_mean_time_s`` is the mean of the events left after the slowest 5%
+#: are dropped (:func:`k4bench.analysis.trend.upper_trimmed_mean`) — a view of
+#: the typical event, judged *alongside* the untrimmed mean rather than
+#: replacing it, because the tail it drops is where a tail-confined regression
+#: would appear first.
 EVENT_METRICS: dict[str, str] = {
     "mean_time_s":         "time",
     "median_time_s":       "time",
@@ -132,29 +133,6 @@ REPORTED_ONLY_METRICS: dict[str, str] = {
 #: Every run-level metric whose value is recorded, judged or not.
 RUN_VALUE_METRICS: dict[str, str] = {**RUN_METRICS, **REPORTED_ONLY_METRICS}
 
-#: Per-config, per-run column carrying that run's own intrinsic Monte-Carlo
-#: noise (see :func:`k4bench.analysis.trend.event_mix_rse`).
-NOISE_COLUMN = "event_mix_rse"
-
-#: Metrics measured from a *subset* of the events, with the noise column
-#: measured from that same subset. A statistic must be gated by the noise of
-#: the sample it was computed from: gating the trimmed mean with the untrimmed
-#: total's noise would hand back the tail the trim removed and desensitize the
-#: one series that exists to be sensitive.
-NOISE_COLUMN_BY_METRIC: dict[str, str] = {
-    "trimmed_mean_time_s": "trimmed_event_mix_rse",
-}
-
-#: Metric families the noise floor applies to. Only ``time``: the noise is
-#: measured from the spread of per-event *execution times*, so it quantifies
-#: how much a re-drawn event mix moves a *timing* number and nothing else.
-#: Resident memory is set by what the geometry and the physics tables allocate,
-#: not by which events happened to be slow, so widening its floor with a timing
-#: statistic would desensitize memory regressions for an unrelated reason —
-#: most on exactly the tail-heavy configs where the timing noise is largest.
-#: It is a run-level property, though, so a config's run *timing* series
-#: (``wall_time_s``) is gated by it just as its per-event ones are.
-NOISE_FAMILIES = frozenset({"time"})
 
 def _reliable_column(run_ids: pd.Series, reliability: dict[str, bool | None]) -> list:
     """Per-row tri-state reliability, kept as Python objects (no NaN coercion)."""
@@ -162,12 +140,13 @@ def _reliable_column(run_ids: pd.Series, reliability: dict[str, bool | None]) ->
 
 
 def workload_map(results_df: pd.DataFrame | None) -> dict[str, int]:
-    """``{run_id: random_seed}`` for every run that fixed one.
+    """``{run_id: random_seed}`` for every run that recorded one.
 
-    A run absent from this map simulated a freshly drawn event mix (see
-    :data:`~k4bench.regression.engine.WORKLOAD_UNFIXED`). The distinction is
-    what lets the engine confine the event-mix noise floor to the runs that
-    actually re-draw their events; it never partitions a baseline.
+    A run absent from this map has an unknown workload (see
+    :data:`~k4bench.regression.engine.WORKLOAD_UNKNOWN`) — it drew a fresh
+    event mix, or predates the seed being recorded. The engine re-anchors its
+    baseline when this value changes, so the map only has to say what was
+    recorded, never why.
     """
     if (
         results_df is None or results_df.empty
@@ -184,34 +163,13 @@ def workload_map(results_df: pd.DataFrame | None) -> dict[str, int]:
     return out
 
 
-def noise_map(
-    event_df: pd.DataFrame | None, column: str = NOISE_COLUMN,
-) -> dict[tuple[str, str], float]:
-    """``{(run_id, label): noise}`` from *column*, for every config-run that
-    measured its own intrinsic noise.
-
-    Keyed by config-run rather than by run, because the noise is a property of
-    what a configuration simulates: within one sweep the configurations differ
-    by orders of magnitude in how tail-heavy they are.
-    """
-    if event_df is None or event_df.empty or column not in event_df.columns:
-        return {}
-    sub = event_df[["run_id", "label", column]].dropna()
-    return {
-        (str(row.run_id), str(row.label)): float(getattr(row, column))
-        for row in sub.itertuples(index=False)
-    }
-
-
 def _series_history(
     df: pd.DataFrame,
     mask: pd.Series,
     metric: str,
     reliability: dict[str, bool | None],
     *,
-    label: str = "",
     shifts: dict[str, float] | None = None,
-    noise: dict[tuple[str, str], float] | None = None,
     workloads: dict[str, int] | None = None,
 ) -> pd.DataFrame:
     """One config's metric history, annotated with everything the engine needs
@@ -233,10 +191,6 @@ def _series_history(
     })
     if workloads:
         history["workload"] = [workloads.get(rid) for rid in run_ids]
-    if noise:
-        history["noise_rse"] = [
-            noise.get((rid, label)) for rid in run_ids
-        ]
     if shifts:
         factors = run_ids.map(lambda rid: shifts.get(rid, 1.0)).astype(float)
         history["raw_value"] = values.to_numpy()
@@ -372,10 +326,6 @@ def evaluate_group_series(
     """
     out: dict[SeriesId, list[MetricVerdict]] = {}
     workloads = workload_map(results_df)
-    noise_by_column = {
-        column: noise_map(event_df, column)
-        for column in {NOISE_COLUMN, *NOISE_COLUMN_BY_METRIC.values()}
-    }
 
     def _walk(df: pd.DataFrame, metrics: dict[str, str]) -> None:
         labels = sorted(df["label"].dropna().unique())
@@ -394,17 +344,12 @@ def evaluate_group_series(
                 if decomposable and family not in ABSOLUTE_FLOOR_FAMILIES
                 else {}
             )
-            metric_noise = (
-                noise_by_column[NOISE_COLUMN_BY_METRIC.get(metric, NOISE_COLUMN)]
-                if family in NOISE_FAMILIES else {}
-            )
             for label in labels:
                 name = str(label)
                 sid = SeriesId(detector, platform, sample, name, family, metric)
                 history = _series_history(
                     df, df["label"] == label, metric, reliability,
-                    label=name, shifts=shifts, noise=metric_noise,
-                    workloads=workloads,
+                    shifts=shifts, workloads=workloads,
                 )
                 verdicts = evaluate_series(history, series=sid)
                 if verdicts:
@@ -412,9 +357,7 @@ def evaluate_group_series(
 
             if not shifts:
                 continue
-            # The common mode itself. No noise annotation: a median over the
-            # whole group has already averaged the per-config event-mix noise
-            # down, so the family floor is the honest gate for it.
+            # The common mode itself, judged as its own series.
             group_sid = SeriesId(
                 detector, platform, sample, COMMON_MODE_LABEL, family, metric,
             )
@@ -483,12 +426,13 @@ def _random_seed_note(results_df: pd.DataFrame | None, tonight: str) -> str | No
     workload than the night before it, or none at all.
 
     Timing is a function of which events were simulated, so a changed seed can
-    shift every series of the run group at once. Purely informational: the
-    engine keeps judging against the history it already has, so nothing about
-    the verdicts changes here. What changes is what a reader should conclude
-    from them — a simultaneous move on the night the workload changed has an
-    explanation that no code change competes with, and a reader who is not told
-    will spend the evening looking for one.
+    shift every series of the run group at once. The engine already acts on
+    this — such a release is not judged against the old baseline and re-anchors
+    it instead (:func:`k4bench.regression.engine.evaluate_series`, gate 8) —
+    and every verdict of the re-anchoring period says so in its own reason.
+    This note is the human headline for the one night the change lands on, so a
+    reader does not spend the evening hunting for a code change that explains a
+    group-wide move.
     """
     if results_df is None or results_df.empty or "random_seed" not in results_df.columns:
         return None
@@ -511,17 +455,21 @@ def _random_seed_note(results_df: pd.DataFrame | None, tonight: str) -> str | No
     if now == before:
         return None
     shift = (
-        "this changes the simulated event workload and may cause a one-time "
-        "shift in every metric of this run group"
+        "this changes the simulated event workload, so this release is judged "
+        "against a baseline re-anchored on it rather than on nights that "
+        "simulated different events"
     )
+    # "No recorded seed", never "an unfixed seed": a run predating seed
+    # recording and a run that deliberately drew a fresh one both land here,
+    # and the note must not assert which of the two it was.
     if now is None:
         return (
-            "tonight drew a fresh ddsim seed, whereas "
-            f"{previous[-1]} used seed {before} — {shift}"
+            f"tonight recorded no ddsim seed, whereas {previous[-1]} used "
+            f"seed {before} — {shift}"
         )
     return (
-        f"tonight used ddsim seed {now}, whereas {previous[-1]} used "
-        + (f"seed {before}" if before is not None else "an unfixed seed")
+        f"tonight used ddsim seed {now}, whereas {previous[-1]} recorded "
+        + (f"seed {before}" if before is not None else "none")
         + f" — {shift}"
     )
 

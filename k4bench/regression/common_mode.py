@@ -25,6 +25,12 @@ is the whole design:
 What the reader gets is one finding for a shared move and one finding for a
 configuration that moved on its own, instead of the two being indistinguishable
 piles of the same row.
+
+The decomposition only ever happens when the group really did move together:
+one configuration holding its historical level vetoes it outright (see
+:data:`MIN_UNANIMITY`). A run group is not a poll, and a majority that moved is
+not a common mode — on a removal sweep the majority is exactly what a
+detector-local regression produces.
 """
 
 from __future__ import annotations
@@ -43,8 +49,32 @@ COMMON_MODE_LABEL = "__all_configs__"
 #: a group-wide fact. Below this a "median across the group" is really just one
 #: or two configurations, and dividing it out would move a real per-config
 #: change into the common mode where nothing judges it as one. Such a run gets
-#: a shift of exactly 1.0 — no decomposition, judged as measured.
+#: no shift at all — no decomposition, and no group-level observation either.
 MIN_COMMON_MODE_CONFIGS = 4
+
+#: A shift this close to 1.0 has no direction to agree or disagree about, so
+#: the unanimity test below is not applied to it — the ratio it divides by
+#: would be numerical dust. Such a run is still *measured*: a group that sat at
+#: its usual level is a real observation, and the common-mode series needs
+#: those quiet nights to have a baseline at all.
+NEGLIGIBLE_SHIFT = 0.005
+
+#: Fraction of the median shift every contributing configuration must itself
+#: have moved before the shift is accepted as *common*.
+#:
+#: The median alone does not say "the group moved together" — it says "over
+#: half of it did". Those are different claims, and on a removal sweep they come
+#: apart in exactly the case the sweep exists to resolve: a regression inside
+#: detector A shows up in ``baseline`` and in every ``without_X`` except
+#: ``without_A``, which is a majority. Dividing that majority out would leave
+#: the one genuinely unaffected configuration — the one that identifies the
+#: cause — looking like the only thing that moved, in the opposite direction.
+#:
+#: So a configuration sitting at its historical level is a veto, not an
+#: outlier. Requiring every configuration to have moved at least half as far as
+#: the median fails safe: when the group disagrees there is no decomposition,
+#: and each series is judged exactly as it was before this module existed.
+MIN_UNANIMITY = 0.5
 
 
 #: Unit of a common-mode value. The series is a *ratio* — how the run group as
@@ -96,9 +126,17 @@ def common_mode_shifts(df: pd.DataFrame, metric: str) -> dict[str, float]:
     time, and the comparison that decides anything is always across
     configurations within one run.
 
-    Runs with too few contributing configurations (see
-    :data:`MIN_COMMON_MODE_CONFIGS`) get 1.0, as does any run whose shift comes
-    out non-finite or non-positive.
+    A run appears in the result when enough configurations contributed
+    (:data:`MIN_COMMON_MODE_CONFIGS`) and they agree about what happened: a
+    shift worth speaking of has to carry every configuration with it
+    (:data:`MIN_UNANIMITY`), while a run that simply sat at its usual level is
+    recorded as the ~1.0 it measured.
+
+    A missing run is not a measured 1.0. It is the absence of a common-mode
+    measurement — too few configurations to ask, or configurations that
+    disagreed — and the two must not be confused, because 1.0 is a claim that
+    the group held still. Callers divide by 1.0 for such runs
+    (:func:`residuals`) and judge every series exactly as measured.
     """
     if df is None or df.empty or metric not in df.columns:
         return {}
@@ -121,10 +159,20 @@ def common_mode_shifts(df: pd.DataFrame, metric: str) -> dict[str, float]:
         values = group["ratio"].to_numpy(dtype=float)
         values = values[np.isfinite(values)]
         if len(values) < MIN_COMMON_MODE_CONFIGS:
-            out[str(run_id)] = 1.0
             continue
         shift = float(np.median(values))
-        out[str(run_id)] = shift if np.isfinite(shift) and shift > 0 else 1.0
+        if not np.isfinite(shift) or shift <= 0:
+            continue
+        if abs(shift - 1.0) >= NEGLIGIBLE_SHIFT:
+            # Every configuration must have moved at least MIN_UNANIMITY of the
+            # way, in the same direction. One configuration still at its own
+            # historical level vetoes the whole run: whatever moved the others
+            # was not shared with it, so it is not common mode, and calling it
+            # one would invert which configuration looks guilty.
+            agreement = (values - 1.0) / (shift - 1.0)
+            if agreement.min() < MIN_UNANIMITY:
+                continue
+        out[str(run_id)] = shift
     return out
 
 
@@ -152,6 +200,10 @@ def shift_history(
     ``run_date``, ``value``, ``reliable``, and the workload each run simulated
     — because it *is* one: a series centred on 1.0 whose steps are shared moves
     of the whole run group, judged by the same gates as everything else.
+
+    Only the runs :func:`common_mode_shifts` actually measured appear. A run it
+    left out is a gap in this series, never a 1.0: "the group moved by nothing"
+    is a measurement, and that run did not make it.
     """
     run_ids = [rid for rid in shifts if rid in run_dates]
     history = pd.DataFrame({

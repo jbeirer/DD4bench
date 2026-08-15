@@ -20,28 +20,7 @@ so every gate errs toward *not* flagging:
    Iglewicz–Hoaglin robust-outlier threshold).
 4. **Practical-effect floor** (:data:`EFFECT_FLOOR`), ANDed with the z-gate: a
    metric that is normally rock-steady has a tiny MAD, so the z-gate alone
-   would trip on practically irrelevant wobbles. The floor is **noise-aware**:
-   where the series carries a per-run measurement of its own Monte-Carlo
-   event-mix noise (:func:`k4bench.analysis.trend.event_mix_rse`), the floor
-   widens to :data:`NOISE_FLOOR_K` × that noise. The robust z-gate assumes
-   roughly normal residuals, but a run total is a *sum of heavy-tailed
-   per-event costs* — right-skewed with fat tails — so 3.5σ excursions happen
-   far more often than the Gaussian arithmetic behind ``Z_THRESHOLD``
-   suggests, and a fixed floor leaks on exactly the tail-heavy series. Widening
-   is one-directional: the floor is only ever raised, never lowered below
-   :data:`EFFECT_FLOOR`, so a quiet series cannot be made *more* trigger-happy
-   by a noise estimate that happens to come out small. It is self-limiting —
-   a series whose noise is already under the family floor keeps that floor
-   exactly, so sensitivity is given up only where the data proves it must be.
-   It applies only to a night whose workload is **unfixed**
-   (:func:`workload_of`): the noise it corrects for is the spread a *re-drawn*
-   event mix produces, and a fixed ddsim seed is precisely what stops the mix
-   being re-drawn. This is a property of the night being judged, not a
-   partition of the history — a series that gains a fixed seed stops inflating
-   its floor and keeps the baseline it already has, so pinning the seed costs
-   no blind period. The one-time level shift a new workload can produce is
-   reported as a note by :mod:`k4bench.regression.report_builder` and otherwise
-   judged like any other change.
+   would trip on practically irrelevant wobbles.
 5. **Two-strike confirmation**: the first night crossing both gates is
    ``WATCH``; only when the *next* reliable night repeats it in the same
    direction does it become ``CONFIRMED``. This is the single
@@ -81,21 +60,26 @@ so every gate errs toward *not* flagging:
    deliberate change, an optimization, or a bug, and the report leaves that
    call to a human instead of asserting one.
 
-The series reaching this engine are not always raw measurements. Two upstream
-transforms exist to keep the noise model above honest, and both are applied by
-:mod:`k4bench.regression.report_builder` before a history gets here:
+8. **Workload boundaries are not software changes**: a series is only a
+   measurement of the software while the *events* being simulated stay the
+   same. When the recorded ddsim seed changes — including the night a fixed
+   seed is introduced over an unseeded history — the new level is a property
+   of the new event sample, so judging it against the old baseline would
+   report the changeover as a regression, and would do so *reproducibly*:
+   the same fixed workload sits at the same offset every night, so the
+   two-strike rule (gate 5) confirms it rather than protecting against it.
+   Such a release is left unjudged and its values re-anchor the baseline, the
+   same treatment a confirmed change gets. This costs one release of
+   sensitivity per workload change, which is the honest price of no longer
+   measuring the same thing.
 
-- **Common-mode decomposition** (:mod:`k4bench.regression.common_mode`): a
-  night where every config of a run group moves together is one event, not one
-  per config. The group-wide shift is judged as its own series and divided out
-  of each config's, so a config series carries the part of its move that is
-  *its own*. This is a decomposition, not a subtraction: nothing is discarded,
-  so a stack-wide regression is still caught — earlier, in fact, since
-  averaging over the group shrinks its noise by roughly √n_configs.
-- **Trimmed metrics** (:func:`k4bench.analysis.trend.trimmed_mean`): a
-  low-noise companion to each total, judged alongside it rather than in place
-  of it, because the tail that carries the noise is also where a
-  tail-confined regression would appear.
+Series reaching this engine are not always raw measurements. Common-mode
+decomposition (:mod:`k4bench.regression.common_mode`) is applied by
+:mod:`k4bench.regression.report_builder` before a history gets here: a night
+where every config of a run group moves together is one event, not one per
+config, so the group-wide shift is judged as its own series and divided out of
+each config's. This is a decomposition, not a subtraction — nothing is
+discarded, and a stack-wide regression is still caught.
 
 Known v1 limitations (deliberate):
 
@@ -152,15 +136,6 @@ EFFECT_FLOOR: dict[str, float] = {
 #: fraction of the baseline median.
 ABSOLUTE_FLOOR_FAMILIES = frozenset({"cpu_efficiency_pp"})
 
-#: Multiple of a series' measured intrinsic event-mix noise used as its effect
-#: floor when that exceeds :data:`EFFECT_FLOOR` (see gate 4). Three relative
-#: standard errors is the same "well outside ordinary variation" statement the
-#: z-gate makes, restated in a unit that survives the skew: the RSE is measured
-#: from the run's own event distribution rather than assumed from a Gaussian.
-#: Validated against the real history: the configs whose event mix alone moves
-#: the total stop flagging nightly, while quiet configs keep today's floor.
-NOISE_FLOOR_K = 3.0
-
 #: Additional *absolute* change floor per family, ANDed with the relative
 #: floor. Motivated by the retrospective run over the real EOS history
 #: (2026-05-23 → 2026-07-10): sub-detector regions with median times of tens
@@ -213,32 +188,46 @@ def _fmt_date(value) -> str:
     return "" if pd.isna(ts) else ts.strftime("%Y-%m-%d")
 
 
-#: Workload identity of a run that fixed no Monte-Carlo seed, i.e. one that
-#: simulated a freshly drawn event mix — the regime the event-mix noise floor
-#: was built for, and the only regime it applies in.
-WORKLOAD_UNFIXED = None
+#: Workload of a run that records no ddsim seed — it drew a fresh one, or it
+#: predates the seed being recorded. The two are not distinguished: neither
+#: pins the event sample, so both describe the same *regime*, which is the only
+#: thing gate 8 compares.
+WORKLOAD_UNKNOWN = None
+
+#: "No night of this release supplied a workload" — distinct from
+#: :data:`WORKLOAD_UNKNOWN`, which is a workload a night did supply.
+_UNSET = object()
+
 
 def workload_of(row) -> object:
     """The Monte-Carlo workload a run simulated, from its optional ``workload``
-    column — the ddsim seed, or :data:`WORKLOAD_UNFIXED` when none was fixed."""
+    column — the ddsim seed, or :data:`WORKLOAD_UNKNOWN` when there is none.
+
+    Compared by equality, so a history of unseeded nights is one workload and
+    not a new one every night. Those nights genuinely simulate different events,
+    but they scatter *randomly*, which is what the baseline spread and the
+    two-strike gate already model. What they cannot model is a workload that
+    changes and then stays changed — an unseeded history gaining a fixed seed
+    lands at one offset and reproduces it every night — and that is exactly
+    what a change in this value marks.
+    """
     value = getattr(row, "workload", None)
     if value is None:
-        return WORKLOAD_UNFIXED
+        return WORKLOAD_UNKNOWN
     try:
         if isinstance(value, float) and math.isnan(value):
-            return WORKLOAD_UNFIXED
+            return WORKLOAD_UNKNOWN
         return int(value)
     except (TypeError, ValueError):
-        return WORKLOAD_UNFIXED
+        return WORKLOAD_UNKNOWN
 
 
 def _optional(row, name: str) -> float | None:
     """A finite float from an optional history column, else ``None``.
 
-    The three columns read this way (``noise_rse``, ``raw_value``,
-    ``common_mode_shift``) are annotations a caller may or may not have
-    computed, so their absence is normal and must degrade to the plain
-    behaviour rather than raise.
+    The columns read this way (``raw_value``, ``common_mode_shift``) are
+    annotations a caller may or may not have computed, so their absence is
+    normal and must degrade to the plain behaviour rather than raise.
     """
     value = getattr(row, name, None)
     if value is None:
@@ -248,21 +237,6 @@ def _optional(row, name: str) -> float | None:
     except (TypeError, ValueError):
         return None
     return value if math.isfinite(value) else None
-
-
-def noise_aware_floor(base_floor: float, noise: list[float | None]) -> float:
-    """*base_floor* widened to :data:`NOISE_FLOOR_K` × the typical intrinsic
-    noise among *noise*, never narrowed below it (see gate 4).
-
-    The median is taken over the baseline's own runs rather than tonight's
-    single measurement: one run's event mix can be unusually tame or unusually
-    wild, and a floor that moved with it would be as noisy as the thing it is
-    meant to gate.
-    """
-    known = [n for n in noise if n is not None and math.isfinite(n)]
-    if not known:
-        return base_floor
-    return max(base_floor, NOISE_FLOOR_K * float(np.median(known)))
 
 
 def _identity(row) -> tuple[str, str]:
@@ -308,10 +282,10 @@ def evaluate_series(
 
     Three further columns are optional annotations, each defaulting to absent:
 
-    - ``noise_rse`` — the run's own intrinsic Monte-Carlo event-mix noise,
-      which widens the practical-effect floor (see gate 4). The floor is
-      frozen with the rest of the release snapshot, from the *baseline* runs'
-      noise, so every night of a release is judged against one floor.
+    - ``workload`` — the ddsim seed this run simulated (see
+      :func:`workload_of`). A release whose workload differs from the one the
+      baseline was built under is left unjudged and re-anchors the baseline
+      (gate 8), because its numbers measure a different event sample.
     - ``raw_value`` / ``common_mode_shift`` — where ``value`` is a residual
       after a group-wide shift was divided out, the measurement it came from
       and the shift that was removed. Carried onto the verdict untouched; the
@@ -373,20 +347,22 @@ def evaluate_series(
     inside the window is skipped, not judged, so it never narrows the
     window — it is spanned by it.
     """
-    base_floor = EFFECT_FLOOR[series.metric_family]
+    floor = EFFECT_FLOOR[series.metric_family]
     abs_delta_floor = ABS_DELTA_FLOOR.get(series.metric_family, 0.0)
     absolute_floor = series.metric_family in ABSOLUTE_FLOOR_FAMILIES
 
     df = history.sort_values(["run_date", "run_id"], kind="stable")
     baseline: deque[float] = deque(maxlen=BASELINE_WINDOW_RUNS)
-    # The baseline runs' intrinsic noise, in lockstep with `baseline` so the
-    # floor is always derived from the same runs the median and MAD are.
-    baseline_noise: deque[float | None] = deque(maxlen=BASELINE_WINDOW_RUNS)
+    # The workload every run currently in `baseline` simulated. A release
+    # arriving on a different one is not comparable to it (gate 8).
+    baseline_workload: object = None
+    baseline_seeded = False   # whether `baseline_workload` has been established
     pending: Direction | None = None
     pending_run: tuple[str, str] | None = None   # the WATCH night's identity (the onset)
     last_accepted: tuple[str, str] | None = None  # newest night seen at the accepted level
     anchor_date: str | None = None      # date of the last confirmed change-point
     anchor_mad: float = 0.0             # pre-change spread, proxy while re-anchoring
+    anchor_reason = "confirmed change"  # what the current re-anchor is recovering from
     verdicts: list[MetricVerdict] = []
 
     def _verdict(row, **kw) -> MetricVerdict:
@@ -413,12 +389,13 @@ def evaluate_series(
 
     for release_date, group in groupby(df.itertuples(index=False), key=_release_key):
         # Per-release state, reset at every boundary.
-        # snapshot: (med, mad, reanchoring, n_base, floor)
-        snapshot: tuple[float, float, bool, int, float] | None = None
+        # snapshot: (med, mad, reanchoring, n_base)
+        snapshot: tuple[float, float, bool, int] | None = None
         warming: bool | None = None       # decided once, at the first reliable night
+        workload_changed = False          # this release simulates different events
+        release_workload: object = _UNSET  # its workload, once a night supplies one
         release_windows: dict[Direction, tuple] = {}  # direction -> (window, first-confirmed night)
         release_values: list[float] = []  # reliable judged values, night order
-        release_noise: list[float | None] = []  # their intrinsic noise, in lockstep
         release_last_reliable: tuple[str, str] | None = None
 
         for row in group:
@@ -428,23 +405,22 @@ def evaluate_series(
             if x is None or (isinstance(x, float) and math.isnan(x)):
                 continue
             x = float(x)
-            noise = _optional(row, "noise_rse")
             annotations = dict(
                 raw_value=_optional(row, "raw_value"),
                 common_mode_shift=_optional(row, "common_mode_shift"),
-                noise_rse=noise,
             )
 
-            # Which workload this run simulated. Read only to decide whether
-            # the event-mix noise floor still has anything to correct for (see
-            # the snapshot below) — never to partition the baseline. A changed
-            # seed is reported as a note by the report builder and is otherwise
-            # judged like any other night, against the history that already
-            # exists.
-            workload = workload_of(row)
-
             if warming is None:
-                warming = len(baseline) < MIN_BASELINE_RUNS and anchor_date is None
+                # Decided once per release, at its first reliable night, from
+                # state that predates the release entirely.
+                release_workload = workload_of(row)
+                workload_changed = (
+                    baseline_seeded and release_workload != baseline_workload
+                )
+                warming = (
+                    workload_changed
+                    or (len(baseline) < MIN_BASELINE_RUNS and anchor_date is None)
+                )
             if warming:
                 # Warm-up covers the whole release: judging a later night of
                 # this release against a window already containing its earlier
@@ -457,12 +433,17 @@ def evaluate_series(
                     value=x, baseline_median=None, baseline_mad=None,
                     pct_change=None, z_score=None,
                     severity=Severity.UNKNOWN, direction=Direction.NONE,
-                    reason=f"only {len(baseline)} reliable baseline runs "
-                           f"(<{MIN_BASELINE_RUNS}) — not judged",
+                    reason=(
+                        "simulated event workload changed — the baseline "
+                        "measured different events, so this release is not "
+                        "judged against it"
+                        if workload_changed else
+                        f"only {len(baseline)} reliable baseline runs "
+                        f"(<{MIN_BASELINE_RUNS}) — not judged"
+                    ),
                     **annotations,
                 ))
                 release_values.append(x)
-                release_noise.append(noise)
                 continue
 
             if snapshot is None:
@@ -480,29 +461,9 @@ def evaluate_series(
                     mad = anchor_mad
                 else:
                     med, mad = robust_baseline(np.asarray(baseline))
-                # The floor is frozen with the rest of the snapshot: a release
-                # whose nights were judged against different floors would
-                # report the same measurement two ways.
-                #
-                # It widens for event-mix noise only while the run's workload is
-                # *unfixed*. That noise is the spread the total would show if
-                # the event mix were re-drawn — which is precisely what a fixed
-                # seed stops happening. Under a fixed seed the same events are
-                # simulated every night, so none of that spread reaches the
-                # night-to-night comparison, and widening the floor by it would
-                # give up real sensitivity to buy protection against a source of
-                # variation that no longer exists. This reads the workload of
-                # the night being judged; it never partitions the baseline, so a
-                # series that gains a fixed seed simply stops inflating its
-                # floor and keeps the history it already has.
-                widen = not absolute_floor and workload is WORKLOAD_UNFIXED
-                release_floor = (
-                    noise_aware_floor(base_floor, list(baseline_noise))
-                    if widen else base_floor
-                )
-                snapshot = (med, mad, reanchoring, len(baseline), release_floor)
+                snapshot = (med, mad, reanchoring, len(baseline))
 
-            med, mad, reanchoring, n_base, floor = snapshot
+            med, mad, reanchoring, n_base = snapshot
             delta = x - med
             pct_change, z = robust_change(x, med, mad)
 
@@ -552,7 +513,7 @@ def evaluate_series(
                 last_accepted = _identity(row)
                 reason = "within baseline variation"
                 if reanchoring:
-                    reason += (f" (re-anchoring after confirmed change on {anchor_date}, "
+                    reason += (f" (re-anchoring after {anchor_reason} on {anchor_date}, "
                                f"{n_base}/{MIN_BASELINE_RUNS} runs at the new level)")
                 if release_windows:
                     _, retained_first = next(iter(release_windows.values()))
@@ -615,18 +576,6 @@ def evaluate_series(
                 )
                 z_txt = "inf" if math.isinf(z) else f"{z:.1f}"
                 reason = f"{change} vs baseline median {med:.4g} (robust z={z_txt})"
-                if noise is not None:
-                    # A percentage means little without the wobble it beat.
-                    reason += f", intrinsic event-mix noise ±{noise:.1%} this run"
-                if floor > base_floor:
-                    # Named separately from the run's own noise above: the floor
-                    # is set by the baseline runs' median noise, and a reader who
-                    # tried to derive one from the other would not get this
-                    # number.
-                    reason += (
-                        f", effect floor {floor:.1%} (widened from "
-                        f"{base_floor:.1%} by the baseline's event-mix noise)"
-                    )
                 if first_confirmed is not None and first_confirmed != _identity(row):
                     # A re-measurement of an already-confirmed change reads as
                     # a repeat, not fresh news.
@@ -650,35 +599,49 @@ def evaluate_series(
                 first_confirmed_run_id=(
                     first_confirmed[0] if first_confirmed is not None else None
                 ),
-                effect_floor=floor,
                 **annotations,
             ))
             release_values.append(x)
-            release_noise.append(noise)
             release_last_reliable = _identity(row)
+
+        # The workload this release ran becomes the one the baseline is held
+        # under, whether or not the release was judged — including the very
+        # first release, which establishes it without counting as a change.
+        if release_workload is not _UNSET:
+            baseline_workload, baseline_seeded = release_workload, True
 
         # Release boundary: the only place baseline state moves for judged
         # nights.
-        if release_windows:
-            # Change-point: the confirmed level is the new normal. Re-anchor
-            # the window on all of the release's judged values so the
-            # pre-change median stops being the yardstick from the next
-            # release on; keep the pre-change spread as the interim noise
-            # estimate.
-            snap_mad = snapshot[1]
+        if release_windows or workload_changed:
+            # A change-point: the new level is the normal one from here on.
+            # Re-anchor the window on the release's values so the old median
+            # stops being the yardstick, and keep the old spread as the interim
+            # noise estimate. Reached two ways — a *confirmed* step, where the
+            # level moved and the report has said so, and a *workload* change,
+            # where the level may have moved for a reason no software caused
+            # and this release was never judged at all (gate 8).
+            if snapshot is not None:
+                anchor_mad = snapshot[1]
+            elif len(baseline) >= MIN_BASELINE_RUNS:
+                # Unjudged release: no snapshot was ever frozen, so take the
+                # spread straight off the baseline being retired.
+                anchor_mad = robust_baseline(np.asarray(baseline))[1]
             baseline.clear()
-            baseline_noise.clear()
             baseline.extend(release_values)
-            baseline_noise.extend(release_noise)
             anchor_date = release_date
-            anchor_mad = snap_mad
+            anchor_reason = (
+                "workload change" if workload_changed else "confirmed change"
+            )
             pending = pending_run = None
             # Re-anchoring redefines the accepted level as the post-change
             # one, and the release's last reliable night is the newest sitting
             # at it. Carrying the pre-change night forward would blame an
             # already-accepted change; clearing it would leave a second step
             # that confirms before any OK night — the case the re-anchor
-            # exists to keep catching — with no lower bound at all.
+            # exists to keep catching — with no lower bound at all. After a
+            # workload change no night was judged, so this is None and the next
+            # step's window is left open-ended rather than reaching back across
+            # the boundary to a night that measured different events.
             last_accepted = release_last_reliable
         else:
             # No confirmation: the release's judged values age into the
@@ -686,6 +649,5 @@ def evaluate_series(
             # cannot move a 14-point median), and a still-pending WATCH
             # carries into the next release.
             baseline.extend(release_values)
-            baseline_noise.extend(release_noise)
 
     return verdicts

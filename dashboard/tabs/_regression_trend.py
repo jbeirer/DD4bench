@@ -270,8 +270,15 @@ def _common_mode_frame(df: pd.DataFrame, metric: str) -> pd.DataFrame:
 
     A group-level verdict names no configuration, so there is no column of
     measurements to plot. Its evidence is the shift series itself, rebuilt here
-    from the same rows and the same function the report judged it with, so the
-    chart shows what the verdict was actually about.
+    with the same function the report judged it with.
+
+    A reconstruction, not the judged series itself. Each configuration is
+    normalised by its median over whatever frame it is handed, and this frame is
+    the drill-down's own — wider, and reaching past tonight into releases the
+    report had not seen. Where the group moved together the difference is
+    usually one overall scale, but configurations entering or leaving the window
+    can move the factors, so the chart is the shape of the shift and not the
+    arithmetic behind the verdict's numbers.
     """
     if df is None or df.empty:
         return pd.DataFrame(columns=["run_id", "x_date", "label", metric])

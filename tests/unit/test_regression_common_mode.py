@@ -94,14 +94,49 @@ def test_residuals_remove_the_shared_move_and_keep_the_private_one():
     )
 
 
-def test_too_few_configurations_means_no_decomposition():
-    # Below the floor a "median across the group" is one or two configurations,
-    # and dividing it out would hide a real per-config change.
+def test_too_few_configurations_produce_no_observation_at_all():
+    # Below the floor a "median across the group" is one or two configurations.
+    # Such a run is left out rather than recorded as 1.0: "the group did not
+    # move" is a measurement, and this run cannot make it.
     labels = _LABELS[: MIN_COMMON_MODE_CONFIGS - 1]
     frame = _frame()
     frame = frame[frame["label"].isin(labels)]
+    assert common_mode_shifts(frame, "wall_time_s") == {}
+
+
+def test_a_configuration_holding_its_level_vetoes_the_common_mode():
+    # The removal sweep's own failure mode: a regression inside one detector
+    # moves the baseline and every without_X except the one that removed it.
+    # That is a majority, so the median calls it common mode — but dividing it
+    # out would leave the single genuinely unaffected configuration looking
+    # like the only one that moved, and in the opposite direction.
+    night = _NIGHTS[4]
+    scale = dict.fromkeys(_LABELS, 1.20)
+    del scale[_LABELS[0]]  # the configuration that removed the guilty detector
+    frame = _frame({night: scale})
+
     shifts = common_mode_shifts(frame, "wall_time_s")
-    assert all(s == 1.0 for s in shifts.values())
+    assert night not in shifts
+
+    # Every configuration is therefore judged exactly as measured: the five
+    # that moved kept their move, and the one that did not keeps its level.
+    for label, expected in ((_LABELS[1], 1.20), (_LABELS[0], 1.0)):
+        sub = frame[frame["label"] == label]
+        resid = residuals(sub["wall_time_s"], sub["run_id"], shifts)
+        assert resid[sub["run_id"] == night].iloc[0] == pytest.approx(
+            expected * _LEVELS[label]
+        )
+
+
+def test_a_genuinely_shared_move_survives_ordinary_per_config_scatter():
+    # The veto must not fire on the case it exists to protect: a real shared
+    # move, measured through each configuration's own noise.
+    night = _NIGHTS[4]
+    jitter = [1.18, 1.22, 1.19, 1.24, 1.20, 1.21]
+    frame = _frame({night: dict(zip(_LABELS, jitter, strict=True))})
+    assert common_mode_shifts(frame, "wall_time_s")[night] == pytest.approx(
+        1.20, rel=0.02
+    )
 
 
 def test_a_configuration_with_no_scale_abstains_rather_than_diverging():

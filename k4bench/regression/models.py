@@ -225,15 +225,6 @@ class MetricVerdict:
     #: on a series judged exactly as measured.
     raw_value: float | None = None
     common_mode_shift: float | None = None
-    #: This run's own intrinsic Monte-Carlo event-mix noise as a relative
-    #: standard error of the run total (see
-    #: :func:`k4bench.analysis.trend.event_mix_rse`), and the practical-effect
-    #: floor the engine actually applied after widening it to respect that
-    #: noise. Reported so a reader sees a change against the wobble it had to
-    #: beat rather than a bare percentage. ``None`` where the series carries no
-    #: noise measurement.
-    noise_rse: float | None = None
-    effect_floor: float | None = None
     #: A bounded, release-level tail of this metric's own history, oldest first
     #: and ending at this verdict's release (see
     #: :mod:`k4bench.regression.history`). Carried on ``CONFIRMED`` verdicts

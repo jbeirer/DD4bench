@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import re
 from pathlib import Path
 
@@ -27,10 +26,10 @@ _log = logging.getLogger(__name__)
 #: runs and skipped quietly rather than aborting a whole trend build.
 EXPECTED_LOAD_ERRORS = (FileNotFoundError, ValueError, pd.errors.ParserError)
 
-#: Fraction of the slowest events dropped by :func:`trimmed_mean` — the tail
-#: that carries the Monte-Carlo event-mix noise. The smallest trim that buys
-#: the full noise reduction on the tail-heavy configs while leaving the quiet
-#: ones unchanged.
+#: Fraction of the *slowest* events dropped by :func:`upper_trimmed_mean`.
+#: One-sided by construction: only the slow tail is removed, so the statistic
+#: is an upper-trimmed mean and not the symmetric trimmed mean the bare word
+#: usually names.
 TRIM_FRACTION = 0.05
 
 #: Events below which trimming is not attempted, since the trim would drop
@@ -39,19 +38,19 @@ TRIM_FRACTION = 0.05
 MIN_TRIM_EVENTS = 20
 
 
-def trimmed_mean(times: np.ndarray, fraction: float = TRIM_FRACTION) -> float | None:
+def upper_trimmed_mean(times: np.ndarray, fraction: float = TRIM_FRACTION) -> float | None:
     """Mean of *times* with the slowest *fraction* of events dropped.
 
     A run total is a sum of per-event costs, and where that distribution is
-    heavy-tailed a handful of events carry a disproportionate share of it.
-    Which events those are is re-drawn every night, so the total wobbles for
-    reasons that have nothing to do with the software. Dropping the tail leaves
-    a statistic about the *typical* event, stable enough to judge tightly.
+    heavy-tailed a handful of events carry a disproportionate share of it. That
+    makes the plain mean a statistic about the tail as much as about the
+    software. Dropping the slow tail leaves a statistic about the *typical*
+    event, which moves when the typical event's cost moves and not otherwise.
 
-    Deliberately a complement to the untrimmed total, never a replacement: the
-    same tail that carries the noise is where a tail-confined regression would
-    show up first, so a detector that only watched the trimmed mean would be
-    blind to exactly the most interesting kind of change.
+    Deliberately a complement to the untrimmed mean, never a replacement: the
+    same tail that destabilises the mean is where a tail-confined regression
+    would show up first, so a detector that only watched this would be blind to
+    exactly the most interesting kind of change.
 
     Returns ``None`` for fewer than :data:`MIN_TRIM_EVENTS` events, where the
     trim would drop nothing and the value would merely duplicate the mean.
@@ -64,55 +63,6 @@ def trimmed_mean(times: np.ndarray, fraction: float = TRIM_FRACTION) -> float | 
         return None
     kept = np.sort(times)[: n - n_drop]
     return float(kept.mean())
-
-
-def trimmed_event_mix_rse(
-    times: np.ndarray, fraction: float = TRIM_FRACTION,
-) -> float | None:
-    """:func:`event_mix_rse` of the same events :func:`trimmed_mean` keeps.
-
-    The trimmed mean exists to be the low-noise statistic, so gating it with
-    the *untrimmed* total's noise would hand it back the tail it just dropped
-    and desensitize the one series meant to be sensitive. Its noise has to be
-    measured on the sample it is actually computed from.
-    """
-    n = len(times)
-    if n < MIN_TRIM_EVENTS:
-        return None
-    n_drop = int(n * fraction)
-    if n_drop <= 0:
-        return None
-    return event_mix_rse(np.sort(times)[: n - n_drop])
-
-
-def event_mix_rse(times: np.ndarray) -> float | None:
-    """Relative standard error of the run total implied by *times* themselves.
-
-    The run total is the sum of this run's own per-event costs. Resampling
-    those costs with replacement — the bootstrap — gives the spread the total
-    would have shown had the event mix been re-drawn, which is exactly what a
-    fresh ddsim seed does every night. For a sum of ``n`` draws the bootstrap
-    standard error has a closed form, ``sqrt(n)·σ`` with ``σ`` the population
-    standard deviation of the events, so no resampling is needed: relative to
-    the total ``n·mean`` that is ``σ / (mean·sqrt(n))``.
-
-    This makes each run carry a *measurement* of its own intrinsic Monte-Carlo
-    noise, from data the run already wrote. It reproduces the spread actually
-    observed in the baselines, which is what licenses using it to set a
-    per-series effect floor in :mod:`k4bench.regression.engine`.
-
-    Returns ``None`` when there are too few events to estimate a spread, or
-    when the mean is not positive (nothing to be relative to).
-    """
-    n = len(times)
-    if n < 2:
-        return None
-    mean = float(times.mean())
-    if not math.isfinite(mean) or mean <= 0:
-        return None
-    sigma = float(times.std(ddof=0))
-    rse = sigma / (mean * math.sqrt(n))
-    return rse if math.isfinite(rse) else None
 
 
 def _parse_configured_labels(info: dict) -> list[str] | None:
@@ -186,10 +136,12 @@ def parse_run_dir(run_dir: Path) -> dict:
                 "github_run_url":   info.get("github_run_url"),
                 "commit_sha":       info.get("commit_sha"),
                 "n_events":         info.get("n_events"),
-                # The ddsim seed this run simulated with. ``None`` on a run
-                # that drew a fresh one, which is *not* the same fact as a
-                # seed the reader does not recognise: it means the workload
-                # itself differed from every other night's.
+                # The ddsim seed this run simulated with, or ``None``. Two
+                # different facts share that ``None``: a run that drew a fresh
+                # seed, and a run written before the seed was recorded at all.
+                # Neither can be shown to have simulated the same events as any
+                # other night, which is the only question downstream asks of
+                # this field, so they are deliberately not distinguished.
                 "random_seed":      info.get("random_seed"),
                 "status":           info.get("status"),
                 "failed_configs":   info.get("failed_configs") or [],
@@ -342,16 +294,11 @@ def build_event_timing_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
     For each run directory, event timing is loaded for all available configs.
     Per config per run, summary statistics are computed (event 0 excluded):
         mean_time_s, median_time_s, p95_time_s, trimmed_mean_time_s,
-        event_mix_rse, trimmed_event_mix_rse,
         mean_rss_mb, median_rss_mb, p95_rss_mb, max_rss_mb
 
-    ``trimmed_mean_time_s`` (:func:`trimmed_mean`) and the two ``*_rse`` columns
-    are what the regression engine needs to tell Monte-Carlo event-mix noise
-    apart from a software change: the first is a low-noise view of the typical
-    event, the others measure how much a re-drawn event mix moves the untrimmed
-    total and the trimmed mean respectively. Each timing metric is gated by the
-    noise of the sample it was computed from, never by the other's. All are
-    absent (NaN) for a config with too few events to support them.
+    ``trimmed_mean_time_s`` (:func:`upper_trimmed_mean`) is a view of the
+    typical event, unmoved by how heavy this run's slow tail happened to be. It
+    is absent (NaN) for a config with too few events to support it.
 
     Returns a long-form DataFrame with those columns plus
         run_id, run_date, k4h_release_date, k4h_release, label
@@ -398,15 +345,9 @@ def build_event_timing_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
                     row["median_time_s"] = float(t.median())
                     row["p95_time_s"]    = float(t.quantile(0.95))
                     row["std_time_s"]    = float(t.std()) if nt > 1 else 0.0
-                    trimmed = trimmed_mean(times)
+                    trimmed = upper_trimmed_mean(times)
                     if trimmed is not None:
                         row["trimmed_mean_time_s"] = trimmed
-                    rse = event_mix_rse(times)
-                    if rse is not None:
-                        row["event_mix_rse"] = rse
-                    trimmed_rse = trimmed_event_mix_rse(times)
-                    if trimmed_rse is not None:
-                        row["trimmed_event_mix_rse"] = trimmed_rse
             if "rss_end_mb" in df_ev.columns:
                 r = df_ev["rss_end_mb"].dropna()
                 nr = len(r)

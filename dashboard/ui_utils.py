@@ -716,7 +716,7 @@ _METRIC_LABELS = {
     "cpu_efficiency":      "CPU efficiency",
     "mean_time_s":         "mean event time",
     "median_time_s":       "median event time",
-    "trimmed_mean_time_s": "trimmed mean event time",
+    "trimmed_mean_time_s": "upper-trimmed mean event time",
     "mean_rss_mb":         "mean event RSS",
 }
 
