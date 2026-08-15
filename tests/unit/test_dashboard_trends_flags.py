@@ -155,6 +155,7 @@ def _trend_df() -> pd.DataFrame:
         "k4h_release": ["key4hep-2026-05-20", "key4hep-2026-05-21"],
         "wall_time_s": [5.0, 6.0],
         "user_cpu_s": [4.0, 4.2],
+        "sys_cpu_s": [0.5, 0.6],
         "peak_rss_mb": [1000.0, 1100.0],
         "events_per_sec": [2.0, 2.0],
         "involuntary_ctx_switches": [10, 12],

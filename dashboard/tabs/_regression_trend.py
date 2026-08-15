@@ -26,17 +26,14 @@ from k4bench.analysis.loader import (
     config_keys,
     failed_config_keys,
     recorded_config_rows,
+    with_cpu_efficiency,
 )
 from k4bench.analysis.plots._theme import PALETTE, _TEMPLATE
 from k4bench.regression.engine import Z_THRESHOLD
 from k4bench.regression.models import MetricVerdict, Severity
 from k4bench.labels import pretty_sample
 from k4bench.regression.render import _metric_name
-from k4bench.regression.report_builder import (
-    EVENT_METRICS,
-    RUN_METRICS,
-    _with_cpu_efficiency,
-)
+from k4bench.regression.report_builder import EVENT_METRICS, RUN_METRICS
 from k4bench.results.reliability_evidence import run_reliability_map
 from tabs import _blame
 from tabs._regression_flags import add_severity_markers, metric_option
@@ -230,7 +227,7 @@ def _metric_history(
         if not _is_valid_df(df):
             return None
         if verdict.metric in RUN_METRICS:
-            df = _with_cpu_efficiency(df)
+            df = with_cpu_efficiency(df)
         df = df[df["label"] == verdict.label]
 
     # A failed config can leave plausible partial run metrics and event data;

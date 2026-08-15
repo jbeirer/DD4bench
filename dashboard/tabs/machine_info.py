@@ -36,7 +36,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
-from k4bench.analysis.loader import failed_config_mask
+from k4bench.analysis.loader import failed_config_mask, with_cpu_efficiency
 from k4bench.analysis.plots._theme import PALETTE, _TEMPLATE
 from k4bench.results.reliability import (
     CTX_SWITCH_BASELINE_MULTIPLIER,
@@ -201,10 +201,9 @@ def _contention_summary(results: pd.DataFrame | None) -> dict:
         v = results["involuntary_ctx_switches"].dropna()
         if not v.empty:
             out["invol"] = float(v.mean())
-    cols = set(results.columns)
-    if {"user_cpu_s", "sys_cpu_s", "wall_time_s"} <= cols:
-        total_cpu = results["user_cpu_s"] + results["sys_cpu_s"]
-        eff = (total_cpu / results["wall_time_s"].replace(0, float("nan"))).dropna()
+    results = with_cpu_efficiency(results)
+    if "cpu_efficiency" in results.columns:
+        eff = results["cpu_efficiency"].dropna()
         if not eff.empty:
             out["eff"] = float(eff.mean())
     return out
@@ -457,16 +456,13 @@ def _agg_results_by_date(trend_results_df: pd.DataFrame | None) -> pd.DataFrame 
     if "label" in df.columns:
         # Match the Trends tab: when a release was re-run, keep the latest run.
         df = df.loc[df.groupby(["label", "x_date"])["run_date"].idxmax()]
+    df = with_cpu_efficiency(df)
     cols = set(df.columns)
     total_cpu = None
-    complete_cpu = False
     if {"user_cpu_s", "sys_cpu_s"} <= cols:
         total_cpu = df["user_cpu_s"] + df["sys_cpu_s"]
-        complete_cpu = True
     elif "user_cpu_s" in cols:
         total_cpu = df["user_cpu_s"]
-    if complete_cpu and "wall_time_s" in cols:
-        df["cpu_efficiency"] = total_cpu / df["wall_time_s"].replace(0, float("nan"))
     if total_cpu is not None and "involuntary_ctx_switches" in cols:
         df["invol_per_cpu_s"] = (
             df["involuntary_ctx_switches"] / total_cpu.replace(0, float("nan"))

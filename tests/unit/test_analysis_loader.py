@@ -18,6 +18,7 @@ from k4bench.analysis.loader import (
     load_region_timing,
     load_results,
     recorded_config_rows,
+    with_cpu_efficiency,
 )
 
 
@@ -67,6 +68,22 @@ def _write_event_json(path: Path, n_events: int = 5) -> None:
 # ---------------------------------------------------------------------------
 # failed_config_mask
 # ---------------------------------------------------------------------------
+
+
+def test_cpu_efficiency_requires_total_cpu_and_preserves_input():
+    df = pd.DataFrame({
+        "user_cpu_s": [8.0, 4.0],
+        "sys_cpu_s": [2.0, 1.0],
+        "wall_time_s": [5.0, 0.0],
+    }, index=["normal", "zero-wall"])
+
+    derived = with_cpu_efficiency(df)
+
+    assert "cpu_efficiency" not in df.columns
+    assert derived.loc["normal", "cpu_efficiency"] == pytest.approx(2.0)
+    assert pd.isna(derived.loc["zero-wall", "cpu_efficiency"])
+    incomplete = df.drop(columns="sys_cpu_s")
+    assert with_cpu_efficiency(incomplete) is incomplete
 
 
 class TestFailedConfigMask:

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from k4bench.analysis.loader import failed_config_mask
+from k4bench.analysis.loader import failed_config_mask, with_cpu_efficiency
 from k4bench.results.reliability import ReliabilityVerdict, evaluate_reliability
 
 #: Minimum number of historical per-config samples before a context-switch
@@ -90,13 +90,16 @@ def reliability_evidence(
     """
     cpu_eff = total_cpu = invol = None
     if _is_valid_df(results):
-        results = results.loc[~failed_config_mask(results)]
+        results = with_cpu_efficiency(
+            results.loc[~failed_config_mask(results)]
+        )
         cols = set(results.columns)
-        if {"user_cpu_s", "sys_cpu_s", "wall_time_s"} <= cols:
-            tot = results["user_cpu_s"] + results["sys_cpu_s"]
-            eff = (tot / results["wall_time_s"].replace(0, float("nan"))).dropna()
+        if "cpu_efficiency" in cols:
+            eff = results["cpu_efficiency"].dropna()
             if not eff.empty:
                 cpu_eff = float(eff.mean())
+        if {"user_cpu_s", "sys_cpu_s"} <= cols:
+            tot = results["user_cpu_s"] + results["sys_cpu_s"]
             tot = tot.dropna()
             if not tot.empty:
                 total_cpu = float(tot.mean())

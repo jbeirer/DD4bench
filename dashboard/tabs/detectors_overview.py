@@ -1896,15 +1896,27 @@ def render(
         failed_hist_disp = plot_hist_disp[
             plot_hist_disp["severity"] == Severity.FAILURE.value
         ]
+        undefined_failures = failed_hist_disp[
+            failed_hist_disp["metric"].isin((time_metric, mem_metric))
+            & failed_hist_disp["value"].isna()
+        ]
+        failed_hist_disp = failed_hist_disp.dropna(subset=["value"])
 
         if view == "Performance Trends":
             # Worked out before the figure: when there is nothing to draw at all
             # the reader needs this *most*, and that is exactly the branch that
             # returns without a chart to caption.
             notes = _trend_notes(
-                hist, hist_rows, time_metric, mem_metric,
+                pd.concat([hist, failed_hist_rows], ignore_index=True),
+                hist_rows, time_metric, mem_metric,
                 detectors_all, window_roster, excluded, last_run,
             )
+            if relative and not undefined_failures.empty:
+                names = ", ".join(sorted(undefined_failures["detector"].unique()))
+                notes.append(
+                    "Failed measurements cannot be shown in Relative % without "
+                    f"a successful baseline: {names}."
+                )
             fig = _history_figure(
                 hist_disp, time_metric, mem_metric, styles, detectors_all,
                 0.75, log, relative, show_confirmed, show_watch,

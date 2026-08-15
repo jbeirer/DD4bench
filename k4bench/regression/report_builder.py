@@ -25,6 +25,7 @@ from k4bench.analysis.loader import (
     failed_config_mask,
     judgeable_config_keys,
     judgeable_config_rows,
+    with_cpu_efficiency,
 )
 from k4bench.analysis.trend import (
     build_event_timing_trend,
@@ -124,18 +125,6 @@ def _series_history(
     })
 
 
-def _with_cpu_efficiency(results_df: pd.DataFrame) -> pd.DataFrame:
-    """Attach a derived ``cpu_efficiency`` column (same formula as the
-    reliability evidence: total CPU time over wall time)."""
-    cols = set(results_df.columns)
-    if "user_cpu_s" not in cols or "wall_time_s" not in cols:
-        return results_df
-    df = results_df.copy()
-    total = df["user_cpu_s"] + df["sys_cpu_s"] if "sys_cpu_s" in cols else df["user_cpu_s"]
-    df["cpu_efficiency"] = total / df["wall_time_s"].replace(0, float("nan"))
-    return df
-
-
 def unjudged_value_verdicts(
     *,
     detector: str,
@@ -180,7 +169,7 @@ def unjudged_value_verdicts(
                     reason="unreliable host — value recorded but not judged",
                 ))
 
-    results = _with_cpu_efficiency(results_df) if results_df is not None else None
+    results = with_cpu_efficiency(results_df) if results_df is not None else None
     _emit(results, RUN_METRICS)
     _emit(event_df, EVENT_METRICS)
     return out
@@ -253,7 +242,7 @@ def evaluate_group_series(
             out[series] = _with_history(history, verdicts, hosts or {})
 
     if results_df is not None and not results_df.empty:
-        df = _with_cpu_efficiency(results_df)
+        df = with_cpu_efficiency(results_df)
         for label in sorted(df["label"].dropna().unique()):
             mask = df["label"] == label
             for metric, family in RUN_METRICS.items():

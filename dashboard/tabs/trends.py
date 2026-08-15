@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
-from k4bench.analysis.loader import failed_config_mask
+from k4bench.analysis.loader import failed_config_mask, with_cpu_efficiency
 from k4bench.analysis.plots._theme import _TEMPLATE
 from k4bench.regression.render import from_json
 from remote_cache import _cached_fetch_reports
@@ -414,10 +414,7 @@ def _trends_body(
         )
 
     # Derived metrics are needed for both the healthy line and failed markers.
-    if "user_cpu_s" in df.columns and "wall_time_s" in df.columns:
-        df["cpu_efficiency"] = (
-            df["user_cpu_s"] / df["wall_time_s"].replace(0, float("nan"))
-        )
+    df = with_cpu_efficiency(df)
 
     # ── Reliability filter ──────────────────────────────────────────────────────
     # Reliability is a per-run verdict (one machine condition per run, shared by

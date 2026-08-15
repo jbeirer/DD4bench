@@ -711,6 +711,18 @@ def test_relative_history_rescales_per_series():
     assert ov.relative_history(hist.iloc[0:0]).empty
 
 
+def test_relative_history_does_not_invent_a_failed_only_baseline():
+    failed = pd.DataFrame({
+        "night": ["2026-01-12"],
+        "detector": ["CLD"],
+        "metric": ["wall_time_s"],
+        "value": [5.0],
+        "severity": [Severity.FAILURE.value],
+    })
+
+    assert ov.relative_history(failed)["value"].isna().all()
+
+
 # ── detector_family / detector_styles ──────────────────────────────────────────
 
 def test_detector_family_split():

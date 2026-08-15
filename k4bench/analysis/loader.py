@@ -19,6 +19,24 @@ _RETURNCODE_RECORDED = "_returncode_recorded"
 _T = TypeVar("_T")
 
 
+def with_cpu_efficiency(df: pd.DataFrame) -> pd.DataFrame:
+    """Return *df* with total-CPU/wall ``cpu_efficiency`` when measurable.
+
+    CPU time means user plus system time everywhere. If any component is
+    absent, the efficiency is unknown and no derived column is attached.
+    """
+    if not {"user_cpu_s", "sys_cpu_s", "wall_time_s"} <= set(df.columns):
+        return df
+    out = df.copy()
+    total_cpu = (
+        pd.to_numeric(out["user_cpu_s"], errors="coerce")
+        + pd.to_numeric(out["sys_cpu_s"], errors="coerce")
+    )
+    wall = pd.to_numeric(out["wall_time_s"], errors="coerce")
+    out["cpu_efficiency"] = total_cpu / wall.replace(0, float("nan"))
+    return out
+
+
 def failed_config_mask(df: pd.DataFrame) -> pd.Series:
     """Return a boolean mask for configs that did not exit cleanly.
 
