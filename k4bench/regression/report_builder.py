@@ -166,8 +166,8 @@ def workload_map(results_df: pd.DataFrame | None) -> dict[str, int]:
 
     A run absent from this map simulated a freshly drawn event mix (see
     :data:`~k4bench.regression.engine.WORKLOAD_UNFIXED`). The distinction is
-    what lets the engine restart a baseline when the workload is substituted,
-    rather than reporting the substitution as a regression in every series.
+    what lets the engine confine the event-mix noise floor to the runs that
+    actually re-draw their events; it never partitions a baseline.
     """
     if (
         results_df is None or results_df.empty
