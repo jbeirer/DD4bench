@@ -225,6 +225,12 @@ _REPEAT_FIELDS = {"first_confirmed_run_id"}
 #: weigh a step against the series it stepped out of, and the region breakdown
 #: saying where inside the detector a timing step landed.
 _HISTORY_FIELDS = {"history", "region_deltas"}
+#: What the judged value was measured from and judged against: the measurement
+#: before a group-wide common mode was divided out, that shift, the run's own
+#: intrinsic Monte-Carlo noise, and the effect floor that noise produced.
+_NOISE_FIELDS = {
+    "raw_value", "common_mode_shift", "noise_rse", "effect_floor",
+}
 #: The verdict schema a reader deployed before these features knew about. The
 #: compatibility contract is that the new fields are *purely additive* to this
 #: set — anything else (a renamed or dropped field) breaks an old reader in a
@@ -247,7 +253,8 @@ def test_new_report_is_additive_over_the_pre_window_schema():
     for g in data["groups"]:
         for v in g["verdicts"]:
             assert v.keys() == (
-                _PRE_WINDOW_FIELDS | _WINDOW_FIELDS | _REPEAT_FIELDS | _HISTORY_FIELDS
+                _PRE_WINDOW_FIELDS | _WINDOW_FIELDS | _REPEAT_FIELDS
+                | _HISTORY_FIELDS | _NOISE_FIELDS
             )
             old_view = {k: val for k, val in v.items() if k in _PRE_WINDOW_FIELDS}
             MetricVerdict(**{

@@ -710,24 +710,26 @@ def _histogram_display_controls(
 #: Human-readable metric names for row labels and panel titles; the raw column
 #: name (e.g. ``wall_time_s``) is preserved in hover tooltips.
 _METRIC_LABELS = {
-    "wall_time_s":    "wall time",
-    "user_cpu_s":     "user CPU",
-    "peak_rss_mb":    "peak RSS",
-    "cpu_efficiency": "CPU efficiency",
-    "mean_time_s":    "mean event time",
-    "median_time_s":  "median event time",
-    "mean_rss_mb":    "mean event RSS",
+    "wall_time_s":         "wall time",
+    "user_cpu_s":          "user CPU",
+    "peak_rss_mb":         "peak RSS",
+    "cpu_efficiency":      "CPU efficiency",
+    "mean_time_s":         "mean event time",
+    "median_time_s":       "median event time",
+    "trimmed_mean_time_s": "trimmed mean event time",
+    "mean_rss_mb":         "mean event RSS",
 }
 
 #: Unit suffix per metric for axis titles (empty for dimensionless ratios).
 _METRIC_UNITS = {
-    "wall_time_s":    "s",
-    "user_cpu_s":     "s",
-    "peak_rss_mb":    "MB",
-    "cpu_efficiency": "",
-    "mean_time_s":    "s",
-    "median_time_s":  "s",
-    "mean_rss_mb":    "MB",
+    "wall_time_s":         "s",
+    "user_cpu_s":          "s",
+    "peak_rss_mb":         "MB",
+    "cpu_efficiency":      "",
+    "mean_time_s":         "s",
+    "median_time_s":       "s",
+    "trimmed_mean_time_s": "s",
+    "mean_rss_mb":         "MB",
 }
 
 

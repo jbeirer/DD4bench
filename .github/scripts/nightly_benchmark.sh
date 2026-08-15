@@ -253,8 +253,8 @@ fi
 
 # run_info.json
 python3 - "${DETECTOR}" "${SAMPLE}" "${DATE}" "${K4H_PLATFORM}" "${K4H_RELEASE}" \
-          "${N_EVENTS}" "${SWEEP}" "${XML_PATH}" <<PYEOF
-import json, os, sys
+          "${N_EVENTS}" "${SWEEP}" "${XML_PATH}" "${DDSIM_ARGS}" <<PYEOF
+import json, os, shlex, sys
 
 detector, sample, date, platform, k4h_rel = sys.argv[1:6]
 n_events = int(sys.argv[6])
@@ -263,6 +263,22 @@ sweep    = sys.argv[7] == "true"
 # Recorded so attribution can state as a *fact* which pull requests touch the
 # geometry this run actually reads, instead of inferring it from path names.
 xml_path = sys.argv[8] if len(sys.argv) > 8 else ""
+ddsim_args = sys.argv[9] if len(sys.argv) > 9 else ""
+
+# The Monte-Carlo workload this run actually measured. Timing is a function of
+# which events were simulated, so a report comparing two nights is only
+# comparing software if the seed is the same on both — recording it is what
+# lets a report state that rather than assume it. None means the run drew a
+# fresh seed, i.e. the workload is not reproducible.
+def _random_seed(args: str):
+    tokens = shlex.split(args)
+    for flag, value in zip(tokens, tokens[1:]):
+        if flag == "--random.seed":
+            try:
+                return int(value)
+            except ValueError:
+                return None
+    return None
 
 run_info = {
     "date":             date,
@@ -281,6 +297,8 @@ run_info = {
     "commit_sha":       os.environ["GITHUB_SHA"],
     "n_events":         n_events,
     "sweep":            sweep,
+    "ddsim_args":       ddsim_args,
+    "random_seed":      _random_seed(ddsim_args),
     "configs":          ${CONFIGS_JSON},
     "configured_labels": ${CONFIGURED_LABELS_JSON},
 }

@@ -46,6 +46,7 @@ from k4bench.blame.models import (
     StepAssessment,
     rank_group_key,
 )
+from k4bench.regression.common_mode import pretty_config
 from k4bench.regression.models import (
     MetricVerdict,
     NightlyReport,
@@ -70,14 +71,15 @@ from k4bench.regression.render import (
 #: metric falls back to its raw name and the plain numeric formatter rather than
 #: failing (see :func:`_metric_label` / :func:`_fmt_value`).
 _METRIC_META: dict[str, tuple[str, str]] = {
-    "wall_time_s":    ("Wall time", "seconds"),
-    "user_cpu_s":     ("User CPU time", "seconds"),
-    "peak_rss_mb":    ("Peak memory", "memory_mb"),
-    "cpu_efficiency": ("CPU efficiency", "percent"),
-    "mean_time_s":    ("Mean event time", "seconds"),
-    "median_time_s":  ("Median event time", "seconds"),
-    "mean_rss_mb":    ("Mean event memory", "memory_mb"),
-    "returncode":     ("Return code", "int"),
+    "wall_time_s":         ("Wall time", "seconds"),
+    "user_cpu_s":          ("User CPU time", "seconds"),
+    "peak_rss_mb":         ("Peak memory", "memory_mb"),
+    "cpu_efficiency":      ("CPU efficiency", "percent"),
+    "mean_time_s":         ("Mean event time", "seconds"),
+    "median_time_s":       ("Median event time", "seconds"),
+    "trimmed_mean_time_s": ("Trimmed mean event time", "seconds"),
+    "mean_rss_mb":         ("Mean event memory", "memory_mb"),
+    "returncode":          ("Return code", "int"),
 }
 
 
@@ -102,7 +104,9 @@ def _html_metric_and_config(v: MetricVerdict) -> str:
         parts.append(
             f'<span style="white-space:nowrap;">{_esc(v.sub_detector)}</span>'
         )
-    parts.append(f'<span style="white-space:nowrap;">{_esc(v.label)}</span>')
+    parts.append(
+        f'<span style="white-space:nowrap;">{_esc(pretty_config(v.label))}</span>'
+    )
     return " · ".join(parts)
 
 
@@ -1562,7 +1566,7 @@ def _md_rep_row(v: MetricVerdict) -> str:
     pct = _fmt_pct(v.pct_change) if v.pct_change is not None else "—"
     note = v.reason if v.severity is Severity.FAILURE else _reconfirmed_note(v)
     suffix = f" ({note})" if note else ""
-    return f"- **{tag}** {_metric_label(v)} · {v.label} — {pct}{suffix}"
+    return f"- **{tag}** {_metric_label(v)} · {pretty_config(v.label)} — {pct}{suffix}"
 
 
 def _md_candidate(rank: int, c: CandidatePR) -> str:
@@ -1731,7 +1735,7 @@ def _md_detail_group(
             note = _reconfirmed_note(v)
             status = f"{_status_tag(v)}" + (f" ({note})" if note else "")
             lines.append(
-                f"| {status} | {_metric_label(v)} · {v.label} "
+                f"| {status} | {_metric_label(v)} · {pretty_config(v.label)} "
                 f"| {_fmt_value(v.metric, v.baseline_median)} | {_fmt_value(v.metric, v.value)} "
                 f"| {_fmt_pct(v.pct_change)} |"
             )

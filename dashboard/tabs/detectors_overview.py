@@ -75,7 +75,8 @@ _BASELINE_LABEL = BASELINE_LABEL
 
 #: The two panel families, each with its selectable equivalents (first entry
 #: is the default). All are lower-is-better.
-_TIME_METRICS = ["mean_time_s", "median_time_s", "wall_time_s", "user_cpu_s"]
+_TIME_METRICS = ["mean_time_s", "median_time_s", "trimmed_mean_time_s",
+                 "wall_time_s", "user_cpu_s"]
 _MEMORY_METRICS = ["mean_rss_mb", "peak_rss_mb"]
 _METRIC_ORDER: list[str] = [*_TIME_METRICS, *_MEMORY_METRICS]
 

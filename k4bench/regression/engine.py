@@ -20,7 +20,19 @@ so every gate errs toward *not* flagging:
    Iglewicz–Hoaglin robust-outlier threshold).
 4. **Practical-effect floor** (:data:`EFFECT_FLOOR`), ANDed with the z-gate: a
    metric that is normally rock-steady has a tiny MAD, so the z-gate alone
-   would trip on practically irrelevant wobbles.
+   would trip on practically irrelevant wobbles. The floor is **noise-aware**:
+   where the series carries a per-run measurement of its own Monte-Carlo
+   event-mix noise (:func:`k4bench.analysis.trend.event_mix_rse`), the floor
+   widens to :data:`NOISE_FLOOR_K` × that noise. The robust z-gate assumes
+   roughly normal residuals, but a run total is a *sum of heavy-tailed
+   per-event costs* — right-skewed with fat tails — so 3.5σ excursions happen
+   far more often than the Gaussian arithmetic behind ``Z_THRESHOLD``
+   suggests, and a fixed floor leaks on exactly the tail-heavy series. Widening
+   is one-directional: the floor is only ever raised, never lowered below
+   :data:`EFFECT_FLOOR`, so a quiet series cannot be made *more* trigger-happy
+   by a noise estimate that happens to come out small. It is self-limiting —
+   a series whose noise is already under the family floor keeps that floor
+   exactly, so sensitivity is given up only where the data proves it must be.
 5. **Two-strike confirmation**: the first night crossing both gates is
    ``WATCH``; only when the *next* reliable night repeats it in the same
    direction does it become ``CONFIRMED``. This is the single
@@ -59,6 +71,22 @@ so every gate errs toward *not* flagging:
    more than slower is "regressed" in the colloquial sense: either can be a
    deliberate change, an optimization, or a bug, and the report leaves that
    call to a human instead of asserting one.
+
+The series reaching this engine are not always raw measurements. Two upstream
+transforms exist to keep the noise model above honest, and both are applied by
+:mod:`k4bench.regression.report_builder` before a history gets here:
+
+- **Common-mode decomposition** (:mod:`k4bench.regression.common_mode`): a
+  night where every config of a run group moves together is one event, not one
+  per config. The group-wide shift is judged as its own series and divided out
+  of each config's, so a config series carries the part of its move that is
+  *its own*. This is a decomposition, not a subtraction: nothing is discarded,
+  so a stack-wide regression is still caught — earlier, in fact, since
+  averaging over the group shrinks its noise by roughly √n_configs.
+- **Trimmed metrics** (:func:`k4bench.analysis.trend.trimmed_mean`): a
+  low-noise companion to each total, judged alongside it rather than in place
+  of it, because the tail that carries the noise is also where a
+  tail-confined regression would appear.
 
 Known v1 limitations (deliberate):
 
@@ -113,7 +141,16 @@ EFFECT_FLOOR: dict[str, float] = {
 
 #: Families whose :data:`EFFECT_FLOOR` is an absolute difference, not a
 #: fraction of the baseline median.
-_ABSOLUTE_FLOOR_FAMILIES = frozenset({"cpu_efficiency_pp"})
+ABSOLUTE_FLOOR_FAMILIES = frozenset({"cpu_efficiency_pp"})
+
+#: Multiple of a series' measured intrinsic event-mix noise used as its effect
+#: floor when that exceeds :data:`EFFECT_FLOOR` (see gate 4). Three relative
+#: standard errors is the same "well outside ordinary variation" statement the
+#: z-gate makes, restated in a unit that survives the skew: the RSE is measured
+#: from the run's own event distribution rather than assumed from a Gaussian.
+#: Validated against the real history: the configs whose event mix alone moves
+#: the total stop flagging nightly, while quiet configs keep today's floor.
+NOISE_FLOOR_K = 3.0
 
 #: Additional *absolute* change floor per family, ANDed with the relative
 #: floor. Motivated by the retrospective run over the real EOS history
@@ -167,6 +204,39 @@ def _fmt_date(value) -> str:
     return "" if pd.isna(ts) else ts.strftime("%Y-%m-%d")
 
 
+def _optional(row, name: str) -> float | None:
+    """A finite float from an optional history column, else ``None``.
+
+    The three columns read this way (``noise_rse``, ``raw_value``,
+    ``common_mode_shift``) are annotations a caller may or may not have
+    computed, so their absence is normal and must degrade to the plain
+    behaviour rather than raise.
+    """
+    value = getattr(row, name, None)
+    if value is None:
+        return None
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def noise_aware_floor(base_floor: float, noise: list[float | None]) -> float:
+    """*base_floor* widened to :data:`NOISE_FLOOR_K` × the typical intrinsic
+    noise among *noise*, never narrowed below it (see gate 4).
+
+    The median is taken over the baseline's own runs rather than tonight's
+    single measurement: one run's event mix can be unusually tame or unusually
+    wild, and a floor that moved with it would be as noisy as the thing it is
+    meant to gate.
+    """
+    known = [n for n in noise if n is not None and math.isfinite(n)]
+    if not known:
+        return base_floor
+    return max(base_floor, NOISE_FLOOR_K * float(np.median(known)))
+
+
 def _identity(row) -> tuple[str, str]:
     """``(run_id, run_date)`` of *row* — the run directory and the release it
     measured. Kept as one value so the pair can never drift apart."""
@@ -207,6 +277,17 @@ def evaluate_series(
       *unknown* verdict (no machine info) is not evidence of contention, and
       excluding it would starve baselines on histories without machine info —
       the same policy as the dashboard's reliability filter.
+
+    Three further columns are optional annotations, each defaulting to absent:
+
+    - ``noise_rse`` — the run's own intrinsic Monte-Carlo event-mix noise,
+      which widens the practical-effect floor (see gate 4). The floor is
+      frozen with the rest of the release snapshot, from the *baseline* runs'
+      noise, so every night of a release is judged against one floor.
+    - ``raw_value`` / ``common_mode_shift`` — where ``value`` is a residual
+      after a group-wide shift was divided out, the measurement it came from
+      and the shift that was removed. Carried onto the verdict untouched; the
+      engine judges ``value`` and never re-derives one from the other.
 
     The unit of change is the **release**: nights sharing a ``run_date`` are
     repeat measurements of one software state, and all engine state
@@ -264,12 +345,15 @@ def evaluate_series(
     inside the window is skipped, not judged, so it never narrows the
     window — it is spanned by it.
     """
-    floor = EFFECT_FLOOR[series.metric_family]
+    base_floor = EFFECT_FLOOR[series.metric_family]
     abs_delta_floor = ABS_DELTA_FLOOR.get(series.metric_family, 0.0)
-    absolute_floor = series.metric_family in _ABSOLUTE_FLOOR_FAMILIES
+    absolute_floor = series.metric_family in ABSOLUTE_FLOOR_FAMILIES
 
     df = history.sort_values(["run_date", "run_id"], kind="stable")
     baseline: deque[float] = deque(maxlen=BASELINE_WINDOW_RUNS)
+    # The baseline runs' intrinsic noise, in lockstep with `baseline` so the
+    # floor is always derived from the same runs the median and MAD are.
+    baseline_noise: deque[float | None] = deque(maxlen=BASELINE_WINDOW_RUNS)
     pending: Direction | None = None
     pending_run: tuple[str, str] | None = None   # the WATCH night's identity (the onset)
     last_accepted: tuple[str, str] | None = None  # newest night seen at the accepted level
@@ -301,10 +385,12 @@ def evaluate_series(
 
     for release_date, group in groupby(df.itertuples(index=False), key=_release_key):
         # Per-release state, reset at every boundary.
-        snapshot: tuple[float, float, bool, int] | None = None  # (med, mad, reanchoring, n_base)
+        # snapshot: (med, mad, reanchoring, n_base, floor)
+        snapshot: tuple[float, float, bool, int, float] | None = None
         warming: bool | None = None       # decided once, at the first reliable night
         release_windows: dict[Direction, tuple] = {}  # direction -> (window, first-confirmed night)
         release_values: list[float] = []  # reliable judged values, night order
+        release_noise: list[float | None] = []  # their intrinsic noise, in lockstep
         release_last_reliable: tuple[str, str] | None = None
 
         for row in group:
@@ -314,6 +400,12 @@ def evaluate_series(
             if x is None or (isinstance(x, float) and math.isnan(x)):
                 continue
             x = float(x)
+            noise = _optional(row, "noise_rse")
+            annotations = dict(
+                raw_value=_optional(row, "raw_value"),
+                common_mode_shift=_optional(row, "common_mode_shift"),
+                noise_rse=noise,
+            )
 
             if warming is None:
                 warming = len(baseline) < MIN_BASELINE_RUNS and anchor_date is None
@@ -331,8 +423,10 @@ def evaluate_series(
                     severity=Severity.UNKNOWN, direction=Direction.NONE,
                     reason=f"only {len(baseline)} reliable baseline runs "
                            f"(<{MIN_BASELINE_RUNS}) — not judged",
+                    **annotations,
                 ))
                 release_values.append(x)
+                release_noise.append(noise)
                 continue
 
             if snapshot is None:
@@ -350,9 +444,16 @@ def evaluate_series(
                     mad = anchor_mad
                 else:
                     med, mad = robust_baseline(np.asarray(baseline))
-                snapshot = (med, mad, reanchoring, len(baseline))
+                # The floor is frozen with the rest of the snapshot: a release
+                # whose nights were judged against different floors would
+                # report the same measurement two ways.
+                release_floor = (
+                    base_floor if absolute_floor
+                    else noise_aware_floor(base_floor, list(baseline_noise))
+                )
+                snapshot = (med, mad, reanchoring, len(baseline), release_floor)
 
-            med, mad, reanchoring, n_base = snapshot
+            med, mad, reanchoring, n_base, floor = snapshot
             delta = x - med
             pct_change, z = robust_change(x, med, mad)
 
@@ -465,6 +566,11 @@ def evaluate_series(
                 )
                 z_txt = "inf" if math.isinf(z) else f"{z:.1f}"
                 reason = f"{change} vs baseline median {med:.4g} (robust z={z_txt})"
+                if noise is not None:
+                    # A percentage means little without the wobble it beat.
+                    reason += f", intrinsic event-mix noise ±{noise:.1%}"
+                if floor > base_floor:
+                    reason += f", effect floor widened to {floor:.1%} by that noise"
                 if first_confirmed is not None and first_confirmed != _identity(row):
                     # A re-measurement of an already-confirmed change reads as
                     # a repeat, not fresh news.
@@ -488,8 +594,11 @@ def evaluate_series(
                 first_confirmed_run_id=(
                     first_confirmed[0] if first_confirmed is not None else None
                 ),
+                effect_floor=floor,
+                **annotations,
             ))
             release_values.append(x)
+            release_noise.append(noise)
             release_last_reliable = _identity(row)
 
         # Release boundary: the only place baseline state moves for judged
@@ -500,9 +609,11 @@ def evaluate_series(
             # pre-change median stops being the yardstick from the next
             # release on; keep the pre-change spread as the interim noise
             # estimate.
-            _, snap_mad, _, _ = snapshot
+            snap_mad = snapshot[1]
             baseline.clear()
+            baseline_noise.clear()
             baseline.extend(release_values)
+            baseline_noise.extend(release_noise)
             anchor_date = release_date
             anchor_mad = snap_mad
             pending = pending_run = None
@@ -519,5 +630,6 @@ def evaluate_series(
             # cannot move a 14-point median), and a still-pending WATCH
             # carries into the next release.
             baseline.extend(release_values)
+            baseline_noise.extend(release_noise)
 
     return verdicts

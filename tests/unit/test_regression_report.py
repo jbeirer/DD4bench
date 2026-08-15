@@ -11,6 +11,8 @@ import pytest
 
 import pandas as pd
 
+from k4bench.regression.common_mode import COMMON_MODE_LABEL
+from k4bench.regression.engine import EFFECT_FLOOR
 from k4bench.regression.models import Direction, Severity
 from k4bench.regression.report_builder import (
     EVENT_METRICS,
@@ -75,6 +77,7 @@ def _write_run(
     configured_labels: tuple[str, ...] | None = None,
     event_time_s: float | None = None,
     result_overrides: dict[str, dict] | None = None,
+    random_seed: int | None = 4242,
 ) -> Path:
     """One synthetic nightly run dir: run_info + per-config results + machine info.
 
@@ -90,6 +93,7 @@ def _write_run(
         "k4h_release": f"key4hep-{night}",
         "sample": sample,
         "github_run_url": github_run_url,
+        "random_seed": random_seed,
     }
     if configured_labels is not None:
         run_info["configured_labels"] = list(configured_labels)
@@ -156,8 +160,11 @@ def test_persisting_step_confirms_in_group_report(tmp_path):
     assert group is not None
     confirmed = {(v.metric, v.severity, v.direction) for v in group.regressions}
     assert ("wall_time_s", Severity.CONFIRMED, Direction.UP) in confirmed
-    # The correlated metric (same underlying CPU-bound cost) moves with it.
-    assert any(v.metric == "user_cpu_s" for v in group.regressions)
+    # user_cpu_s tracks wall_time_s on these runs, so it is reported but never
+    # judged — one measurement must not be counted as two flags.
+    user_cpu = [v for v in group.verdicts if v.metric == "user_cpu_s"]
+    assert user_cpu and all(v.severity is Severity.UNKNOWN for v in user_cpu)
+    assert not any(v.metric == "user_cpu_s" for v in group.regressions)
 
 
 def test_group_report_carries_tonights_github_run_url(tmp_path):
@@ -635,3 +642,199 @@ def test_local_report_quiet_night_not_alertable(tmp_path):
     group = report.groups[0]
     assert group.detector == "DET_A"
     assert any(v.severity is Severity.OK for v in group.verdicts)
+
+
+# ── Common-mode decomposition, noise floor and workload identity ──────────────
+#
+# These exercise the report assembly end to end over a *sweep*: several configs
+# in one run group, which is the shape the decomposition needs and the shape
+# every production detector has.
+
+_SWEEP_LABELS = tuple(f"config_{i}" for i in range(6))
+
+#: Each config sits at its own absolute level, so nothing here can accidentally
+#: pass by comparing configs directly instead of comparing each to itself.
+_SWEEP_LEVELS = {label: 100.0 + 20.0 * i for i, label in enumerate(_SWEEP_LABELS)}
+
+
+def _sweep_history(
+    sample_root: Path,
+    n_nights: int,
+    *,
+    scales: dict[int, dict[str, float]] | None = None,
+    event_times: dict[str, list[float]] | None = None,
+) -> tuple[str, ...]:
+    """A sweep's run dirs. ``scales[i][label]`` multiplies that config's level
+    on night *i*; anything unnamed stays flat."""
+    scales = scales or {}
+    run_dirs = []
+    for i, night in enumerate(_nights(n_nights)):
+        scale = scales.get(i, {})
+        overrides = {
+            label: {"wall_time_s": _SWEEP_LEVELS[label] * scale.get(label, 1.0)}
+            for label in _SWEEP_LABELS
+        }
+        run_dirs.append(_write_run(
+            sample_root / night, night=night, labels=_SWEEP_LABELS,
+            result_overrides=overrides,
+        ))
+        if event_times:
+            for label, times in event_times.items():
+                _write_event_timing_series(run_dirs[-1], label, times)
+    return tuple(str(d) for d in run_dirs)
+
+
+def _write_event_timing_series(run_dir: Path, label: str, times: list[float]) -> None:
+    (run_dir / f"{label}_events.json").write_text(json.dumps({
+        # Event 0 is the warm-up the trend builder drops.
+        "event_numbers": list(range(len(times) + 1)),
+        "event_times_s": [times[0], *times],
+        "event_rss_begin_mb": [1000.0] * (len(times) + 1),
+        "event_rss_end_mb": [1024.0] * (len(times) + 1),
+    }))
+
+
+def _report_for(run_dirs: tuple[str, ...]):
+    return group_report_from_run_dirs("DET", _PLAT, "single_e", run_dirs)
+
+
+def test_whole_group_moving_together_is_reported_once(tmp_path):
+    # Every config 20% slower for two nights. That is one event about the run
+    # group, and the report must say it once instead of once per config.
+    scales = {i: dict.fromkeys(_SWEEP_LABELS, 1.20) for i in (10, 11)}
+    group = _report_for(_sweep_history(tmp_path, 12, scales=scales))
+
+    wall = [v for v in group.regressions if v.metric == "wall_time_s"]
+    assert [v.label for v in wall] == [COMMON_MODE_LABEL]
+    assert wall[0].direction is Direction.UP
+    assert wall[0].pct_change == pytest.approx(0.20, abs=0.02)
+
+
+def test_one_config_moving_alone_still_confirms_against_its_own_series(tmp_path):
+    # The decomposition must not cost sensitivity to the case it exists to
+    # separate out: a single config's own step is still that config's step.
+    scales = {i: {_SWEEP_LABELS[0]: 1.30} for i in (10, 11)}
+    group = _report_for(_sweep_history(tmp_path, 12, scales=scales))
+
+    wall = [v for v in group.regressions if v.metric == "wall_time_s"]
+    assert [v.label for v in wall] == [_SWEEP_LABELS[0]]
+    assert wall[0].pct_change == pytest.approx(0.30, abs=0.02)
+
+
+def test_a_shared_move_and_a_private_one_are_reported_as_two_facts(tmp_path):
+    scales = {
+        i: {**dict.fromkeys(_SWEEP_LABELS, 1.20), _SWEEP_LABELS[0]: 1.20 * 1.30}
+        for i in (10, 11)
+    }
+    group = _report_for(_sweep_history(tmp_path, 12, scales=scales))
+
+    wall = {v.label: v for v in group.regressions if v.metric == "wall_time_s"}
+    assert set(wall) == {COMMON_MODE_LABEL, _SWEEP_LABELS[0]}
+    assert wall[COMMON_MODE_LABEL].pct_change == pytest.approx(0.20, abs=0.02)
+    # The config's own row reports only the part that was its own.
+    assert wall[_SWEEP_LABELS[0]].pct_change == pytest.approx(0.30, abs=0.02)
+
+
+def test_a_decomposed_verdict_keeps_the_measurement_it_came_from(tmp_path):
+    scales = {
+        i: {**dict.fromkeys(_SWEEP_LABELS, 1.20), _SWEEP_LABELS[0]: 1.20 * 1.30}
+        for i in (10, 11)
+    }
+    group = _report_for(_sweep_history(tmp_path, 12, scales=scales))
+
+    v = next(v for v in group.regressions
+             if v.metric == "wall_time_s" and v.label == _SWEEP_LABELS[0])
+    assert v.common_mode_shift == pytest.approx(0.20, abs=0.02)
+    assert v.raw_value == pytest.approx(_SWEEP_LEVELS[_SWEEP_LABELS[0]] * 1.2 * 1.3)
+    # The judged value is the residual, and every statistic beside it agrees.
+    assert v.value == pytest.approx(v.raw_value / (1 + v.common_mode_shift))
+    assert v.value == pytest.approx(
+        v.baseline_median * (1 + v.pct_change), rel=1e-6
+    )
+
+
+def test_the_trimmed_mean_is_judged_and_the_tail_noise_is_recorded(tmp_path):
+    # A mildly skewed event distribution: the trimmed mean is judged alongside
+    # the totals, and the run's own noise is carried with it.
+    mild_tail = [1.0] * 95 + [1.5] * 5
+    run_dirs = _sweep_history(
+        tmp_path, 12,
+        event_times={label: mild_tail for label in _SWEEP_LABELS},
+    )
+    group = _report_for(run_dirs)
+
+    judged = {(v.label, v.metric) for v in group.verdicts
+              if v.severity is not Severity.UNKNOWN}
+    assert (_SWEEP_LABELS[0], "trimmed_mean_time_s") in judged
+
+    trimmed = next(v for v in group.verdicts
+                   if v.metric == "trimmed_mean_time_s"
+                   and v.label == _SWEEP_LABELS[0])
+    assert trimmed.value == pytest.approx(1.0)
+    assert trimmed.noise_rse is not None and trimmed.noise_rse > 0
+    # The measured noise is small here, so the family floor still governs.
+    assert trimmed.effect_floor == pytest.approx(EFFECT_FLOOR["time"])
+
+
+def test_a_tail_heavy_config_gets_a_wider_floor_than_a_quiet_one(tmp_path):
+    quiet = [1.0] * 100
+    tail_heavy = [1.0] * 90 + [40.0] * 10
+    run_dirs = _sweep_history(tmp_path, 12, event_times={
+        **{label: quiet for label in _SWEEP_LABELS},
+        _SWEEP_LABELS[0]: tail_heavy,
+    })
+    group = _report_for(run_dirs)
+
+    floors = {
+        v.label: v.effect_floor for v in group.verdicts
+        if v.metric == "wall_time_s" and v.effect_floor is not None
+    }
+    assert floors[_SWEEP_LABELS[1]] == pytest.approx(EFFECT_FLOOR["time"])
+    assert floors[_SWEEP_LABELS[0]] > EFFECT_FLOOR["time"]
+
+
+def test_a_real_step_survives_every_new_gate(tmp_path):
+    # The sensitivity guarantee for all of the above at once: a large step
+    # confined to one config, on a run group that also carries a tail-heavy
+    # event distribution and a common mode, is still CONFIRMED.
+    tail_heavy = [1.0] * 90 + [20.0] * 10
+    scales = {
+        i: {**dict.fromkeys(_SWEEP_LABELS, 1.05), _SWEEP_LABELS[0]: 1.05 * 1.60}
+        for i in (10, 11)
+    }
+    group = _report_for(_sweep_history(
+        tmp_path, 12, scales=scales,
+        event_times={label: tail_heavy for label in _SWEEP_LABELS},
+    ))
+    stepped = [v for v in group.regressions
+               if v.label == _SWEEP_LABELS[0] and v.metric == "wall_time_s"]
+    assert stepped and stepped[0].direction is Direction.UP
+
+
+def test_a_changed_ddsim_seed_is_announced_in_the_notes(tmp_path):
+    run_dirs = [
+        _write_run(tmp_path / night, night=night, random_seed=seed)
+        for night, seed in zip(_nights(3), [4242, 4242, 99])
+    ]
+    group = _report_for(tuple(str(d) for d in run_dirs))
+    assert any("seed 99" in note and "4242" in note for note in group.notes)
+
+
+def test_an_unchanged_ddsim_seed_says_nothing(tmp_path):
+    run_dirs = [
+        _write_run(tmp_path / night, night=night, random_seed=4242)
+        for night in _nights(3)
+    ]
+    group = _report_for(tuple(str(d) for d in run_dirs))
+    assert not any("seed" in note for note in group.notes)
+
+
+def test_losing_a_fixed_seed_is_announced_too(tmp_path):
+    # A night that fell back to a fresh seed measured a different workload,
+    # which is exactly as reportable as changing the fixed one.
+    run_dirs = [
+        _write_run(tmp_path / night, night=night, random_seed=seed)
+        for night, seed in zip(_nights(3), [4242, 4242, None])
+    ]
+    group = _report_for(tuple(str(d) for d in run_dirs))
+    assert any("fresh ddsim seed" in note for note in group.notes)

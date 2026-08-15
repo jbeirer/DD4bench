@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 from k4bench.regression.engine import (
+    EFFECT_FLOOR,
     MIN_BASELINE_RUNS,
     evaluate_series,
     robust_baseline,
@@ -672,3 +673,96 @@ def test_window_reports_release_dates_alongside_run_ids():
     assert confirmed.severity is Severity.CONFIRMED
     assert _window(confirmed) == ("2026-02-10", "2026-02-11")
     assert confirmed.last_accepted_run_date == confirmed.onset_run_date == "2026-01-20"
+
+
+# ── Noise-aware effect floor ──────────────────────────────────────────────────
+
+def _noisy_history(values, noise, start="2026-01-01") -> pd.DataFrame:
+    """A history whose runs each report their own intrinsic event-mix noise."""
+    history = _history(values, start=start)
+    history["noise_rse"] = noise
+    return history
+
+
+def test_noise_floor_suppresses_a_step_inside_the_measured_noise():
+    # A +8% step clears the 5% family floor, but the series measures itself at
+    # ±3% intrinsic noise, so 3x that is 9% and the step is inside it.
+    values = _STEADY + [108.0, 108.4]
+    verdicts = evaluate_series(
+        _noisy_history(values, [0.03] * len(values)), series=_TIME,
+    )
+    assert _severities(verdicts[-2:]) == [Severity.OK, Severity.OK]
+    # Without the noise annotation the very same values do flag.
+    plain = evaluate_series(_history(values), series=_TIME)
+    assert _severities(plain[-2:]) == [Severity.WATCH, Severity.CONFIRMED]
+
+
+def test_noise_floor_still_lets_a_step_beyond_the_noise_through():
+    # Same measured noise, a step comfortably outside it.
+    values = _STEADY + [130.0, 130.4]
+    verdicts = evaluate_series(
+        _noisy_history(values, [0.03] * len(values)), series=_TIME,
+    )
+    assert _severities(verdicts[-2:]) == [Severity.WATCH, Severity.CONFIRMED]
+
+
+def test_noise_floor_is_never_lowered_below_the_family_floor():
+    # A very quiet series must not become *more* trigger-happy: a +3% move is
+    # under the 5% family floor and stays OK however small the measured noise.
+    values = _STEADY + [103.0, 103.2]
+    verdicts = evaluate_series(
+        _noisy_history(values, [0.0001] * len(values)), series=_TIME,
+    )
+    assert all(v.severity is Severity.OK for v in verdicts[-2:])
+    assert verdicts[-1].effect_floor == pytest.approx(EFFECT_FLOOR["time"])
+
+
+def test_noise_floor_comes_from_the_baseline_not_from_tonight():
+    # One unusually tame night must not narrow the floor: the floor is the
+    # median over the baseline runs, and this series is noisy throughout.
+    values = _STEADY + [108.0, 108.4]
+    noise = [0.03] * len(_STEADY) + [0.0001, 0.0001]
+    verdicts = evaluate_series(_noisy_history(values, noise), series=_TIME)
+    assert all(v.severity is Severity.OK for v in verdicts[-2:])
+    assert verdicts[-1].effect_floor == pytest.approx(3 * 0.03)
+
+
+def test_verdict_reports_the_noise_it_was_judged_against():
+    values = _STEADY + [130.0, 130.4]
+    verdicts = evaluate_series(
+        _noisy_history(values, [0.02] * len(values)), series=_TIME,
+    )
+    confirmed = verdicts[-1]
+    assert confirmed.noise_rse == pytest.approx(0.02)
+    assert "intrinsic event-mix noise ±2.0%" in confirmed.reason
+
+
+def test_absolute_floor_family_ignores_a_relative_noise_estimate():
+    # cpu_efficiency's floor is percentage points, which a relative standard
+    # error cannot be compared against — it must be left alone.
+    series = SeriesId(
+        detector="DET", platform="PLAT", sample="single_e", label="baseline",
+        metric_family="cpu_efficiency_pp", metric="cpu_efficiency",
+    )
+    values = [0.98, 0.981, 0.979, 0.98, 0.9805, 0.9795, 0.98, 0.9802, 0.9798,
+              0.98, 0.90, 0.901]
+    verdicts = evaluate_series(
+        _noisy_history(values, [0.5] * len(values)), series=series,
+    )
+    assert _severities(verdicts[-2:]) == [Severity.WATCH, Severity.CONFIRMED]
+    assert verdicts[-1].effect_floor == pytest.approx(
+        EFFECT_FLOOR["cpu_efficiency_pp"]
+    )
+
+
+def test_common_mode_annotations_are_carried_onto_the_verdict():
+    # The engine judges `value` and reports what it was derived from, without
+    # re-deriving one from the other.
+    history = _history(_STEADY + [120.0, 120.5])
+    history["raw_value"] = history["value"] * 1.1
+    history["common_mode_shift"] = 0.1
+    confirmed = evaluate_series(history, series=_TIME)[-1]
+    assert confirmed.severity is Severity.CONFIRMED
+    assert confirmed.value == pytest.approx(120.5)
+    assert confirmed.raw_value == pytest.approx(120.5 * 1.1)
+    assert confirmed.common_mode_shift == pytest.approx(0.1)

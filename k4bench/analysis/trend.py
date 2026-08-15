@@ -12,9 +12,11 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from k4bench.analysis.loader import load_event_timing, load_region_timing, load_results
@@ -24,6 +26,74 @@ _log = logging.getLogger(__name__)
 #: Errors raised by loaders on absent or malformed run data — expected for partial
 #: runs and skipped quietly rather than aborting a whole trend build.
 EXPECTED_LOAD_ERRORS = (FileNotFoundError, ValueError, pd.errors.ParserError)
+
+#: Fraction of the slowest events dropped by :func:`trimmed_mean` — the tail
+#: that carries the Monte-Carlo event-mix noise. The smallest trim that buys
+#: the full noise reduction on the tail-heavy configs while leaving the quiet
+#: ones unchanged.
+TRIM_FRACTION = 0.05
+
+#: Events below which trimming is not attempted, since the trim would drop
+#: less than one event and the result would silently *be* the mean while
+#: claiming to be something else.
+MIN_TRIM_EVENTS = 20
+
+
+def trimmed_mean(times: np.ndarray, fraction: float = TRIM_FRACTION) -> float | None:
+    """Mean of *times* with the slowest *fraction* of events dropped.
+
+    A run total is a sum of per-event costs, and where that distribution is
+    heavy-tailed a handful of events carry a disproportionate share of it.
+    Which events those are is re-drawn every night, so the total wobbles for
+    reasons that have nothing to do with the software. Dropping the tail leaves
+    a statistic about the *typical* event, stable enough to judge tightly.
+
+    Deliberately a complement to the untrimmed total, never a replacement: the
+    same tail that carries the noise is where a tail-confined regression would
+    show up first, so a detector that only watched the trimmed mean would be
+    blind to exactly the most interesting kind of change.
+
+    Returns ``None`` for fewer than :data:`MIN_TRIM_EVENTS` events, where the
+    trim would drop nothing and the value would merely duplicate the mean.
+    """
+    n = len(times)
+    if n < MIN_TRIM_EVENTS:
+        return None
+    n_drop = int(n * fraction)
+    if n_drop <= 0:
+        return None
+    kept = np.sort(times)[: n - n_drop]
+    return float(kept.mean())
+
+
+def event_mix_rse(times: np.ndarray) -> float | None:
+    """Relative standard error of the run total implied by *times* themselves.
+
+    The run total is the sum of this run's own per-event costs. Resampling
+    those costs with replacement — the bootstrap — gives the spread the total
+    would have shown had the event mix been re-drawn, which is exactly what a
+    fresh ddsim seed does every night. For a sum of ``n`` draws the bootstrap
+    standard error has a closed form, ``sqrt(n)·σ`` with ``σ`` the population
+    standard deviation of the events, so no resampling is needed: relative to
+    the total ``n·mean`` that is ``σ / (mean·sqrt(n))``.
+
+    This makes each run carry a *measurement* of its own intrinsic Monte-Carlo
+    noise, from data the run already wrote. It reproduces the spread actually
+    observed in the baselines, which is what licenses using it to set a
+    per-series effect floor in :mod:`k4bench.regression.engine`.
+
+    Returns ``None`` when there are too few events to estimate a spread, or
+    when the mean is not positive (nothing to be relative to).
+    """
+    n = len(times)
+    if n < 2:
+        return None
+    mean = float(times.mean())
+    if not math.isfinite(mean) or mean <= 0:
+        return None
+    sigma = float(times.std(ddof=0))
+    rse = sigma / (mean * math.sqrt(n))
+    return rse if math.isfinite(rse) else None
 
 
 def _parse_configured_labels(info: dict) -> list[str] | None:
@@ -62,6 +132,7 @@ def parse_run_dir(run_dir: Path) -> dict:
             "github_run_url":   None,
             "commit_sha":       None,
             "n_events":         None,
+            "random_seed":      None,
             "status":           None,
             "failed_configs":   [],
             "configured_labels": None,
@@ -96,6 +167,11 @@ def parse_run_dir(run_dir: Path) -> dict:
                 "github_run_url":   info.get("github_run_url"),
                 "commit_sha":       info.get("commit_sha"),
                 "n_events":         info.get("n_events"),
+                # The ddsim seed this run simulated with. ``None`` on a run
+                # that drew a fresh one, which is *not* the same fact as a
+                # seed the reader does not recognise: it means the workload
+                # itself differed from every other night's.
+                "random_seed":      info.get("random_seed"),
                 "status":           info.get("status"),
                 "failed_configs":   info.get("failed_configs") or [],
                 # Exact result labels planned by the expanded benchmark config.
@@ -143,7 +219,8 @@ def build_results_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
     """Load per-config results across *run_dirs* into one combined DataFrame.
 
     Each row gets ``run_id``, ``run_date``, ``platform``, ``k4h_release``,
-    ``k4h_release_date``, ``github_run_url`` and ``x_date`` columns.
+    ``k4h_release_date``, ``github_run_url``, ``random_seed`` and ``x_date``
+    columns.
     """
     if not run_dirs:
         return None
@@ -168,6 +245,7 @@ def build_results_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
         df["k4h_release_date"] = meta["k4h_release_date"]
         df["github_run_url"]   = meta["github_run_url"]
         df["xml_path"]         = meta["xml_path"]
+        df["random_seed"]      = meta["random_seed"]
         frames.append(df)
     if not frames:
         return None
@@ -244,8 +322,16 @@ def build_event_timing_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
 
     For each run directory, event timing is loaded for all available configs.
     Per config per run, summary statistics are computed (event 0 excluded):
-        mean_time_s, median_time_s, p95_time_s,
+        mean_time_s, median_time_s, p95_time_s, trimmed_mean_time_s,
+        event_mix_rse,
         mean_rss_mb, median_rss_mb, p95_rss_mb, max_rss_mb
+
+    ``trimmed_mean_time_s`` (:func:`trimmed_mean`) and ``event_mix_rse``
+    (:func:`event_mix_rse`) are the two columns the regression engine needs to
+    tell Monte-Carlo event-mix noise apart from a software change: the first is
+    a low-noise view of the typical event, the second is this run's own measure
+    of how much its total is allowed to wobble for event-mix reasons alone.
+    Both are absent (NaN) for a config with too few events to support them.
 
     Returns a long-form DataFrame with those columns plus
         run_id, run_date, k4h_release_date, k4h_release, label
@@ -286,11 +372,18 @@ def build_event_timing_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
                 t = df_ev["event_time_s"].dropna()
                 nt = len(t)
                 if nt:
+                    times = t.to_numpy(dtype=float)
                     row["n_events"]      = nt
                     row["mean_time_s"]   = float(t.mean())
                     row["median_time_s"] = float(t.median())
                     row["p95_time_s"]    = float(t.quantile(0.95))
                     row["std_time_s"]    = float(t.std()) if nt > 1 else 0.0
+                    trimmed = trimmed_mean(times)
+                    if trimmed is not None:
+                        row["trimmed_mean_time_s"] = trimmed
+                    rse = event_mix_rse(times)
+                    if rse is not None:
+                        row["event_mix_rse"] = rse
             if "rss_end_mb" in df_ev.columns:
                 r = df_ev["rss_end_mb"].dropna()
                 nr = len(r)

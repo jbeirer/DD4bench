@@ -28,7 +28,10 @@ from k4bench.regression.models import (  # noqa: E402
     RunGroupReport,
     Severity,
 )
-from k4bench.regression.report_builder import EVENT_METRICS, RUN_METRICS  # noqa: E402
+from k4bench.regression.report_builder import (  # noqa: E402
+    EVENT_METRICS,
+    RUN_VALUE_METRICS,
+)
 
 _DASHBOARD_DIR = Path(__file__).resolve().parents[2] / "dashboard"
 
@@ -1057,7 +1060,9 @@ def test_metric_labels_cover_engine_metrics():
     # The lifted ui_utils dicts must track the regression engine's metric set —
     # the tab's panels and the Regressions ledger both label from them, and the
     # tab can only compare metrics the engine actually records.
-    engine_metrics = set(RUN_METRICS) | set(EVENT_METRICS)
+    # Every metric the report *records*, judged or not: the tab plots values,
+    # and a reported-only metric still needs a label and a unit.
+    engine_metrics = set(RUN_VALUE_METRICS) | set(EVENT_METRICS)
     assert set(ov._METRIC_LABELS) == engine_metrics
     assert set(ov._METRIC_UNITS) == engine_metrics
     assert set(ov._METRIC_ORDER) <= engine_metrics
