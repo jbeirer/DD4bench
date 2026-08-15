@@ -70,7 +70,7 @@ Written by the nightly CI and read by the dashboard.
   release, detector, sample, the GitHub run link and commit, event count, the
   list of run labels (`configs`), the ddsim flags the run was invoked with
   (`ddsim_args`) and the Monte-Carlo seed parsed out of them (`random_seed`,
-  `null` when the run drew a fresh one), and the stack's git provenance
+  `null` when the run fixed none), and the stack's git provenance
   (`k4h_stack_root`, `k4h_packages`; see below).
 - **`machine_info.json`** — the benchmark host and its state *around* the run:
   CPU model/cores, RAM/swap totals, and `_start`/`_end` snapshots of load,

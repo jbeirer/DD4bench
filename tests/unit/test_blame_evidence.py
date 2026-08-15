@@ -20,6 +20,7 @@ from k4bench.blame.evidence import (
     outcomes_for_window,
     steps_in_window,
 )
+from k4bench.regression.common_mode import COMMON_MODE_LABEL
 from k4bench.regression.models import (
     Direction,
     HostFact,
@@ -230,6 +231,31 @@ def test_an_unreliable_or_failed_run_is_silence_not_a_clean_result():
     assert _outcomes([
         _group("IDEA_o1_v03", verdicts=[_flat()], failures=["no run uploaded"])
     ]) == ()
+
+
+def test_configs_flattened_by_a_common_mode_are_not_controls():
+    # When the whole group moved together, that move is divided out of every
+    # config before any of them is judged, so their flatness is arithmetic and
+    # not a measurement that they held still. Offering it as "did not move"
+    # would hand the model a control the decomposition manufactured, directly
+    # contradicting the shared move reported beside it.
+    shared = _verdict(
+        label=COMMON_MODE_LABEL, severity=Severity.CONFIRMED,
+        onset_run_date="2026-07-18", last_accepted_run_date="2026-07-14",
+    )
+    assert _outcomes([
+        _group("IDEA_o1_v03", verdicts=[shared, _flat(), _flat("without_HCal")])
+    ]) == ()
+
+
+def test_a_group_whose_common_mode_held_still_is_still_a_control():
+    # The exclusion is about a shared *step*, not about the decomposition
+    # existing: a group that measured a common mode and found no move in it
+    # is exactly the negative evidence the prompt asks for.
+    quiet = _verdict(label=COMMON_MODE_LABEL, severity=Severity.OK,
+                     direction=Direction.NONE)
+    outcomes = _outcomes([_group("IDEA_o1_v03", verdicts=[quiet, _flat()])])
+    assert [o.label for o in outcomes] == [COMMON_MODE_LABEL, "baseline"]
 
 
 def test_a_configuration_with_nothing_judged_never_becomes_a_control():

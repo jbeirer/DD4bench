@@ -12,7 +12,6 @@ import pytest
 import pandas as pd
 
 from k4bench.regression.common_mode import COMMON_MODE_LABEL
-from k4bench.regression.engine import EFFECT_FLOOR
 from k4bench.regression.models import Direction, Severity
 from k4bench.regression.report_builder import (
     EVENT_METRICS,
@@ -644,7 +643,7 @@ def test_local_report_quiet_night_not_alertable(tmp_path):
     assert any(v.severity is Severity.OK for v in group.verdicts)
 
 
-# ── Common-mode decomposition, noise floor and workload identity ──────────────
+# ── Common-mode decomposition and workload identity ───────────────────────────
 #
 # These exercise the report assembly end to end over a *sweep*: several configs
 # in one run group, which is the shape the decomposition needs and the shape
@@ -664,13 +663,16 @@ def _sweep_history(
     scales: dict[int, dict[str, float]] | None = None,
     event_times: dict[str, list[float]] | None = None,
     random_seed: int | None = None,
+    seeds: dict[int, int | None] | None = None,
 ) -> tuple[str, ...]:
     """A sweep's run dirs. ``scales[i][label]`` multiplies that config's level
-    on night *i*; anything unnamed stays flat.
+    on night *i*; anything unnamed stays flat. ``seeds[i]`` overrides the ddsim
+    seed recorded for night *i*.
 
-    Unseeded by default: a re-drawn event mix is the regime the event-mix noise
-    floor exists for, and the one the whole recorded history was measured in."""
+    Unseeded by default: that is the regime the whole recorded history was
+    measured in, and the one a fixed seed has to transition out of."""
     scales = scales or {}
+    seeds = seeds or {}
     run_dirs = []
     for i, night in enumerate(_nights(n_nights)):
         scale = scales.get(i, {})
@@ -680,7 +682,8 @@ def _sweep_history(
         }
         run_dirs.append(_write_run(
             sample_root / night, night=night, labels=_SWEEP_LABELS,
-            result_overrides=overrides, random_seed=random_seed,
+            result_overrides=overrides,
+            random_seed=seeds.get(i, random_seed),
         ))
         if event_times:
             for label, times in event_times.items():
@@ -757,9 +760,9 @@ def test_a_decomposed_verdict_keeps_the_measurement_it_came_from(tmp_path):
     )
 
 
-def test_the_trimmed_mean_is_judged_and_the_tail_noise_is_recorded(tmp_path):
-    # A mildly skewed event distribution: the trimmed mean is judged alongside
-    # the totals, and the run's own noise is carried with it.
+def test_the_trimmed_mean_is_judged_alongside_the_totals(tmp_path):
+    # A mildly skewed event distribution: the upper-trimmed mean is judged as
+    # its own series, and reports the typical event rather than the tail.
     mild_tail = [1.0] * 95 + [1.5] * 5
     run_dirs = _sweep_history(
         tmp_path, 12,
@@ -777,29 +780,7 @@ def test_the_trimmed_mean_is_judged_and_the_tail_noise_is_recorded(tmp_path):
     total = next(v for v in group.verdicts
                  if v.metric == "mean_time_s" and v.label == _SWEEP_LABELS[0])
     assert trimmed.value == pytest.approx(1.0)
-    # Each metric carries the noise of the sample it was computed from, and
-    # dropping the tail is what makes the trimmed one the quieter of the two.
-    assert trimmed.noise_rse is not None and total.noise_rse is not None
-    assert trimmed.noise_rse < total.noise_rse
-    # Both are small here, so the family floor still governs.
-    assert trimmed.effect_floor == pytest.approx(EFFECT_FLOOR["time"])
-
-
-def test_a_tail_heavy_config_gets_a_wider_floor_than_a_quiet_one(tmp_path):
-    quiet = [1.0] * 100
-    tail_heavy = [1.0] * 90 + [40.0] * 10
-    run_dirs = _sweep_history(tmp_path, 12, event_times={
-        **{label: quiet for label in _SWEEP_LABELS},
-        _SWEEP_LABELS[0]: tail_heavy,
-    })
-    group = _report_for(run_dirs)
-
-    floors = {
-        v.label: v.effect_floor for v in group.verdicts
-        if v.metric == "wall_time_s" and v.effect_floor is not None
-    }
-    assert floors[_SWEEP_LABELS[1]] == pytest.approx(EFFECT_FLOOR["time"])
-    assert floors[_SWEEP_LABELS[0]] > EFFECT_FLOOR["time"]
+    assert total.value > trimmed.value  # the tail the trim dropped
 
 
 def test_a_real_step_survives_every_new_gate(tmp_path):
@@ -846,70 +827,35 @@ def test_losing_a_fixed_seed_is_announced_too(tmp_path):
         for night, seed in zip(_nights(3), [4242, 4242, None])
     ]
     group = _report_for(tuple(str(d) for d in run_dirs))
-    assert any("fresh ddsim seed" in note for note in group.notes)
+    # "recorded no seed", never "used an unfixed seed": a run predating seed
+    # recording and one that deliberately drew a fresh seed both land here, and
+    # the note must not assert which of the two it was.
+    assert any("recorded no ddsim seed" in note for note in group.notes)
 
 
-def test_the_noise_floor_does_not_reach_memory_metrics(tmp_path):
-    # event_mix_rse is measured from per-event *times*. Memory is set by what
-    # the geometry allocates, not by which events were slow, so a tail-heavy
-    # timing distribution must not widen the memory floor.
-    tail_heavy = [1.0] * 90 + [40.0] * 10
+def test_a_new_fixed_seed_is_not_reported_as_a_regression(tmp_path):
+    # The night after this PR merges. A fixed seed lands the whole run group at
+    # one particular draw and holds it there, so the offset from the unseeded
+    # history repeats every night — the two-strike rule would confirm it rather
+    # than protect against it. The release is not judged against a baseline
+    # that measured different events.
+    n = 12
+    scales = {i: dict.fromkeys(_SWEEP_LABELS, 1.25) for i in (10, 11)}
     group = _report_for(_sweep_history(
-        tmp_path, 12, event_times={label: tail_heavy for label in _SWEEP_LABELS},
+        tmp_path, n, scales=scales, seeds={10: 42, 11: 42},
     ))
-    floors = {
-        (v.label, v.metric): v.effect_floor for v in group.verdicts
-        if v.effect_floor is not None
-    }
-    label = _SWEEP_LABELS[0]
-    assert floors[(label, "wall_time_s")] > EFFECT_FLOOR["time"]
-    assert floors[(label, "peak_rss_mb")] == pytest.approx(EFFECT_FLOOR["memory"])
-    assert floors[(label, "mean_rss_mb")] == pytest.approx(EFFECT_FLOOR["memory"])
+    assert group.regressions == []
+    assert any("workload" in v.reason for v in group.verdicts)
 
 
-def test_the_trimmed_metric_is_gated_by_the_trimmed_sample_s_own_noise(tmp_path):
-    # The trimmed mean exists to be the sensitive series. Gating it with the
-    # untrimmed total's noise would hand back the tail the trim removed, so its
-    # floor must be far tighter than the totals' on the same config. The tail
-    # here is inside the 5% the trim drops, so the trimmed sample is flat.
-    tail_heavy = [1.0] * 97 + [40.0] * 3
+def test_a_regression_after_the_seed_settles_is_still_caught(tmp_path):
+    # And the price is exactly one release: once the fixed workload has a
+    # baseline of its own, a genuine step confirms on the normal schedule.
+    n = 16
+    scales = {i: {_SWEEP_LABELS[0]: 1.40} for i in (14, 15)}
     group = _report_for(_sweep_history(
-        tmp_path, 12, event_times={label: tail_heavy for label in _SWEEP_LABELS},
+        tmp_path, n, scales=scales,
+        seeds=dict.fromkeys(range(10, n), 42),
     ))
-    floors = {
-        (v.label, v.metric): v.effect_floor for v in group.verdicts
-        if v.effect_floor is not None
-    }
-    label = _SWEEP_LABELS[0]
-    assert floors[(label, "mean_time_s")] > EFFECT_FLOOR["time"]
-    # Trimming removes the tail entirely here, so its noise is nil and the
-    # family floor governs.
-    assert floors[(label, "trimmed_mean_time_s")] == pytest.approx(
-        EFFECT_FLOOR["time"]
-    )
-
-
-def test_a_fixed_seed_stands_the_noise_floor_down(tmp_path):
-    # The floor exists to absorb a re-drawn event mix. Under a fixed seed the
-    # same events run every night, so that variation never reaches the
-    # night-to-night comparison and widening the floor by it would only cost
-    # sensitivity — most on the tail-heavy configs that need it least.
-    tail_heavy = [1.0] * 90 + [40.0] * 10
-    events = {label: tail_heavy for label in _SWEEP_LABELS}
-
-    unfixed = _report_for(_sweep_history(
-        tmp_path / "unfixed", 12, event_times=events, random_seed=None,
-    ))
-    fixed = _report_for(_sweep_history(
-        tmp_path / "fixed", 12, event_times=events, random_seed=42,
-    ))
-
-    def _floor(group):
-        return next(
-            v.effect_floor for v in group.verdicts
-            if v.metric == "wall_time_s" and v.label == _SWEEP_LABELS[0]
-            and v.effect_floor is not None
-        )
-
-    assert _floor(unfixed) > EFFECT_FLOOR["time"]
-    assert _floor(fixed) == pytest.approx(EFFECT_FLOOR["time"])
+    wall = [v for v in group.regressions if v.metric == "wall_time_s"]
+    assert [v.label for v in wall] == [_SWEEP_LABELS[0]]

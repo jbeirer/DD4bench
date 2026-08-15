@@ -1006,6 +1006,7 @@ def _rank_request(
             direction=m.direction.value, pct_change=m.pct_change,
             label=m.label, sub_detector=m.sub_detector,
             value=m.value, baseline_median=m.baseline_median, z_score=m.z_score,
+            common_mode_shift=m.common_mode_shift,
             history=history_from_verdict(
                 m, packages_changed=_packages_changed(m, changed_count)
             ),

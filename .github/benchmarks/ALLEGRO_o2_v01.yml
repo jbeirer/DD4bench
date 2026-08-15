@@ -44,7 +44,7 @@ sweep: true
 ddsim_args: >-
   --random.seed 42
   --random.enableEventSeed
-  
+
 samples:
   - name: single_e-_10GeV
     n_events: 1100

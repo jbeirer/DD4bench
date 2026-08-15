@@ -620,15 +620,27 @@ def evaluate_series(
             # level moved and the report has said so, and a *workload* change,
             # where the level may have moved for a reason no software caused
             # and this release was never judged at all (gate 8).
+            #
+            # The re-anchor only shortens the blind period if there is a
+            # trustworthy spread to carry across it. A confirmation always has
+            # one (it was judged against a frozen snapshot). A workload change
+            # during warm-up does not, and inheriting a MAD of zero would make
+            # every z infinite on a one-night baseline — so that case simply
+            # warms up again, which is what a series with no usable history was
+            # doing anyway.
             if snapshot is not None:
                 anchor_mad = snapshot[1]
+                inherited = True
             elif len(baseline) >= MIN_BASELINE_RUNS:
                 # Unjudged release: no snapshot was ever frozen, so take the
                 # spread straight off the baseline being retired.
                 anchor_mad = robust_baseline(np.asarray(baseline))[1]
+                inherited = True
+            else:
+                inherited = False
             baseline.clear()
             baseline.extend(release_values)
-            anchor_date = release_date
+            anchor_date = release_date if inherited else None
             anchor_reason = (
                 "workload change" if workload_changed else "confirmed change"
             )

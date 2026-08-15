@@ -171,6 +171,11 @@ class RegressionFact:
     value: float | None = None
     baseline_median: float | None = None
     z_score: float | None = None
+    #: The group-wide move divided out of ``value`` before it was judged, where
+    #: the run group moved as a whole (:mod:`k4bench.regression.common_mode`).
+    #: Without it the residual reads as the entire measurement, and the model
+    #: goes looking for a cause of the wrong size.
+    common_mode_shift: float | None = None
     scope_score: float | None = None
     scope_reason: str = ""
     scope_state: ScopeCandidateState = "discovery_incomplete"
@@ -704,7 +709,8 @@ def _regression_lines(request: AttributionRequest) -> list[str]:
             if fact.sub_detector:
                 subject += f" [{fact.sub_detector}]"
             detail = measurement_phrase(
-                fact.value, fact.baseline_median, fact.z_score
+                fact.value, fact.baseline_median, fact.z_score,
+                fact.common_mode_shift,
             )
             lines.append(
                 f"  - [{fact.id}] {subject} {fact.metric_family} "

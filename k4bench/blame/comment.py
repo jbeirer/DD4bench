@@ -1173,6 +1173,7 @@ def _fact(row: RegressionRow) -> RegressionFact:
         sub_detector=v.sub_detector, direction=str(getattr(v.direction, "value", v.direction)),
         pct_change=v.pct_change, value=v.value,
         baseline_median=v.baseline_median, z_score=v.z_score,
+        common_mode_shift=v.common_mode_shift,
         scope_score=row.scope_score, scope_reason=row.scope_reason,
         scope_state=row.scope_state,
         # The release-boundary package counts come from the sidecar entry that

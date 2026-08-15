@@ -9,7 +9,6 @@ import pandas as pd
 import pytest
 
 from k4bench.regression.engine import (
-    EFFECT_FLOOR,
     MIN_BASELINE_RUNS,
     evaluate_series,
     robust_baseline,
@@ -780,6 +779,20 @@ def test_an_unseeded_history_is_one_workload_not_a_new_one_each_night():
         _workload_history(values, [None] * len(values)), series=_TIME,
     )
     assert _severities(verdicts[-2:]) == [Severity.WATCH, Severity.CONFIRMED]
+
+
+def test_a_workload_change_during_warm_up_just_warms_up_again():
+    # There is no settled spread to carry across the boundary yet, and
+    # inheriting a MAD of zero would make every z infinite against a one-night
+    # baseline. The series restarts instead, which is what it was doing anyway.
+    values = [100.0, 100.4, 99.6, 120.0, 120.5, 120.2, 119.8, 120.1, 120.3]
+    workloads = [None] * 3 + [42] * 6
+    verdicts = evaluate_series(
+        _workload_history(values, workloads), series=_TIME,
+    )
+    assert Severity.CONFIRMED not in _severities(verdicts)
+    assert all(v.severity is Severity.UNKNOWN
+               for v in verdicts[3:3 + MIN_BASELINE_RUNS])
 
 
 def test_a_quiet_workload_change_costs_one_release_and_no_more():

@@ -143,6 +143,11 @@ class MetricStep:
     value: float | None = None
     baseline_median: float | None = None
     z_score: float | None = None
+    #: The group-wide move divided out of ``value`` before it was judged, where
+    #: the run group moved as a whole (:mod:`k4bench.regression.common_mode`).
+    #: Without it the residual reads as the entire measurement, and the model
+    #: goes looking for a cause of the wrong size.
+    common_mode_shift: float | None = None
     #: This metric's own recent releases (:mod:`k4bench.blame.evidence`), or
     #: ``None`` for a report that predates recorded histories. The evidence that
     #: lets a model conclude the step is noise and blame nobody.
@@ -642,7 +647,9 @@ def _step_lines(request: RankRequest) -> list[str]:
         subject = f"{step.metric} ({pretty_config(step.label)})"
         if step.sub_detector:
             subject += f" [{step.sub_detector}]"
-        detail = measurement_phrase(step.value, step.baseline_median, step.z_score)
+        detail = measurement_phrase(
+            step.value, step.baseline_median, step.z_score, step.common_mode_shift,
+        )
         lines.append(
             f"  - {subject} {direction_phrase(step.direction, step.pct_change)}"
             + (f" ({detail})" if detail else "")
