@@ -15,6 +15,7 @@ from k4bench.regression.models import Direction, Severity
 from k4bench.regression.report_builder import (
     EVENT_METRICS,
     RUN_METRICS,
+    _failed_config_verdicts,
     build_nightly_report_local,
     group_report_from_run_dirs,
     unjudged_value_verdicts,
@@ -52,6 +53,15 @@ _PLAT = "x86_64-almalinux9-gcc14.2.0-opt"
 _STACK = "key4hep-2026-01-01"
 
 
+def _write_event_timing(run_dir: Path, label: str, event_time_s: float) -> None:
+    (run_dir / f"{label}_events.json").write_text(json.dumps({
+        "event_numbers": [0, 1, 2],
+        "event_times_s": [event_time_s] * 3,
+        "event_rss_begin_mb": [1000.0] * 3,
+        "event_rss_end_mb": [1024.0] * 3,
+    }))
+
+
 def _write_run(
     run_dir: Path,
     *,
@@ -63,6 +73,8 @@ def _write_run(
     sample: str = "single_e",
     github_run_url: str | None = None,
     configured_labels: tuple[str, ...] | None = None,
+    event_time_s: float | None = None,
+    result_overrides: dict[str, dict] | None = None,
 ) -> Path:
     """One synthetic nightly run dir: run_info + per-config results + machine info.
 
@@ -82,12 +94,22 @@ def _write_run(
     if configured_labels is not None:
         run_info["configured_labels"] = list(configured_labels)
     (run_dir / "run_info.json").write_text(json.dumps(run_info))
+    result_overrides = result_overrides or {}
     for label in labels:
+        overrides = result_overrides.get(label, {})
+        label_wall = float(overrides.get("wall_time_s", wall_time_s))
+        label_returncode = int(overrides.get("returncode", returncode))
+        user_cpu_s = float(overrides.get("user_cpu_s", label_wall * 0.98))
+        sys_cpu_s = float(overrides.get("sys_cpu_s", 0.0))
         (run_dir / f"{label}_results.csv").write_text(
-            "label,returncode,n_events,wall_time_s,peak_rss_mb,user_cpu_s,events_per_sec\n"
-            f"{label},{returncode},10,{wall_time_s},1024.0,{wall_time_s * 0.98},"
-            f"{10.0 / wall_time_s}\n"
+            "label,returncode,n_events,wall_time_s,peak_rss_mb,user_cpu_s,"
+            "sys_cpu_s,events_per_sec\n"
+            f"{label},{label_returncode},10,{label_wall},1024.0,{user_cpu_s},"
+            f"{sys_cpu_s},{10.0 / label_wall}\n"
         )
+        label_event_time = overrides.get("event_time_s", event_time_s)
+        if label_event_time is not None:
+            _write_event_timing(run_dir, label, label_event_time)
     (run_dir / "machine_info.json").write_text(json.dumps({
         "hostname": "host-a",
         "cpu_physical_cores": 8,
@@ -209,6 +231,136 @@ def test_failed_config_is_failure_verdict(tmp_path):
     assert len(failures) == 1
     assert failures[0].label == "baseline"
     assert "returncode 1" in failures[0].reason
+
+
+def test_invalid_returncode_has_an_accurate_failure_reason():
+    verdicts = _failed_config_verdicts(
+        detector="DET",
+        platform=_PLAT,
+        sample="single_e",
+        results_df=pd.DataFrame({
+            "run_id": ["2026-01-12"],
+            "label": ["baseline"],
+            "returncode": ["not-a-number"],
+        }),
+        run_id="2026-01-12",
+        run_date="2026-01-12",
+    )
+
+    assert len(verdicts) == 1
+    assert verdicts[0].value is None
+    assert "invalid returncode" in verdicts[0].reason
+
+
+def test_failed_config_metrics_are_not_judged(tmp_path):
+    run_dirs = _make_history(
+        tmp_path, [100.0] * 11 + [5.0], {11: {"returncode": 139}},
+    )
+
+    group = group_report_from_run_dirs(
+        "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
+    )
+
+    assert group is not None
+    assert group.regressions == []
+    assert not any(v.severity is Severity.WATCH for v in group.verdicts)
+    assert [(v.metric, v.severity) for v in group.verdicts] == [
+        ("returncode", Severity.FAILURE),
+    ]
+    assert "metrics were not judged" in group.failures[0].reason
+
+
+def test_historical_failures_do_not_poison_recovery_baseline(tmp_path):
+    run_dirs = _make_history(
+        tmp_path,
+        [100.0] * 9 + [5.0, 5.0, 100.0],
+        {9: {"returncode": 139}, 10: {"returncode": 139}},
+    )
+
+    group = group_report_from_run_dirs(
+        "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
+    )
+
+    assert group is not None
+    wall = next(v for v in group.verdicts if v.metric == "wall_time_s")
+    assert wall.severity is Severity.OK
+    assert wall.baseline_median == pytest.approx(100.0)
+
+
+def test_failed_config_does_not_suppress_healthy_sibling(tmp_path):
+    per_night = {
+        i: {"labels": ("crashed", "healthy")}
+        for i in range(12)
+    }
+    per_night[10]["result_overrides"] = {
+        "healthy": {"wall_time_s": 120.0},
+    }
+    per_night[11]["result_overrides"] = {
+        "crashed": {
+            "wall_time_s": 5.0,
+            "returncode": 139,
+            # Partial crash metrics must not make the healthy sibling's host
+            # look contended.
+            "user_cpu_s": 0.1,
+        },
+        "healthy": {"wall_time_s": 120.5},
+    }
+    run_dirs = _make_history(tmp_path, [100.0] * 12, per_night)
+
+    group = group_report_from_run_dirs(
+        "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
+    )
+
+    assert group is not None
+    assert group.reliable is True
+    healthy_wall = next(
+        v for v in group.regressions
+        if v.label == "healthy" and v.metric == "wall_time_s"
+    )
+    assert healthy_wall.direction is Direction.UP
+    assert [(v.label, v.metric) for v in group.failures] == [
+        ("crashed", "returncode"),
+    ]
+    assert not any(
+        v.label == "crashed" and v.metric != "returncode"
+        for v in group.verdicts
+    )
+
+
+def test_failed_config_partial_event_metrics_are_not_judged(tmp_path):
+    per_night = {i: {"event_time_s": 1.0} for i in range(12)}
+    per_night[11] = {"returncode": 139, "event_time_s": 0.05}
+    run_dirs = _make_history(tmp_path, [100.0] * 11 + [5.0], per_night)
+
+    group = group_report_from_run_dirs(
+        "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
+    )
+
+    assert group is not None
+    assert group.failures
+    assert not any(v.metric in EVENT_METRICS for v in group.verdicts)
+
+
+def test_event_file_without_result_row_is_failure_only(tmp_path):
+    per_night = {
+        i: {"labels": ("baseline", "orphan"), "event_time_s": 1.0}
+        for i in range(11)
+    }
+    per_night[11] = {
+        "labels": ("baseline",),
+        "event_time_s": 1.0,
+        "configured_labels": ("baseline", "orphan"),
+    }
+    run_dirs = _make_history(tmp_path, [100.0] * 12, per_night)
+    _write_event_timing(run_dirs[-1], "orphan", 0.05)
+
+    group = group_report_from_run_dirs(
+        "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
+    )
+
+    assert group is not None
+    assert group.job_failures == ["config 'orphan' produced no results tonight"]
+    assert not any(v.label == "orphan" for v in group.verdicts)
 
 
 def test_config_missing_tonight_is_job_failure(tmp_path):

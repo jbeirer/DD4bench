@@ -29,6 +29,7 @@ from remote_cache import (
     _cached_list_run_dates,
     _cached_scan_stack_samples,
 )
+from k4bench.analysis.loader import judgeable_config_rows
 from k4bench.results.reliability_evidence import run_reliability_map
 from sections import visible_sections
 from tabs import detectors_overview, event_memory, event_timing, impact, machine_info, region_timing, regressions, stack_changes, trends
@@ -549,14 +550,17 @@ def main() -> None:
     # visit is a cache hit) so the other tabs never build or copy them.
     if active_section == "Region Timing":
         trend_region_df = cached_load_trend_region_timing(run_dirs) if run_dirs else None
+        trend_region_df = judgeable_config_rows(trend_region_df, trend_results_df)
         scope_override = region_timing.render(region_data, trend_region_df, trends_enabled, reliability)
 
     if active_section == "Event Timing":
         trend_event_df = cached_load_trend_event_timing(run_dirs) if run_dirs else None
+        trend_event_df = judgeable_config_rows(trend_event_df, trend_results_df)
         scope_override = event_timing.render(event_data, trend_event_df, trends_enabled, reliability)
 
     if active_section == "Event Memory":
         trend_event_df = cached_load_trend_event_timing(run_dirs) if run_dirs else None
+        trend_event_df = judgeable_config_rows(trend_event_df, trend_results_df)
         scope_override = event_memory.render(event_data, trend_event_df, trends_enabled, reliability)
 
     if active_section == "Machine Info":

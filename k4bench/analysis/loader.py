@@ -8,6 +8,97 @@ from pathlib import Path
 import pandas as pd
 
 
+# Internal row provenance used only when result files with and without a
+# ``returncode`` column are combined.  Without it, pandas represents both an
+# old-schema row and a genuinely missing return code as ``NA`` after concat,
+# even though only the latter is known-bad.
+_RETURNCODE_RECORDED = "_returncode_recorded"
+
+
+def failed_config_mask(df: pd.DataFrame) -> pd.Series:
+    """Return a boolean mask for configs that did not exit cleanly.
+
+    A non-zero, missing, or non-numeric ``returncode`` is a failure.  Frames
+    from older result schemas that have no ``returncode`` column remain usable:
+    their success state is unknown, not known-bad, so the returned mask is all
+    ``False``. Source-column provenance preserves that distinction when old and
+    new result frames are later concatenated. The mask always preserves *df*'s
+    index.
+    """
+    if "returncode" not in df.columns:
+        return pd.Series(False, index=df.index, dtype=bool)
+
+    returncodes = pd.to_numeric(df["returncode"], errors="coerce")
+    recorded = (
+        df[_RETURNCODE_RECORDED].astype("boolean").fillna(True)
+        if _RETURNCODE_RECORDED in df.columns
+        else pd.Series(True, index=df.index, dtype=bool)
+    )
+    # Compare before filling so this also works for nullable unsigned and
+    # boolean dtypes, which cannot represent a ``-1`` fill sentinel.
+    return (recorded & returncodes.ne(0).fillna(True)).astype(bool)
+
+
+def config_keys(df: pd.DataFrame | None) -> set[tuple[str, str]]:
+    """Return every ``(run_id, label)`` pair represented by *df*."""
+    if (
+        df is None
+        or df.empty
+        or not {"run_id", "label"} <= set(df.columns)
+    ):
+        return set()
+    return {
+        (str(run_id), str(label))
+        for run_id, label in df[["run_id", "label"]].itertuples(
+            index=False, name=None,
+        )
+    }
+
+
+def failed_config_keys(
+    results_df: pd.DataFrame | None,
+) -> set[tuple[str, str]]:
+    """Return failed ``(run_id, label)`` pairs from a result-history frame."""
+    if not config_keys(results_df):
+        return set()
+    failed = results_df.loc[failed_config_mask(results_df), ["run_id", "label"]]
+    return {
+        (str(run_id), str(label))
+        for run_id, label in failed.itertuples(index=False, name=None)
+    }
+
+
+def judgeable_config_keys(
+    results_df: pd.DataFrame | None,
+) -> set[tuple[str, str]]:
+    """Result config-nights with a recorded success or legacy-unknown status."""
+    return config_keys(results_df) - failed_config_keys(results_df)
+
+
+def judgeable_config_rows(
+    df: pd.DataFrame | None,
+    results_df: pd.DataFrame | None,
+) -> pd.DataFrame | None:
+    """Keep metric rows backed by a non-failed result config-night.
+
+    Derived event and region frames do not carry ``returncode`` themselves, so
+    they inherit validity from the result frame through ``(run_id, label)``.
+    This also rejects orphaned partial files whose config never wrote a result
+    row, while retaining healthy sibling configs from the same run.
+    """
+    if (
+        df is None
+        or df.empty
+        or not {"run_id", "label"} <= set(df.columns)
+    ):
+        return df
+    judgeable = judgeable_config_keys(results_df)
+    keep_rows = [
+        (str(run_id), str(label)) in judgeable
+        for run_id, label in zip(df["run_id"], df["label"], strict=True)
+    ]
+    return df.loc[keep_rows].copy()
+
 
 def load_results(log_dir: str | Path, labels: list[str] | None = None) -> pd.DataFrame:
     """Load benchmark results from a log directory into a DataFrame.
@@ -43,7 +134,15 @@ def load_results(log_dir: str | Path, labels: list[str] | None = None) -> pd.Dat
     if not paths:
         raise ValueError(f"No *_results.csv files found in '{log_dir}'.")
 
-    df = pd.concat([pd.read_csv(p) for p in paths], ignore_index=True)
+    frames = [pd.read_csv(p) for p in paths]
+    if not all("returncode" in frame.columns for frame in frames):
+        # Preserve whether each source file actually recorded this field before
+        # concat turns an absent old-schema column into an ordinary missing
+        # value.  The marker is omitted from uniform modern loads and is
+        # otherwise harmless internal metadata carried through trend frames.
+        for frame in frames:
+            frame[_RETURNCODE_RECORDED] = "returncode" in frame.columns
+    df = pd.concat(frames, ignore_index=True)
 
     float_cols = [
         "wall_time_s", "user_cpu_s", "sys_cpu_s",

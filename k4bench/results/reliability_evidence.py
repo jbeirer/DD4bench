@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from k4bench.analysis.loader import failed_config_mask
 from k4bench.results.reliability import ReliabilityVerdict, evaluate_reliability
 
 #: Minimum number of historical per-config samples before a context-switch
@@ -42,7 +43,12 @@ def ctx_switch_baseline(
     """
     if not _is_valid_df(trend_results_df):
         return None
-    df = trend_results_df
+    # A failed process can leave plausible-looking partial resource metrics.
+    # Those describe how long it survived, not the host's normal scheduler
+    # behaviour, and must not enter the historical baseline.
+    df = trend_results_df.loc[~failed_config_mask(trend_results_df)]
+    if df.empty:
+        return None
     cols = set(df.columns)
     if "involuntary_ctx_switches" not in cols:
         return None
@@ -74,14 +80,17 @@ def reliability_evidence(
     """Collect the inputs :func:`evaluate_reliability` needs from this run.
 
     Per-config metrics (CPU efficiency, context switches, total CPU) are averaged
-    across the run's configs; machine-condition signals come straight from
-    ``machine_info``. Missing values are left as ``None`` so the evaluator treats
-    them as *unknown* rather than failing on them. *ctx_switch_baseline_per_cpu_s*
-    is the historical baseline from :func:`ctx_switch_baseline`, or ``None`` to
-    keep the context-switch criterion advisory.
+    across the run's successfully completed configs; failed configs are excluded
+    because their partial metrics describe how long they survived, not host
+    contention. Machine-condition signals come straight from ``machine_info``.
+    Missing values are left as ``None`` so the evaluator treats them as *unknown*
+    rather than failing on them. *ctx_switch_baseline_per_cpu_s* is the historical
+    baseline from :func:`ctx_switch_baseline`, or ``None`` to keep the
+    context-switch criterion advisory.
     """
     cpu_eff = total_cpu = invol = None
     if _is_valid_df(results):
+        results = results.loc[~failed_config_mask(results)]
         cols = set(results.columns)
         if {"user_cpu_s", "sys_cpu_s", "wall_time_s"} <= cols:
             tot = results["user_cpu_s"] + results["sys_cpu_s"]

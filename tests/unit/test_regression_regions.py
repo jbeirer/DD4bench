@@ -86,6 +86,27 @@ def test_a_release_measured_twice_is_one_level_not_two(tmp_path):
     assert deltas[0].base == 1.1  # the median of the release's two nights
 
 
+def test_failed_rerun_does_not_contaminate_release_region_level(tmp_path):
+    dirs = [
+        _write_run(tmp_path, "2026-07-14", "2026-07-14", {"HCAL": 1.0}),
+        _write_run(tmp_path, "2026-07-15", "2026-07-14", {"HCAL": 101.0}),
+        _write_run(tmp_path, "2026-07-18", "2026-07-18", {"HCAL": 4.0}),
+    ]
+
+    deltas = region_deltas(
+        dirs,
+        label="baseline",
+        base_release="2026-07-14",
+        onset_release="2026-07-18",
+        judgeable_configs={
+            ("2026-07-14", "baseline"),
+            ("2026-07-18", "baseline"),
+        },
+    )
+
+    assert [(d.base, d.onset, d.delta) for d in deltas] == [(1.0, 4.0, 3.0)]
+
+
 def test_a_region_present_on_one_side_only_says_so(tmp_path):
     dirs = [
         _write_run(tmp_path, "2026-07-14", "2026-07-14", {"HCAL": 1.0}),

@@ -9,7 +9,14 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from k4bench.analysis.loader import load_event_timing, load_region_timing, load_results
+from k4bench.analysis.loader import (
+    failed_config_keys,
+    failed_config_mask,
+    judgeable_config_rows,
+    load_event_timing,
+    load_region_timing,
+    load_results,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -53,6 +60,82 @@ def _write_event_json(path: Path, n_events: int = 5) -> None:
         "event_rss_end_mb": [510.0] * n_events,
     }
     path.write_text(json.dumps(data))
+
+
+# ---------------------------------------------------------------------------
+# failed_config_mask
+# ---------------------------------------------------------------------------
+
+
+class TestFailedConfigMask:
+    def test_frame_without_returncode_is_all_false_and_preserves_index(self):
+        df = pd.DataFrame({"value": [1, 2]}, index=["first", "second"])
+
+        mask = failed_config_mask(df)
+
+        pd.testing.assert_series_equal(
+            mask,
+            pd.Series(False, index=df.index, dtype=bool),
+        )
+
+    def test_zero_is_success_and_nonzero_missing_or_malformed_values_fail(self):
+        df = pd.DataFrame({
+            "returncode": pd.Series(["0", "139", None, "not-a-number"], dtype="string"),
+        })
+
+        mask = failed_config_mask(df)
+
+        assert mask.dtype == bool
+        assert mask.tolist() == [False, True, True, True]
+
+    def test_nullable_unsigned_returncodes_need_no_negative_fill_sentinel(self):
+        df = pd.DataFrame({
+            "returncode": pd.Series([0, 1, pd.NA], dtype="UInt8"),
+        })
+
+        assert failed_config_mask(df).tolist() == [False, True, True]
+
+    def test_mixed_file_schemas_distinguish_absent_from_missing_returncode(
+        self, tmp_path,
+    ):
+        legacy = _minimal_row("legacy")
+        legacy.pop("returncode")
+        successful = _minimal_row("successful")
+        incomplete = _minimal_row("incomplete")
+        incomplete["returncode"] = ""
+        _write_results_csv(tmp_path, [legacy, successful, incomplete])
+
+        results = load_results(tmp_path)
+        failed_by_label = pd.Series(
+            failed_config_mask(results).to_numpy(),
+            index=results["label"],
+        )
+
+        assert not bool(failed_by_label["legacy"])
+        assert not bool(failed_by_label["successful"])
+        assert bool(failed_by_label["incomplete"])
+
+    def test_judgeable_rows_drop_failures_and_orphans_but_keep_siblings(self):
+        results = pd.DataFrame({
+            "run_id": ["night-1", "night-1", "night-2"],
+            "label": ["failed", "healthy", "failed"],
+            "returncode": [139, 0, 0],
+        })
+        derived = pd.DataFrame({
+            "run_id": ["night-1", "night-1", "night-2", "night-2"],
+            "label": ["failed", "healthy", "failed", "orphan"],
+            "mean_time_s": [0.1, 10.0, 11.0, 0.2],
+        })
+
+        keys = failed_config_keys(results)
+        filtered = judgeable_config_rows(derived, results)
+
+        assert keys == {("night-1", "failed")}
+        assert filtered is not None
+        assert list(zip(filtered["run_id"], filtered["label"], strict=True)) == [
+            ("night-1", "healthy"),
+            ("night-2", "failed"),
+        ]
 
 
 # ---------------------------------------------------------------------------

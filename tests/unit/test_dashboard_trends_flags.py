@@ -276,7 +276,7 @@ def _reports_stub(confirmed: bool):
     return {"2026-05-21": to_json(report)}
 
 
-def _app(dashboard_dir, reports, reliability=None, same_tag=False):
+def _app(dashboard_dir, reports, reliability=None, same_tag=False, failed=False):
     import sys as _sys
     if dashboard_dir not in _sys.path:
         _sys.path.insert(0, dashboard_dir)
@@ -293,6 +293,7 @@ def _app(dashboard_dir, reports, reliability=None, same_tag=False):
     df = _pd.DataFrame({
         "label": ["baseline", "baseline"],
         "run_id": ["2026-05-20", "2026-05-21"],
+        "returncode": [0, 139 if failed else 0],
         "run_date": _pd.to_datetime(["2026-05-20", "2026-05-21"]),
         "x_date": _pd.to_datetime(tags),
         "k4h_release": [f"key4hep-{t}" for t in tags],
@@ -309,9 +310,9 @@ def _app(dashboard_dir, reports, reliability=None, same_tag=False):
     )
 
 
-def _run(reports, reliability=None, same_tag=False) -> AppTest:
+def _run(reports, reliability=None, same_tag=False, failed=False) -> AppTest:
     at = AppTest.from_function(
-        _app, args=(str(_DASHBOARD_DIR), reports, reliability, same_tag),
+        _app, args=(str(_DASHBOARD_DIR), reports, reliability, same_tag, failed),
         default_timeout=30,
     )
     at.run()
@@ -344,6 +345,20 @@ def test_render_shows_flag_pills_and_chart():
     at = _run(_reports_stub(confirmed=True))
     assert {p.label for p in at.pills} == {"Regressions"}
     assert len(at.get("plotly_chart")) == 1
+
+
+def test_render_treats_failed_config_measurement_as_a_gap():
+    at = _run({}, failed=True)
+    specs = [json.loads(chart.proto.spec) for chart in at.get("plotly_chart")]
+    curves = [
+        trace
+        for spec in specs
+        for trace in spec["data"]
+        if trace.get("mode") == "lines+markers"
+    ]
+
+    assert curves
+    assert all(len(_axis(trace, "x")) == 1 for trace in curves)
 
 
 def test_flags_reach_the_chart_end_to_end():

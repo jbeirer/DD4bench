@@ -36,6 +36,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
+from k4bench.analysis.loader import failed_config_mask
 from k4bench.analysis.plots._theme import PALETTE, _TEMPLATE
 from k4bench.results.reliability import (
     CTX_SWITCH_BASELINE_MULTIPLIER,
@@ -190,11 +191,12 @@ def _contention_summary(results: pd.DataFrame | None) -> dict:
     """Aggregate measured contention evidence across the current run's configs.
 
     Returns ``{"eff": mean CPU efficiency, "invol": mean involuntary ctx switches}``
-    with whichever keys the data supports.
+    over successfully completed configs, with whichever keys the data supports.
     """
     out: dict = {}
     if not _is_valid_df(results):
         return out
+    results = results.loc[~failed_config_mask(results)]
     if "involuntary_ctx_switches" in results.columns:
         v = results["involuntary_ctx_switches"].dropna()
         if not v.empty:
@@ -203,10 +205,6 @@ def _contention_summary(results: pd.DataFrame | None) -> dict:
     if {"user_cpu_s", "sys_cpu_s", "wall_time_s"} <= cols:
         total_cpu = results["user_cpu_s"] + results["sys_cpu_s"]
         eff = (total_cpu / results["wall_time_s"].replace(0, float("nan"))).dropna()
-        if not eff.empty:
-            out["eff"] = float(eff.mean())
-    elif {"user_cpu_s", "wall_time_s"} <= cols:
-        eff = (results["user_cpu_s"] / results["wall_time_s"].replace(0, float("nan"))).dropna()
         if not eff.empty:
             out["eff"] = float(eff.mean())
     return out
@@ -441,15 +439,18 @@ def _render_current_run(
 def _agg_results_by_date(trend_results_df: pd.DataFrame | None) -> pd.DataFrame | None:
     """Aggregate per-config contention metrics to one row per nightly tag.
 
-    Returns a DataFrame with ``x_date`` and whichever of ``invol`` (mean
-    involuntary ctx switches **per CPU-second**) / ``eff`` (mean CPU efficiency)
-    the data supports, or ``None``. Context switches are normalised by CPU time
-    so the rate is comparable across runs of different length and matches the
-    units the reliability check uses.
+    Failed configs are gaps, matching the reliability evidence. Returns a
+    DataFrame with ``x_date`` and whichever of ``invol`` (mean involuntary ctx
+    switches **per CPU-second**) / ``eff`` (mean CPU efficiency) the successful
+    data supports, or ``None``. Context switches are normalised by CPU time so
+    the rate is comparable across runs of different length and matches the units
+    the reliability check uses.
     """
     if not _is_valid_df(trend_results_df):
         return None
-    df = trend_results_df.copy()
+    df = trend_results_df.loc[~failed_config_mask(trend_results_df)].copy()
+    if df.empty:
+        return None
     df["x_date"]   = pd.to_datetime(df["x_date"])
     df["run_date"] = pd.to_datetime(df["run_date"])
     df = df.dropna(subset=["x_date"])
@@ -458,11 +459,13 @@ def _agg_results_by_date(trend_results_df: pd.DataFrame | None) -> pd.DataFrame 
         df = df.loc[df.groupby(["label", "x_date"])["run_date"].idxmax()]
     cols = set(df.columns)
     total_cpu = None
+    complete_cpu = False
     if {"user_cpu_s", "sys_cpu_s"} <= cols:
         total_cpu = df["user_cpu_s"] + df["sys_cpu_s"]
+        complete_cpu = True
     elif "user_cpu_s" in cols:
         total_cpu = df["user_cpu_s"]
-    if total_cpu is not None and "wall_time_s" in cols:
+    if complete_cpu and "wall_time_s" in cols:
         df["cpu_efficiency"] = total_cpu / df["wall_time_s"].replace(0, float("nan"))
     if total_cpu is not None and "involuntary_ctx_switches" in cols:
         df["invol_per_cpu_s"] = (

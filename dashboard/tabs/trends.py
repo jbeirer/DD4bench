@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
+from k4bench.analysis.loader import failed_config_mask
 from k4bench.analysis.plots._theme import _TEMPLATE
 from k4bench.regression.render import from_json
 from remote_cache import _cached_fetch_reports
@@ -321,8 +322,14 @@ def _trends_body(
     nightly reports behind the flag lookup rather than re-issuing the threaded
     HTTPS fetch whose shutdown can race a rerun.
     """
-    # Every configuration in the window is plotted; there is no config selector
-    # here, so this is both the palette-sizing hint and the trace order.
+    # A failed process can leave plausible partial resource metrics. Such rows
+    # are gaps, matching the regression engine; healthy sibling configs from
+    # the same run remain available.
+    trend_df = trend_df.loc[~failed_config_mask(trend_df)]
+
+    # Every surviving configuration in the window is plotted; there is no
+    # config selector here, so this is both the palette-sizing hint and trace
+    # order.
     labels = sorted(trend_df["label"].dropna().unique()) if "label" in trend_df.columns else []
 
     # ── Control row: regression pills left, run scope and display right ────

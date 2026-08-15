@@ -22,6 +22,11 @@ from data import (
     cached_load_trend_machine_info,
     cached_load_trend_results,
 )
+from k4bench.analysis.loader import (
+    config_keys,
+    failed_config_keys,
+    judgeable_config_rows,
+)
 from k4bench.analysis.plots._theme import PALETTE, _TEMPLATE
 from k4bench.regression.engine import Z_THRESHOLD
 from k4bench.regression.models import MetricVerdict, Severity
@@ -182,7 +187,12 @@ def _metric_history(
     verdict: MetricVerdict, data_url: str, cache_dir: str, *,
     list_run_dates: Callable,
     fetch_runs_windowed: Callable,
-):
+) -> tuple[
+    pd.DataFrame,
+    dict[str, bool | None],
+    set[tuple[str, str]],
+    set[tuple[str, str]],
+] | None:
     """Fetch the shared release-budgeted history for one verdict series."""
     stacks_dates = list_run_dates(
         data_url, verdict.detector, verdict.platform, verdict.sample
@@ -205,6 +215,7 @@ def _metric_history(
         return None
 
     results_df = cached_load_trend_results(run_dirs)
+    failed_configs = failed_config_keys(results_df)
     reliability = run_reliability_map(
         results_df, cached_load_trend_machine_info(run_dirs),
     )
@@ -222,22 +233,50 @@ def _metric_history(
             df = _with_cpu_efficiency(df)
         df = df[df["label"] == verdict.label]
 
-    if df.empty or verdict.metric not in df.columns:
+    # A failed config can leave plausible partial run metrics and event data;
+    # an event file can also outlive a missing result row. Discard either exact
+    # config-night without suppressing healthy siblings from the same run, but
+    # preserve the cause so a hidden legacy marker can still be explained.
+    orphan_configs = config_keys(df) - config_keys(results_df)
+    df = judgeable_config_rows(df, results_df)
+
+    if verdict.metric not in df.columns:
         return None
-    return df.sort_values("x_date"), reliability
+    return df.sort_values("x_date"), reliability, failed_configs, orphan_configs
 
 
 def _missing_run_reason(
-    fetched: pd.DataFrame, excluded_runs: set[str], verdict: MetricVerdict,
+    fetched: pd.DataFrame,
+    excluded_runs: set[str],
+    verdict: MetricVerdict,
+    failed_configs: set[tuple[str, str]] | None = None,
+    orphan_configs: set[tuple[str, str]] | None = None,
 ) -> str:
     """Why the flagged run has no point, as a clause completing "it …".
 
-    Three different facts reach :func:`_blame.run_point` as the same ``None``,
-    and they call for three different reactions from the reader: an exclusion
-    they chose and can undo, a window they can widen, and a gap in the data that
-    is neither. Collapsing them into one guess would let a partial download read
-    as a reliability problem.
+    Five different facts reach :func:`_blame.run_point` as the same ``None``,
+    and they call for different reactions from the reader: a failed config, an
+    orphaned metric file with no result record, an exclusion they chose and can
+    undo, a window they can widen, and a missing metric value. Collapsing them
+    into one guess would let a partial download read as a reliability problem.
     """
+    failed = {
+        (str(run_id), str(label))
+        for run_id, label in (failed_configs or set())
+    }
+    if (str(verdict.run_id), str(verdict.label)) in failed:
+        return (
+            "came from a config with a non-zero, missing, or invalid returncode, "
+            "so its metrics were not judged"
+        )
+    orphaned = {
+        (str(run_id), str(label))
+        for run_id, label in (orphan_configs or set())
+    }
+    if (str(verdict.run_id), str(verdict.label)) in orphaned:
+        return (
+            "had no matching result record, so its metrics were not judged"
+        )
     if str(verdict.run_id) in {str(r) for r in excluded_runs}:
         return "was excluded by the unreliable-run filter above"
     present = (
@@ -264,7 +303,16 @@ def render_metric_trend(
     if history is None:
         st.warning("No history could be loaded for this metric.")
         return
-    df, reliability = history
+    df, reliability, failed_configs, orphan_configs = history
+    if df.empty:
+        reason = _missing_run_reason(
+            df, set(), verdict, failed_configs, orphan_configs,
+        )
+        st.warning(
+            f"No judgeable history could be loaded for this metric. The flagged "
+            f"run {reason}."
+        )
+        return
 
     series_key = _series_key(verdict)
     fetched = df
@@ -348,8 +396,11 @@ def render_metric_trend(
     if flagged is None:
         # Without this the chart is a baseline band and an unmarked line, which
         # reads as "nothing was flagged here" — the opposite of what happened.
+        reason = _missing_run_reason(
+            fetched, excluded_runs, verdict, failed_configs, orphan_configs,
+        )
         st.caption(
             f"⚠️ The flagged run ({verdict.run_id}) carries no point on this "
-            f"chart — it {_missing_run_reason(fetched, excluded_runs, verdict)}. "
+            f"chart — it {reason}. "
             "Its marker is hidden rather than moved to another run."
         )

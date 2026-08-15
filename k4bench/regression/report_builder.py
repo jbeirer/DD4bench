@@ -19,6 +19,11 @@ from pathlib import Path
 
 import pandas as pd
 
+from k4bench.analysis.loader import (
+    failed_config_mask,
+    judgeable_config_keys,
+    judgeable_config_rows,
+)
 from k4bench.analysis.trend import (
     build_event_timing_trend,
     build_machine_info_trend,
@@ -277,15 +282,27 @@ def _failed_config_verdicts(
     run_id: str,
     run_date: str,
 ) -> list[MetricVerdict]:
-    """FAILURE verdicts for configs whose returncode is non-zero (or missing)
-    in tonight's run — same rule as the dashboard's ``_failed_labels``."""
+    """FAILURE verdicts for configs whose returncode is non-zero, missing, or
+    invalid in tonight's run — same rule as the dashboard's ``_failed_labels``."""
     if "returncode" not in results_df.columns:
         return []
     tonight = results_df[results_df["run_id"] == run_id]
-    failed = tonight[tonight["returncode"].fillna(-1) != 0]
+    failed = tonight.loc[failed_config_mask(tonight)]
     verdicts = []
-    for row in failed.itertuples(index=False):
-        rc = None if pd.isna(row.returncode) else float(row.returncode)
+    normalized_rc = pd.to_numeric(failed["returncode"], errors="coerce")
+    for row, raw_rc in zip(
+        failed.itertuples(index=False), normalized_rc, strict=True,
+    ):
+        rc = None if pd.isna(raw_rc) else float(raw_rc)
+        if rc is None:
+            reason = (
+                "config recorded a missing or invalid returncode — "
+                "its metrics were not judged"
+            )
+        else:
+            reason = (
+                f"config exited with returncode {int(rc)} — its metrics were not judged"
+            )
         verdicts.append(MetricVerdict(
             detector=detector, platform=platform, sample=sample,
             label=str(row.label), metric_family="status", metric="returncode",
@@ -293,10 +310,7 @@ def _failed_config_verdicts(
             value=rc, baseline_median=None, baseline_mad=None,
             pct_change=None, z_score=None,
             severity=Severity.FAILURE, direction=Direction.NONE,
-            reason=(
-                "config exited with a missing returncode" if rc is None
-                else f"config exited with returncode {int(rc)}"
-            ),
+            reason=reason,
         ))
     return verdicts
 
@@ -428,9 +442,17 @@ def _group_report_from_frames(
         geometry_path=geometry_path,
     )
 
+    # A failed process can leave plausible partial metrics in both its result
+    # CSV and event file; an event file can even outlive a missing result CSV.
+    # Treat either config-night as a gap throughout the fetched history: it must
+    # neither earn a verdict nor age into a baseline. The raw frames remain the
+    # source for metadata and failure/missing-config reporting below.
+    judgeable_results_df = judgeable_config_rows(results_df, results_df)
+    judgeable_event_df = judgeable_config_rows(event_df, results_df)
+
     series = evaluate_group_series(
         detector=detector, platform=platform, sample=sample,
-        results_df=results_df, event_df=event_df,
+        results_df=judgeable_results_df, event_df=judgeable_event_df,
         reliability=reliability, hosts=hosts,
     )
     # Only verdicts issued *for tonight's run* belong in tonight's report; a
@@ -451,7 +473,8 @@ def _group_report_from_frames(
     already = {(v.label, v.metric) for v in group.verdicts}
     group.verdicts.extend(unjudged_value_verdicts(
         detector=detector, platform=platform, sample=sample,
-        results_df=results_df, event_df=event_df, tonight=tonight, already=already,
+        results_df=judgeable_results_df, event_df=judgeable_event_df,
+        tonight=tonight, already=already,
     ))
 
     if reliability.get(tonight) is False:
@@ -473,7 +496,9 @@ def _group_report_from_frames(
 
 
 def _with_region_deltas(
-    group: RunGroupReport, run_dirs: tuple[str, ...]
+    group: RunGroupReport,
+    run_dirs: tuple[str, ...],
+    judgeable_configs: set[tuple[str, str]] | None = None,
 ) -> RunGroupReport:
     """*group* with each confirmed **timing** regression told where inside the
     detector its step landed (:mod:`k4bench.regression.regions`).
@@ -502,6 +527,7 @@ def _with_region_deltas(
         window: region_deltas(
             run_dirs, label=window[0],
             base_release=window[1], onset_release=window[2],
+            judgeable_configs=judgeable_configs,
         )
         for window in windows
     }
@@ -546,7 +572,9 @@ def group_report_from_run_dirs(
     # run_info still names the stack that failed.
     if not group.k4h_release:
         group.k4h_release = tonight_meta["k4h_release"] or ""
-    return _with_region_deltas(group, run_dirs)
+    return _with_region_deltas(
+        group, run_dirs, judgeable_config_keys(results_df),
+    )
 
 
 def build_nightly_report(
