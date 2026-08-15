@@ -151,6 +151,7 @@ def _render_timeseries(
     severity: dict[tuple[str, str, str], str] | None = None,
     show_confirmed: bool = False,
     show_watch: bool = False,
+    failures: pd.DataFrame | None = None,
 ) -> None:
     """Render the main time-series subplot figure.
 
@@ -165,6 +166,8 @@ def _render_timeseries(
     """
     marker_alpha = max(0.1, line_alpha - 0.2)
 
+    if failures is not None and not failures.empty:
+        df = pd.concat([df, failures], ignore_index=True)
     present_metrics = [(col, label) for col, label in _METRICS if col in df.columns]
     if not present_metrics:
         st.warning("No supported metrics found for the current dataframe.")
@@ -197,40 +200,38 @@ def _render_timeseries(
         marker_color = _to_rgba(color, marker_alpha)
         dash         = _DASHES [cycle % len(_DASHES) ] if use_dash   else "solid"
         symbol       = _SYMBOLS[cycle % len(_SYMBOLS)] if use_marker else "circle"
-        custom = cfg_df[["run_date_str", "k4h_release"]].values
-        failed_mask = (
-            cfg_df["_config_failed"].astype(bool)
-            if "_config_failed" in cfg_df.columns
-            else pd.Series(False, index=cfg_df.index)
-        )
+        failed_mask = cfg_df.get(
+            "_config_failed", pd.Series(False, index=cfg_df.index)
+        ).astype(bool)
+        line_df = cfg_df.loc[~failed_mask]
+        custom = line_df[["run_date_str", "k4h_release"]].values
 
         for plot_idx, (metric_col, metric_label) in enumerate(present_metrics):
             row = plot_idx // n_cols + 1
             col = plot_idx %  n_cols + 1
-            fig.add_trace(
-                go.Scatter(
-                    x=cfg_df["x_date"],
-                    y=cfg_df[metric_col],
-                    mode="lines+markers",
-                    name=cfg_label,
-                    legendgroup=cfg_label,
-                    showlegend=(plot_idx == 0),
-                    line=dict(color=line_color, width=2, shape=line_shape, dash=dash),
-                    marker=dict(size=7, color=marker_color, symbol=symbol,
-                                line=dict(color=color, width=1.5)),
-                    customdata=custom,
-                    hovertemplate=(
-                        f"<b>{cfg_label}</b><br>"
-                        "Tag: %{customdata[1]} (%{x|%Y-%m-%d})<br>"
-                        f"{metric_label}: %{{y:.4g}}<br>"
-                        "CI run: %{customdata[0]}<extra></extra>"
+            if not line_df.empty:
+                fig.add_trace(
+                    go.Scatter(
+                        x=line_df["x_date"],
+                        y=line_df[metric_col],
+                        mode="lines+markers",
+                        name=cfg_label,
+                        legendgroup=cfg_label,
+                        showlegend=(plot_idx == 0),
+                        line=dict(color=line_color, width=2, shape=line_shape, dash=dash),
+                        marker=dict(size=7, color=marker_color, symbol=symbol,
+                                    line=dict(color=color, width=1.5)),
+                        customdata=custom,
+                        hovertemplate=(
+                            f"<b>{cfg_label}</b><br>"
+                            "Tag: %{customdata[1]} (%{x|%Y-%m-%d})<br>"
+                            f"{metric_label}: %{{y:.4g}}<br>"
+                            "CI run: %{customdata[0]}<extra></extra>"
+                        ),
                     ),
-                ),
-                row=row, col=col,
-            )
-            failed = cfg_df.loc[
-                failed_mask & cfg_df[metric_col].notna()
-            ]
+                    row=row, col=col,
+                )
+            failed = cfg_df.loc[failed_mask & cfg_df[metric_col].notna()]
             if not failed.empty:
                 add_severity_markers(
                     fig, failed, x_col="x_date", y_col=metric_col,
@@ -342,9 +343,8 @@ def _trends_body(
     nightly reports behind the flag lookup rather than re-issuing the threaded
     HTTPS fetch whose shutdown can race a rerun.
     """
-    # Keep failed values for diagnostic plotting, but carry their status as a
-    # separate display dimension. They remain ordinary line values, are removed
-    # from reliability/verdict joins, then overlaid as FAILURE markers.
+    # Keep failed values for diagnostic markers, but never let them replace a
+    # healthy rerun's ordinary line point for the same nightly tag.
     trend_df = trend_df.copy()
     trend_df["_config_failed"] = failed_config_mask(trend_df)
 
@@ -413,6 +413,12 @@ def _trends_body(
             f"({df['x_date'].nunique()} nightly tags)"
         )
 
+    # Derived metrics are needed for both the healthy line and failed markers.
+    if "user_cpu_s" in df.columns and "wall_time_s" in df.columns:
+        df["cpu_efficiency"] = (
+            df["user_cpu_s"] / df["wall_time_s"].replace(0, float("nan"))
+        )
+
     # ── Reliability filter ──────────────────────────────────────────────────────
     # Reliability is a per-run verdict (one machine condition per run, shared by
     # all its configs), computed once in app.py from the full trend so it matches
@@ -429,17 +435,14 @@ def _trends_body(
     )
     if healthy_runs.empty and failed_runs.empty:
         return
-    runs = pd.concat([healthy_runs, failed_runs], ignore_index=True)
 
-    # When multiple CI runs share the same nightly tag, keep only the latest run.
-    df = runs.loc[
-        runs.groupby(["label", "x_date"])["run_date"].idxmax()
-    ].reset_index(drop=True)
+    # A tag's ordinary line point comes only from successful runs. Failed
+    # reruns remain separate markers at their measured values, so neither run
+    # can erase or impersonate the other during the one-point-per-tag collapse.
+    df = healthy_runs.loc[
+        healthy_runs.groupby(["label", "x_date"])["run_date"].idxmax()
+    ].reset_index(drop=True) if not healthy_runs.empty else healthy_runs.copy()
     df["run_date_str"] = df["run_date"].dt.strftime("%Y-%m-%d").fillna("unknown")
-
-    # Derived metrics
-    if "user_cpu_s" in df.columns and "wall_time_s" in df.columns:
-        df["cpu_efficiency"] = df["user_cpu_s"] / df["wall_time_s"].replace(0, float("nan"))
 
     # ── Regression flags ────────────────────────────────────────────────────────
     # Sourced from the same nightly reports as the Overview/Regressions tabs and
@@ -457,5 +460,5 @@ def _trends_body(
     # ── Time-series plots ──────────────────────────────────────────────────────
     _render_timeseries(
         df, labels, palette, line_shape, alpha, use_dash, use_marker,
-        severity, show_confirmed, show_watch,
+        severity, show_confirmed, show_watch, failed_runs,
     )

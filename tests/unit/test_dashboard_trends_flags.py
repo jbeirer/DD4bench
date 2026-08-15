@@ -276,7 +276,10 @@ def _reports_stub(confirmed: bool):
     return {"2026-05-21": to_json(report)}
 
 
-def _app(dashboard_dir, reports, reliability=None, same_tag=False, failed=False):
+def _app(
+    dashboard_dir, reports, reliability=None, same_tag=False,
+    failed=False, failed_first=False,
+):
     import sys as _sys
     if dashboard_dir not in _sys.path:
         _sys.path.insert(0, dashboard_dir)
@@ -293,7 +296,10 @@ def _app(dashboard_dir, reports, reliability=None, same_tag=False, failed=False)
     df = _pd.DataFrame({
         "label": ["baseline", "baseline"],
         "run_id": ["2026-05-20", "2026-05-21"],
-        "returncode": [0, 139 if failed else 0],
+        "returncode": [
+            139 if failed and failed_first else 0,
+            139 if failed and not failed_first else 0,
+        ],
         "run_date": _pd.to_datetime(["2026-05-20", "2026-05-21"]),
         "x_date": _pd.to_datetime(tags),
         "k4h_release": [f"key4hep-{t}" for t in tags],
@@ -310,9 +316,15 @@ def _app(dashboard_dir, reports, reliability=None, same_tag=False, failed=False)
     )
 
 
-def _run(reports, reliability=None, same_tag=False, failed=False) -> AppTest:
+def _run(
+    reports, reliability=None, same_tag=False, failed=False,
+    failed_first=False,
+) -> AppTest:
     at = AppTest.from_function(
-        _app, args=(str(_DASHBOARD_DIR), reports, reliability, same_tag, failed),
+        _app, args=(
+            str(_DASHBOARD_DIR), reports, reliability, same_tag, failed,
+            failed_first,
+        ),
         default_timeout=30,
     )
     at.run()
@@ -347,7 +359,7 @@ def test_render_shows_flag_pills_and_chart():
     assert len(at.get("plotly_chart")) == 1
 
 
-def test_render_shows_failed_value_on_line_with_failure_marker():
+def test_render_shows_failed_value_as_failure_marker():
     at = _run({}, failed=True)
     specs = [json.loads(chart.proto.spec) for chart in at.get("plotly_chart")]
     curves = [
@@ -364,8 +376,8 @@ def test_render_shows_failed_value_on_line_with_failure_marker():
     ]
 
     assert curves
-    assert all(len(_axis(trace, "x")) == 2 for trace in curves)
-    assert all(not np.isnan(_axis(trace, "y")[-1]) for trace in curves)
+    assert all(len(_axis(trace, "x")) == 1 for trace in curves)
+    assert all(not np.isnan(_axis(trace, "y")[0]) for trace in curves)
     assert markers
     assert all(
         [pd.Timestamp(v) for v in _axis(trace, "x")]
@@ -373,6 +385,24 @@ def test_render_shows_failed_value_on_line_with_failure_marker():
         for trace in markers
     )
     assert all(_axis(trace, "y") for trace in markers)
+
+
+@pytest.mark.parametrize(
+    ("failed_first", "healthy_wall", "failed_wall"),
+    [(True, 6.0, 5.0), (False, 5.0, 6.0)],
+)
+def test_same_tag_failure_cannot_replace_or_hide_healthy_rerun(
+    failed_first, healthy_wall, failed_wall,
+):
+    at = _run({}, same_tag=True, failed=True, failed_first=failed_first)
+    spec = json.loads(at.get("plotly_chart")[0].proto.spec)
+    curves = [t for t in spec["data"] if t.get("mode") == "lines+markers"]
+    markers = [t for t in spec["data"] if t.get("mode") == "markers"]
+
+    assert any(_axis(t, "y") == [healthy_wall] for t in curves)
+    assert not any(_axis(t, "y") == [failed_wall] for t in curves)
+    assert any(_axis(t, "y") == [failed_wall] for t in markers)
+    assert all(len(_axis(t, "x")) == 1 for t in curves)
 
 
 def test_flags_reach_the_chart_end_to_end():

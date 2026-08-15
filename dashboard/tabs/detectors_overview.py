@@ -385,9 +385,12 @@ def collapse_history(rows: pd.DataFrame) -> pd.DataFrame:
     """Reduce :func:`history_rows` to one point per (detector, metric, tag).
 
     A point here is a nightly **tag** — a release — so two CI runs that
-    benchmarked the same nightly (a rerun) collapse to one: the newest run wins
-    for the plotted value, but ``severity`` keeps the *worst* verdict across the
-    tag's runs. Nights of one tag share a baseline yet can still differ (WATCH
+    benchmarked the same nightly (a rerun) collapse to one: the newest
+    successful run wins for the plotted value, but ``severity`` keeps the
+    *worst non-failure* verdict across the tag's runs. Failed measurements stay
+    outside this reduction and are plotted separately at their own values, so
+    they cannot replace a healthy rerun or lend their severity to its value.
+    Nights of one tag share a baseline yet can still differ (WATCH
     before the confirmation, a marginal OK night, or a report predating the
     release-grouped engine), and the flag must not be masked by the quieter
     night. Pairing a value from one reduction with a severity from another is
@@ -400,6 +403,9 @@ def collapse_history(rows: pd.DataFrame) -> pd.DataFrame:
     cannot reach the tag, so a release whose only flagged run was dropped stops
     flagging.
     """
+    if rows.empty:
+        return pd.DataFrame(columns=["night", *_HIST_COLS])
+    rows = rows[rows["severity"] != Severity.FAILURE.value]
     if rows.empty:
         return pd.DataFrame(columns=["night", *_HIST_COLS])
     worst = (
@@ -741,6 +747,7 @@ def _history_figure(
     relative: bool = False,
     show_confirmed: bool = True,
     show_watch: bool = False,
+    failures: pd.DataFrame | None = None,
 ) -> go.Figure | None:
     """The two metrics' history side by side (CPU, Memory), one legend below
     — the house pattern every other trend view in the dashboard uses (see
@@ -751,6 +758,8 @@ def _history_figure(
     :data:`_regression_flags.FLAG_MARKS`); *show_watch* additionally flags
     unconfirmed watch points.
     """
+    if failures is not None and not failures.empty:
+        hist = pd.concat([hist, failures], ignore_index=True)
     metrics = [time_metric, mem_metric]
     present = [] if hist.empty else [m for m in metrics if (hist["metric"] == m).any()]
     if not present:
@@ -779,8 +788,9 @@ def _history_figure(
         sub_m = hist[hist["metric"] == metric]
         if sub_m.empty:
             continue
+        line_m = sub_m[sub_m["severity"] != Severity.FAILURE.value]
         for detector, (legend_ref, legend_name) in legend_specs.items():
-            sub = sub_m[sub_m["detector"] == detector].sort_values("night_dt")
+            sub = line_m[line_m["detector"] == detector].sort_values("night_dt")
             if sub.empty:
                 continue
             color, dash, symbol = styles[detector]
@@ -1032,32 +1042,40 @@ def _flag_axis_title(metric: str) -> str:
     return f"{name} ({unit})" if unit else name
 
 
-def _flag_trend_figure(series: pd.DataFrame, verdict) -> go.Figure:
+def _flag_trend_figure(
+    series: pd.DataFrame,
+    verdict,
+    failures: pd.DataFrame | None = None,
+) -> go.Figure:
     """One flagged metric's history across the trend window, with the baseline
     band its verdict was judged against (median ± the detection gate), every
     flagged night ringed with the standard halo (the ⚠️→🔴 progression), and —
     for a confirmed step — the blame window shaded. Mirrors the Regressions
     tab's drill-down, but built entirely from the cached nightly reports."""
     df = series.copy()
+    if failures is not None and not failures.empty:
+        df = pd.concat([df, failures], ignore_index=True)
     df["night_dt"] = pd.to_datetime(df["night"])
     df = df.sort_values("night_dt")
+    line = df[df["severity"] != Severity.FAILURE.value]
 
     fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=df["night_dt"],
-        y=df["value"],
-        mode="lines+markers",
-        name=verdict.detector,
-        line=dict(color=PALETTE[0], width=2),
-        marker=dict(size=7, color=_to_rgba(PALETTE[0], 0.55),
-                    line=dict(color=PALETTE[0], width=1.5)),
-        customdata=df["k4h_release"].fillna("unknown"),
-        hovertemplate=(
-            f"<b>{verdict.detector}</b><br>"
-            "Tag: %{customdata} (%{x|%Y-%m-%d})<br>"
-            f"{_flag_axis_title(verdict.metric)}: %{{y:.4g}}<extra></extra>"
-        ),
-    ))
+    if not line.empty:
+        fig.add_trace(go.Scatter(
+            x=line["night_dt"],
+            y=line["value"],
+            mode="lines+markers",
+            name=verdict.detector,
+            line=dict(color=PALETTE[0], width=2),
+            marker=dict(size=7, color=_to_rgba(PALETTE[0], 0.55),
+                        line=dict(color=PALETTE[0], width=1.5)),
+            customdata=line["k4h_release"].fillna("unknown"),
+            hovertemplate=(
+                f"<b>{verdict.detector}</b><br>"
+                "Tag: %{customdata} (%{x|%Y-%m-%d})<br>"
+                f"{_flag_axis_title(verdict.metric)}: %{{y:.4g}}<extra></extra>"
+            ),
+        ))
     med, mad = verdict.baseline_median, verdict.baseline_mad or 0.0
     if med is not None:
         fig.add_hline(y=med, line_dash="dash", line_color=PALETTE[0], line_width=1,
@@ -1164,22 +1182,24 @@ def _render_flag_trend(
         status_rel_hist, key="det_ov_exclude_unreliable", slot=reliability_slot,
     )
     rows = history_rows(status_frames, platform, sample, v.label)
+    failed_rows = rows[rows["severity"] == Severity.FAILURE.value]
     if exclude_unreliable:
-        failed_rows = rows[rows["severity"] == Severity.FAILURE.value]
-        rows = pd.concat([
-            drop_unreliable_runs(
-                rows[rows["severity"] != Severity.FAILURE.value],
-                unreliable_pairs,
-            ),
-            failed_rows,
-        ], ignore_index=True)
+        rows = drop_unreliable_runs(
+            rows[rows["severity"] != Severity.FAILURE.value],
+            unreliable_pairs,
+        )
     hist = collapse_history(rows)
     series = hist[(hist["detector"] == v.detector) & (hist["metric"] == v.metric)]
-    if series.empty:
+    failures = failed_rows[
+        (failed_rows["detector"] == v.detector)
+        & (failed_rows["metric"] == v.metric)
+    ]
+    if series.empty and failures.empty:
         st.info("No history for this metric in the current trend window.")
         return
     st.plotly_chart(
-        _flag_trend_figure(series, v), width="stretch", key="det_ov_flag_chart",
+        _flag_trend_figure(series, v, failures),
+        width="stretch", key="det_ov_flag_chart",
     )
     st.caption(f"**{v.reason}** — {v.detector} · {v.label}")
 
@@ -1866,9 +1886,16 @@ def render(
         hist = collapse_history(kept_hist_rows)
         wide, as_of = latest_snapshot(kept_snap_rows)
 
-        wide_disp, hist_disp = _to_display_units(wide, hist)
+        plot_hist = pd.concat([hist, failed_hist_rows], ignore_index=True)
+        wide_disp, plot_hist_disp = _to_display_units(wide, plot_hist)
         if relative:
-            hist_disp = relative_history(hist_disp)
+            plot_hist_disp = relative_history(plot_hist_disp)
+        hist_disp = plot_hist_disp[
+            plot_hist_disp["severity"] != Severity.FAILURE.value
+        ]
+        failed_hist_disp = plot_hist_disp[
+            plot_hist_disp["severity"] == Severity.FAILURE.value
+        ]
 
         if view == "Performance Trends":
             # Worked out before the figure: when there is nothing to draw at all
@@ -1881,6 +1908,7 @@ def render(
             fig = _history_figure(
                 hist_disp, time_metric, mem_metric, styles, detectors_all,
                 0.75, log, relative, show_confirmed, show_watch,
+                failed_hist_disp,
             )
             if fig is None:
                 st.info(" ".join([
