@@ -48,9 +48,10 @@ _FILES_PER_PAGE = 100
 #: partial path list as complete.
 _MAX_FILE_PAGES = 30
 #: Fallback ``/commits/{sha}/pulls`` lookups per range. A non-squash repo whose
-#: subjects carry no ``(#N)`` pays one API call per commit, and a compare can
-#: hold up to 250 — bound that spend the same way the PR fetches are bounded.
-_MAX_COMMIT_PR_LOOKUPS = 40
+#: subjects carry no ``(#N)`` pays one API call per commit. Match GitHub's
+#: 250-commit compare ceiling so a complete compare response is never made
+#: artificially incomplete by a lower local lookup cap.
+_MAX_COMMIT_PR_LOOKUPS = 250
 
 #: Patch budget handed to the ranker per PR. The assembled diff is *transient*
 #: ranker input — never stored in ``blame.json``, always re-fetchable from GitHub
