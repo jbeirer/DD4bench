@@ -361,6 +361,18 @@ def test_same_tag_failure_is_separate_from_healthy_line(failed_first):
     assert list(line.y) == [100.0]
     assert failed_marks and all(list(t.y) == [5.0] for t in failed_marks)
 
+    preview = ov._flag_trend_figure(
+        hist,
+        _verdict(
+            metric="mean_time_s", value=5.0, severity=Severity.FAILURE,
+            baseline_median=100.0, baseline_mad=0.6,
+        ),
+        failures,
+    )
+    assert list(next(t for t in preview.data if t.mode == "lines+markers").y) == [100.0]
+    assert any(s.y0 == s.y1 == 100.0 for s in preview.layout.shapes)
+    assert any(s.y0 < 100.0 < s.y1 for s in preview.layout.shapes)
+
 
 def test_history_rows_keeps_one_row_per_run():
     rows = _same_tag_rerun_rows()
