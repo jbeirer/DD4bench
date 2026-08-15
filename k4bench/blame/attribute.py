@@ -98,6 +98,7 @@ from k4bench.blame.prompt import (
     sample_line,
     window_phrase,
 )
+from k4bench.regression.common_mode import pretty_config
 from k4bench.regression.models import RegionDelta
 
 _log = logging.getLogger(__name__)
@@ -699,7 +700,7 @@ def _regression_lines(request: AttributionRequest) -> list[str]:
         lines.append(sample_line(sample, prefix="  "))
         lines.append(platform_line(platform, prefix="  "))
         for fact in facts:
-            subject = f"{fact.metric} ({fact.label})"
+            subject = f"{fact.metric} ({pretty_config(fact.label)})"
             if fact.sub_detector:
                 subject += f" [{fact.sub_detector}]"
             detail = measurement_phrase(
@@ -739,7 +740,7 @@ def _history_lines(request: AttributionRequest) -> list[str]:
         "behaves when nothing is done to it:",
     ]
     for fact in shown:
-        subject = f"{fact.detector} · {fact.metric} ({fact.label})"
+        subject = f"{fact.detector} · {fact.metric} ({pretty_config(fact.label)})"
         if fact.sub_detector:
             subject += f" [{fact.sub_detector}]"
         lines.append("")
@@ -1087,7 +1088,7 @@ def _fact_phrase(fact: RegressionFact) -> str:
     not the default one, since that is then part of what identifies the row."""
     where = fact.detector
     if fact.label and fact.label != "baseline":
-        where += f" {fact.label}"
+        where += f" {pretty_config(fact.label)}"
     return f"{where} {fact.metric}"
 
 def _parse_likelihoods(

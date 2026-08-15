@@ -34,6 +34,7 @@ from k4bench.blame.history import (
     HistoricalBoundary,
     HistoricalPR,
 )
+from k4bench.regression.common_mode import pretty_config
 from k4bench.labels import describe_platform, pretty_sample
 from k4bench.regression.models import RegionDelta
 
@@ -473,7 +474,7 @@ def outcome_lines(
     for outcome in outcomes[:limit]:
         where = (
             f"{outcome.detector} · {outcome.sample} · {outcome.platform} · "
-            f"{outcome.label}"
+            f"{pretty_config(outcome.label)}"
         )
         # An unjudged metric is one this configuration measured but had too
         # little settled history to read — it is neither agreement nor

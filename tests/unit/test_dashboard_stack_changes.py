@@ -1346,3 +1346,51 @@ def test_common_mode_ledger_row_shows_factors():
     assert flags.is_common_mode(v.label)
     assert flags.format_shift(v.value) == "×1.2"
     assert "s" not in flags.format_shift(v.value)
+
+
+def test_common_mode_history_excludes_failed_configs(monkeypatch):
+    # The report computes the shift from judgeable rows only. The drill-down
+    # keeps failed rows so it can mark them, so it must not feed that frame to
+    # the reconstruction — the evidence shown would not be the series judged.
+    import pandas as pd
+
+    from k4bench.regression.common_mode import COMMON_MODE_LABEL
+    from tabs import _regression_trend as trend
+
+    nights = ["2026-06-25", "2026-06-26", "2026-06-27"]
+    healthy = [f"config_{i}" for i in range(4)]
+    # Enough failures to swing the cross-config median if they were let in,
+    # and leaving exactly MIN_COMMON_MODE_CONFIGS healthy ones — the
+    # boundary where the difference actually bites.
+    broken = [f"config_{i}" for i in range(4, 8)]
+    rows = []
+    for night in nights:
+        for i, label in enumerate(healthy):
+            rows.append({
+                "run_id": night, "x_date": pd.Timestamp(night), "label": label,
+                "returncode": 0, "wall_time_s": 100.0 + 10 * i,
+            })
+        for label in broken:
+            # Crashed on the last night, leaving a plausible partial time that
+            # would drag the cross-config median if it were let in.
+            crashed = night == nights[-1]
+            rows.append({
+                "run_id": night, "x_date": pd.Timestamp(night), "label": label,
+                "returncode": 139 if crashed else 0,
+                "wall_time_s": 5.0 if crashed else 100.0,
+            })
+    monkeypatch.setattr(
+        trend, "cached_load_trend_results", lambda _dirs: pd.DataFrame(rows),
+    )
+    monkeypatch.setattr(trend, "cached_load_trend_machine_info", lambda _dirs: None)
+
+    df, _rel, _failed, _orphan = trend._metric_history(
+        _confirmed(label=COMMON_MODE_LABEL), "url", "cache",
+        list_run_dates=lambda *_args: {f"key4hep-{n}": [n] for n in nights},
+        fetch_runs_windowed=lambda *_args: ("run-dir",),
+    )
+
+    # The four healthy configs never moved, so the shift is flat throughout.
+    # Including the four crashed rows would have dragged the last night's
+    # median to ~0.5 and drawn a regression that never happened.
+    assert list(df["wall_time_s"]) == pytest.approx([1.0, 1.0, 1.0])

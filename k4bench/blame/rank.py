@@ -85,6 +85,7 @@ from k4bench.blame.prompt import (
     sample_line,
     window_phrase,
 )
+from k4bench.regression.common_mode import pretty_config
 from k4bench.regression.models import RegionDelta
 
 _log = logging.getLogger(__name__)
@@ -638,7 +639,7 @@ def _step_lines(request: RankRequest) -> list[str]:
     ones."""
     lines = ["- Metrics that stepped across the window:"]
     for step in request.metrics:
-        subject = f"{step.metric} ({step.label})"
+        subject = f"{step.metric} ({pretty_config(step.label)})"
         if step.sub_detector:
             subject += f" [{step.sub_detector}]"
         detail = measurement_phrase(step.value, step.baseline_median, step.z_score)
@@ -678,7 +679,7 @@ def _history_lines(request: RankRequest) -> list[str]:
     shown = [step for step in ranked if step.history][:_MAX_HISTORY_BLOCKS]
     lines: list[str] = []
     for step in shown:
-        subject = f"{step.metric} ({step.label})"
+        subject = f"{step.metric} ({pretty_config(step.label)})"
         if step.sub_detector:
             subject += f" [{step.sub_detector}]"
         lines.append("")

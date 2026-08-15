@@ -204,6 +204,33 @@ def _fmt_date(value) -> str:
     return "" if pd.isna(ts) else ts.strftime("%Y-%m-%d")
 
 
+#: Workload identity of a run that fixed no Monte-Carlo seed, i.e. one that
+#: simulated a freshly drawn event mix. Every such run is strictly a different
+#: workload from every other, but treating them that way would mean never
+#: judging anything: the whole history before the seed was pinned is unfixed.
+#: They are therefore pooled under one identity — which is exactly the regime
+#: the event-mix noise floor was built for, and the regime it is confined to.
+WORKLOAD_UNFIXED = None
+
+#: Distinguishes "this history carries no workload column" from "the column
+#: says the workload was unfixed". Only the latter is a fact about the runs.
+_UNSET = object()
+
+
+def workload_of(row) -> object:
+    """The Monte-Carlo workload a run simulated, from its optional ``workload``
+    column — the ddsim seed, or :data:`WORKLOAD_UNFIXED` when none was fixed."""
+    value = getattr(row, "workload", None)
+    if value is None:
+        return WORKLOAD_UNFIXED
+    try:
+        if isinstance(value, float) and math.isnan(value):
+            return WORKLOAD_UNFIXED
+        return int(value)
+    except (TypeError, ValueError):
+        return WORKLOAD_UNFIXED
+
+
 def _optional(row, name: str) -> float | None:
     """A finite float from an optional history column, else ``None``.
 
@@ -354,6 +381,8 @@ def evaluate_series(
     # The baseline runs' intrinsic noise, in lockstep with `baseline` so the
     # floor is always derived from the same runs the median and MAD are.
     baseline_noise: deque[float | None] = deque(maxlen=BASELINE_WINDOW_RUNS)
+    # The workload the baseline accumulated under (see WORKLOAD_UNFIXED).
+    baseline_workload: object = _UNSET
     pending: Direction | None = None
     pending_run: tuple[str, str] | None = None   # the WATCH night's identity (the onset)
     last_accepted: tuple[str, str] | None = None  # newest night seen at the accepted level
@@ -407,6 +436,26 @@ def evaluate_series(
                 noise_rse=noise,
             )
 
+            # A change of workload is a change of what is being measured, not a
+            # change in what is being measured *by*. Judging the new workload
+            # against the old one's baseline would report the substitution as a
+            # regression in every series at once — true of the numbers, false
+            # about the software. The honest answer is that there is no
+            # baseline yet, so the series restarts and re-warms.
+            workload = workload_of(row)
+            restarted = baseline_workload is not _UNSET and workload != baseline_workload
+            if restarted:
+                baseline.clear()
+                baseline_noise.clear()
+                release_values.clear()
+                release_noise.clear()
+                release_windows.clear()
+                pending = pending_run = None
+                last_accepted = None
+                anchor_date, anchor_mad = None, 0.0
+                snapshot, warming = None, None
+            baseline_workload = workload
+
             if warming is None:
                 warming = len(baseline) < MIN_BASELINE_RUNS and anchor_date is None
             if warming:
@@ -421,8 +470,13 @@ def evaluate_series(
                     value=x, baseline_median=None, baseline_mad=None,
                     pct_change=None, z_score=None,
                     severity=Severity.UNKNOWN, direction=Direction.NONE,
-                    reason=f"only {len(baseline)} reliable baseline runs "
-                           f"(<{MIN_BASELINE_RUNS}) — not judged",
+                    reason=(
+                        f"workload changed to {workload} — baseline restarted, "
+                        f"not judged"
+                        if restarted else
+                        f"only {len(baseline)} reliable baseline runs "
+                        f"(<{MIN_BASELINE_RUNS}) — not judged"
+                    ),
                     **annotations,
                 ))
                 release_values.append(x)
@@ -447,9 +501,19 @@ def evaluate_series(
                 # The floor is frozen with the rest of the snapshot: a release
                 # whose nights were judged against different floors would
                 # report the same measurement two ways.
+                #
+                # It widens for event-mix noise only while the workload is
+                # *unfixed*. That noise is the spread the total would show if
+                # the event mix were re-drawn — which is precisely what a fixed
+                # seed stops happening. Under a fixed seed the same events are
+                # simulated every night, so none of that spread reaches the
+                # night-to-night comparison, and widening the floor by it would
+                # give up real sensitivity to buy protection against a source of
+                # variation that no longer exists.
+                widen = not absolute_floor and baseline_workload is WORKLOAD_UNFIXED
                 release_floor = (
-                    base_floor if absolute_floor
-                    else noise_aware_floor(base_floor, list(baseline_noise))
+                    noise_aware_floor(base_floor, list(baseline_noise))
+                    if widen else base_floor
                 )
                 snapshot = (med, mad, reanchoring, len(baseline), release_floor)
 

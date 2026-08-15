@@ -144,18 +144,22 @@ def shift_history(
     shifts: dict[str, float],
     run_dates: dict[str, object],
     reliability: dict[str, bool | None],
+    workloads: dict[str, int] | None = None,
 ) -> pd.DataFrame:
     """The group-wide shift as a history frame the engine can walk.
 
     Shaped exactly like a configuration's own history — ``run_id``,
-    ``run_date``, ``value``, ``reliable`` — because it *is* one: a series
-    centred on 1.0 whose steps are shared moves of the whole run group, judged
-    by the same gates as everything else.
+    ``run_date``, ``value``, ``reliable``, and the workload each run simulated
+    — because it *is* one: a series centred on 1.0 whose steps are shared moves
+    of the whole run group, judged by the same gates as everything else.
     """
     run_ids = [rid for rid in shifts if rid in run_dates]
-    return pd.DataFrame({
+    history = pd.DataFrame({
         "run_id":   run_ids,
         "run_date": [run_dates[rid] for rid in run_ids],
         "value":    [shifts[rid] for rid in run_ids],
         "reliable": [reliability.get(rid) for rid in run_ids],
     })
+    if workloads:
+        history["workload"] = [workloads.get(rid) for rid in run_ids]
+    return history

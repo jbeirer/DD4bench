@@ -663,9 +663,13 @@ def _sweep_history(
     *,
     scales: dict[int, dict[str, float]] | None = None,
     event_times: dict[str, list[float]] | None = None,
+    random_seed: int | None = None,
 ) -> tuple[str, ...]:
     """A sweep's run dirs. ``scales[i][label]`` multiplies that config's level
-    on night *i*; anything unnamed stays flat."""
+    on night *i*; anything unnamed stays flat.
+
+    Unseeded by default: a re-drawn event mix is the regime the event-mix noise
+    floor exists for, and the one the whole recorded history was measured in."""
     scales = scales or {}
     run_dirs = []
     for i, night in enumerate(_nights(n_nights)):
@@ -676,7 +680,7 @@ def _sweep_history(
         }
         run_dirs.append(_write_run(
             sample_root / night, night=night, labels=_SWEEP_LABELS,
-            result_overrides=overrides,
+            result_overrides=overrides, random_seed=random_seed,
         ))
         if event_times:
             for label, times in event_times.items():
@@ -883,3 +887,29 @@ def test_the_trimmed_metric_is_gated_by_the_trimmed_sample_s_own_noise(tmp_path)
     assert floors[(label, "trimmed_mean_time_s")] == pytest.approx(
         EFFECT_FLOOR["time"]
     )
+
+
+def test_a_fixed_seed_stands_the_noise_floor_down(tmp_path):
+    # The floor exists to absorb a re-drawn event mix. Under a fixed seed the
+    # same events run every night, so that variation never reaches the
+    # night-to-night comparison and widening the floor by it would only cost
+    # sensitivity — most on the tail-heavy configs that need it least.
+    tail_heavy = [1.0] * 90 + [40.0] * 10
+    events = {label: tail_heavy for label in _SWEEP_LABELS}
+
+    unfixed = _report_for(_sweep_history(
+        tmp_path / "unfixed", 12, event_times=events, random_seed=None,
+    ))
+    fixed = _report_for(_sweep_history(
+        tmp_path / "fixed", 12, event_times=events, random_seed=42,
+    ))
+
+    def _floor(group):
+        return next(
+            v.effect_floor for v in group.verdicts
+            if v.metric == "wall_time_s" and v.label == _SWEEP_LABELS[0]
+            and v.effect_floor is not None
+        )
+
+    assert _floor(unfixed) > EFFECT_FLOOR["time"]
+    assert _floor(fixed) == pytest.approx(EFFECT_FLOOR["time"])

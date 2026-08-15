@@ -161,6 +161,29 @@ def _reliable_column(run_ids: pd.Series, reliability: dict[str, bool | None]) ->
     return [reliability.get(rid) for rid in run_ids]
 
 
+def workload_map(results_df: pd.DataFrame | None) -> dict[str, int]:
+    """``{run_id: random_seed}`` for every run that fixed one.
+
+    A run absent from this map simulated a freshly drawn event mix (see
+    :data:`~k4bench.regression.engine.WORKLOAD_UNFIXED`). The distinction is
+    what lets the engine restart a baseline when the workload is substituted,
+    rather than reporting the substitution as a regression in every series.
+    """
+    if (
+        results_df is None or results_df.empty
+        or "random_seed" not in results_df.columns
+    ):
+        return {}
+    sub = results_df[["run_id", "random_seed"]].dropna().drop_duplicates("run_id")
+    out: dict[str, int] = {}
+    for row in sub.itertuples(index=False):
+        try:
+            out[str(row.run_id)] = int(row.random_seed)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 def noise_map(
     event_df: pd.DataFrame | None, column: str = NOISE_COLUMN,
 ) -> dict[tuple[str, str], float]:
@@ -189,6 +212,7 @@ def _series_history(
     label: str = "",
     shifts: dict[str, float] | None = None,
     noise: dict[tuple[str, str], float] | None = None,
+    workloads: dict[str, int] | None = None,
 ) -> pd.DataFrame:
     """One config's metric history, annotated with everything the engine needs
     to judge it in context (see :func:`~k4bench.regression.engine.evaluate_series`).
@@ -207,6 +231,8 @@ def _series_history(
         "value":    values.to_numpy(),
         "reliable": _reliable_column(sub["run_id"], reliability),
     })
+    if workloads:
+        history["workload"] = [workloads.get(rid) for rid in run_ids]
     if noise:
         history["noise_rse"] = [
             noise.get((rid, label)) for rid in run_ids
@@ -345,6 +371,7 @@ def evaluate_group_series(
     going unjudged.
     """
     out: dict[SeriesId, list[MetricVerdict]] = {}
+    workloads = workload_map(results_df)
     noise_by_column = {
         column: noise_map(event_df, column)
         for column in {NOISE_COLUMN, *NOISE_COLUMN_BY_METRIC.values()}
@@ -377,6 +404,7 @@ def evaluate_group_series(
                 history = _series_history(
                     df, df["label"] == label, metric, reliability,
                     label=name, shifts=shifts, noise=metric_noise,
+                    workloads=workloads,
                 )
                 verdicts = evaluate_series(history, series=sid)
                 if verdicts:
@@ -390,7 +418,9 @@ def evaluate_group_series(
             group_sid = SeriesId(
                 detector, platform, sample, COMMON_MODE_LABEL, family, metric,
             )
-            group_history = shift_history(shifts, run_dates, reliability)
+            group_history = shift_history(
+                shifts, run_dates, reliability, workloads=workloads,
+            )
             group_verdicts = evaluate_series(group_history, series=group_sid)
             if group_verdicts:
                 out[group_sid] = _with_history(

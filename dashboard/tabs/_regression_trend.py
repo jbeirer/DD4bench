@@ -25,6 +25,7 @@ from data import (
 from k4bench.analysis.loader import (
     config_keys,
     failed_config_keys,
+    judgeable_config_rows,
     recorded_config_rows,
     with_cpu_efficiency,
 )
@@ -251,7 +252,13 @@ def _metric_history(
     if verdict.metric not in df.columns:
         return None
     df = (
-        _common_mode_frame(df, verdict.metric)
+        # Rebuilt from *judgeable* rows, not from the display frame above: a
+        # failed config's partial measurement never entered the shift the
+        # report judged, and letting it into the reconstruction would draw a
+        # different series as the evidence for that verdict. The median usually
+        # absorbs one bad config, but not several, and not near the
+        # minimum-configs boundary.
+        _common_mode_frame(judgeable_config_rows(df, results_df), verdict.metric)
         if verdict.label == COMMON_MODE_LABEL
         else df[df["label"] == verdict.label]
     )
@@ -263,9 +270,11 @@ def _common_mode_frame(df: pd.DataFrame, metric: str) -> pd.DataFrame:
 
     A group-level verdict names no configuration, so there is no column of
     measurements to plot. Its evidence is the shift series itself, rebuilt here
-    from the same frame and the same function the report judged it with, so the
+    from the same rows and the same function the report judged it with, so the
     chart shows what the verdict was actually about.
     """
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["run_id", "x_date", "label", metric])
     shifts = common_mode_shifts(df, metric)
     dates = dict(zip(df["run_id"].astype(str), df["x_date"], strict=True))
     return pd.DataFrame(
