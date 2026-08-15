@@ -506,7 +506,7 @@ def _group_report_from_frames(
         group.verdicts.extend(
             dataclasses.replace(
                 verdict,
-                severity=Severity.UNKNOWN,
+                severity=Severity.FAILURE,
                 direction=Direction.NONE,
                 reason=failure_reason[verdict.label],
                 onset_run_id=None,

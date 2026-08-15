@@ -196,7 +196,7 @@ def test_failed_metric_value_stays_in_preview_and_is_labelled_failure():
         reason="config exited with returncode 139 — its metrics were not judged",
     )
     raw_wall = _verdict(
-        "wall_time_s", Severity.UNKNOWN, None,
+        "wall_time_s", Severity.FAILURE, None,
         value=5.0, baseline_median=100.0, baseline_mad=1.0,
         pct_change=-0.95, z_score=-95.0,
         direction=Direction.NONE,

@@ -183,35 +183,36 @@ def report_metrics_frame(report: NightlyReport) -> pd.DataFrame:
     lets the reliability filter address these rows at all — keyed on the report
     instead, they would never match the group's own ``reliable`` verdict.
     """
-    rows = []
-    for group in report.groups:
-        failures = failed_config_labels(group.verdicts)
-        for verdict in group.verdicts:
-            if (
-                verdict.sub_detector is not None
-                or verdict.metric not in _METRIC_ORDER
-                or verdict.value is None
-                or not math.isfinite(verdict.value)
-            ):
-                continue
-            rows.append({
-                "detector": group.detector,
-                "platform": group.platform,
-                "sample": group.sample,
-                "label": verdict.label,
-                "metric": verdict.metric,
-                "value": float(verdict.value),
-                # Raw metric rows remain UNKNOWN in the report so one crashed
-                # config is still one failure. For plotting, pair them with the
-                # config's status and show an explicit failure marker.
-                "severity": (
-                    Severity.FAILURE.value
-                    if verdict.label in failures else verdict.severity.value
-                ),
-                "k4h_release": group.k4h_release,
-                "run_date": group.run_date,
-                "reliable": group.reliable,
-            })
+    failure_labels = {
+        (g.detector, g.platform, g.sample, g.run_id):
+        failed_config_labels(g.verdicts)
+        for g in report.groups
+    }
+    rows = [
+        {
+            "detector":    g.detector,
+            "platform":    g.platform,
+            "sample":      g.sample,
+            "label":       v.label,
+            "metric":      v.metric,
+            "value":       float(v.value),
+            "severity":    (
+                Severity.FAILURE.value
+                if v.label in failure_labels[
+                    (g.detector, g.platform, g.sample, g.run_id)
+                ] else v.severity.value
+            ),
+            "k4h_release": g.k4h_release,
+            "run_date":    g.run_date,
+            "reliable":    g.reliable,
+        }
+        for g in report.groups
+        for v in g.verdicts
+        if v.sub_detector is None
+        and v.metric in _METRIC_ORDER
+        and v.value is not None
+        and math.isfinite(v.value)
+    ]
     return pd.DataFrame(rows, columns=_FRAME_COLUMNS)
 
 

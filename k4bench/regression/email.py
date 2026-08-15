@@ -1468,11 +1468,7 @@ def _quiet_summary(group: RunGroupReport) -> str:
     per quiet metric."""
     n_ok = sum(1 for v in group.verdicts if v.severity is Severity.OK)
     n_watch = len(group.watches)
-    failed_labels = {v.label for v in group.failures}
-    n_unknown = sum(
-        1 for v in group.verdicts
-        if v.severity is Severity.UNKNOWN and v.label not in failed_labels
-    )
+    n_unknown = sum(1 for v in group.verdicts if v.severity is Severity.UNKNOWN)
     parts = [f"{n_ok} within baseline"]
     if n_watch:
         parts.append(f"{n_watch} on watch (unconfirmed)")

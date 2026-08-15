@@ -269,7 +269,7 @@ def test_failed_config_metrics_are_not_judged(tmp_path):
     ]
     recorded = [v for v in group.verdicts if v.metric != "returncode"]
     assert recorded
-    assert {v.severity for v in recorded} == {Severity.UNKNOWN}
+    assert {v.severity for v in recorded} == {Severity.FAILURE}
     wall = next(v for v in recorded if v.metric == "wall_time_s")
     assert wall.value == pytest.approx(5.0)
     assert wall.baseline_median == pytest.approx(100.0)
@@ -334,7 +334,7 @@ def test_failed_config_does_not_suppress_healthy_sibling(tmp_path):
         if v.label == "crashed" and v.metric != "returncode"
     ]
     assert crashed_values
-    assert {v.severity for v in crashed_values} == {Severity.UNKNOWN}
+    assert {v.severity for v in crashed_values} == {Severity.FAILURE}
     crashed_wall = next(v for v in crashed_values if v.metric == "wall_time_s")
     assert crashed_wall.baseline_median == pytest.approx(100.0)
 
@@ -352,7 +352,7 @@ def test_failed_config_partial_event_metrics_are_not_judged(tmp_path):
     assert group.failures
     event_values = [v for v in group.verdicts if v.metric in EVENT_METRICS]
     assert event_values
-    assert {v.severity for v in event_values} == {Severity.UNKNOWN}
+    assert {v.severity for v in event_values} == {Severity.FAILURE}
     event_time = next(v for v in event_values if v.metric == "mean_time_s")
     assert event_time.baseline_median == pytest.approx(1.0)
 

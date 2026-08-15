@@ -73,17 +73,20 @@ def failed_metric_options(
 ) -> list[MetricVerdict]:
     """Display-only metric verdicts for configs that failed on this run.
 
-    The report stores one canonical ``returncode`` FAILURE per config plus raw
-    unjudged metric values.  Trend pickers need the latter's metric identity
-    and value, but the former's status and reason.  This joins the two without
-    turning a partial measurement into statistical evidence.  It also repairs
+    The report stores one canonical ``returncode`` failure per config plus
+    metric-shaped FAILURE rows for display. Trend pickers omit the status row
+    and use the metric rows without turning them into statistical evidence.
+    This helper also repairs
     old reports that contain a false WATCH/CONFIRMED beside the config failure:
     the displayed copy keeps the metric value, healthy-only baseline and Δ but
     replaces the statistical status and clears any confirmation/blame window.
     """
-    failures = {
-        v.label: v for v in verdicts if v.severity is Severity.FAILURE
-    }
+    failures: dict[str, MetricVerdict] = {}
+    for verdict in verdicts:
+        if verdict.severity is Severity.FAILURE and (
+            verdict.label not in failures or verdict.metric == "returncode"
+        ):
+            failures[verdict.label] = verdict
     out: list[MetricVerdict] = []
     seen: set[tuple[str, str, str | None]] = set()
     for verdict in verdicts:
@@ -91,7 +94,6 @@ def failed_metric_options(
         key = (verdict.label, verdict.metric, verdict.sub_detector)
         if (
             failure is None
-            or verdict.severity is Severity.FAILURE
             or verdict.metric == "returncode"
             or (metrics is not None and verdict.metric not in metrics)
             or verdict.value is None
