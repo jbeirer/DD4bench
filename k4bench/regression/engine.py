@@ -33,6 +33,15 @@ so every gate errs toward *not* flagging:
    by a noise estimate that happens to come out small. It is self-limiting —
    a series whose noise is already under the family floor keeps that floor
    exactly, so sensitivity is given up only where the data proves it must be.
+   It applies only to a night whose workload is **unfixed**
+   (:func:`workload_of`): the noise it corrects for is the spread a *re-drawn*
+   event mix produces, and a fixed ddsim seed is precisely what stops the mix
+   being re-drawn. This is a property of the night being judged, not a
+   partition of the history — a series that gains a fixed seed stops inflating
+   its floor and keeps the baseline it already has, so pinning the seed costs
+   no blind period. The one-time level shift a new workload can produce is
+   reported as a note by :mod:`k4bench.regression.report_builder` and otherwise
+   judged like any other change.
 5. **Two-strike confirmation**: the first night crossing both gates is
    ``WATCH``; only when the *next* reliable night repeats it in the same
    direction does it become ``CONFIRMED``. This is the single
@@ -205,17 +214,9 @@ def _fmt_date(value) -> str:
 
 
 #: Workload identity of a run that fixed no Monte-Carlo seed, i.e. one that
-#: simulated a freshly drawn event mix. Every such run is strictly a different
-#: workload from every other, but treating them that way would mean never
-#: judging anything: the whole history before the seed was pinned is unfixed.
-#: They are therefore pooled under one identity — which is exactly the regime
-#: the event-mix noise floor was built for, and the regime it is confined to.
+#: simulated a freshly drawn event mix — the regime the event-mix noise floor
+#: was built for, and the only regime it applies in.
 WORKLOAD_UNFIXED = None
-
-#: Distinguishes "this history carries no workload column" from "the column
-#: says the workload was unfixed". Only the latter is a fact about the runs.
-_UNSET = object()
-
 
 def workload_of(row) -> object:
     """The Monte-Carlo workload a run simulated, from its optional ``workload``
@@ -381,8 +382,6 @@ def evaluate_series(
     # The baseline runs' intrinsic noise, in lockstep with `baseline` so the
     # floor is always derived from the same runs the median and MAD are.
     baseline_noise: deque[float | None] = deque(maxlen=BASELINE_WINDOW_RUNS)
-    # The workload the baseline accumulated under (see WORKLOAD_UNFIXED).
-    baseline_workload: object = _UNSET
     pending: Direction | None = None
     pending_run: tuple[str, str] | None = None   # the WATCH night's identity (the onset)
     last_accepted: tuple[str, str] | None = None  # newest night seen at the accepted level
@@ -436,25 +435,13 @@ def evaluate_series(
                 noise_rse=noise,
             )
 
-            # A change of workload is a change of what is being measured, not a
-            # change in what is being measured *by*. Judging the new workload
-            # against the old one's baseline would report the substitution as a
-            # regression in every series at once — true of the numbers, false
-            # about the software. The honest answer is that there is no
-            # baseline yet, so the series restarts and re-warms.
+            # Which workload this run simulated. Read only to decide whether
+            # the event-mix noise floor still has anything to correct for (see
+            # the snapshot below) — never to partition the baseline. A changed
+            # seed is reported as a note by the report builder and is otherwise
+            # judged like any other night, against the history that already
+            # exists.
             workload = workload_of(row)
-            restarted = baseline_workload is not _UNSET and workload != baseline_workload
-            if restarted:
-                baseline.clear()
-                baseline_noise.clear()
-                release_values.clear()
-                release_noise.clear()
-                release_windows.clear()
-                pending = pending_run = None
-                last_accepted = None
-                anchor_date, anchor_mad = None, 0.0
-                snapshot, warming = None, None
-            baseline_workload = workload
 
             if warming is None:
                 warming = len(baseline) < MIN_BASELINE_RUNS and anchor_date is None
@@ -470,13 +457,8 @@ def evaluate_series(
                     value=x, baseline_median=None, baseline_mad=None,
                     pct_change=None, z_score=None,
                     severity=Severity.UNKNOWN, direction=Direction.NONE,
-                    reason=(
-                        f"workload changed to {workload} — baseline restarted, "
-                        f"not judged"
-                        if restarted else
-                        f"only {len(baseline)} reliable baseline runs "
-                        f"(<{MIN_BASELINE_RUNS}) — not judged"
-                    ),
+                    reason=f"only {len(baseline)} reliable baseline runs "
+                           f"(<{MIN_BASELINE_RUNS}) — not judged",
                     **annotations,
                 ))
                 release_values.append(x)
@@ -502,15 +484,18 @@ def evaluate_series(
                 # whose nights were judged against different floors would
                 # report the same measurement two ways.
                 #
-                # It widens for event-mix noise only while the workload is
+                # It widens for event-mix noise only while the run's workload is
                 # *unfixed*. That noise is the spread the total would show if
                 # the event mix were re-drawn — which is precisely what a fixed
                 # seed stops happening. Under a fixed seed the same events are
                 # simulated every night, so none of that spread reaches the
                 # night-to-night comparison, and widening the floor by it would
                 # give up real sensitivity to buy protection against a source of
-                # variation that no longer exists.
-                widen = not absolute_floor and baseline_workload is WORKLOAD_UNFIXED
+                # variation that no longer exists. This reads the workload of
+                # the night being judged; it never partitions the baseline, so a
+                # series that gains a fixed seed simply stops inflating its
+                # floor and keeps the history it already has.
+                widen = not absolute_floor and workload is WORKLOAD_UNFIXED
                 release_floor = (
                     noise_aware_floor(base_floor, list(baseline_noise))
                     if widen else base_floor

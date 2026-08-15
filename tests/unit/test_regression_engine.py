@@ -778,3 +778,82 @@ def test_reason_attributes_the_widened_floor_to_the_baseline_not_tonight():
     assert confirmed.effect_floor == pytest.approx(3 * 0.04)
     assert "±0.1% this run" in confirmed.reason
     assert "widened from 5.0% by the baseline's event-mix noise" in confirmed.reason
+
+
+# ── Workload identity ─────────────────────────────────────────────────────────
+
+def _workload_history(values, workloads, start="2026-01-01") -> pd.DataFrame:
+    history = _history(values, start=start)
+    history["workload"] = workloads
+    return history
+
+
+def test_a_step_within_one_workload_is_still_confirmed():
+    # The restart must be a response to the workload changing, not to a seed
+    # being present: a real step under a stable seed is judged as ever.
+    values = _STEADY + [120.0, 120.5]
+    verdicts = evaluate_series(
+        _workload_history(values, [42] * len(values)), series=_TIME,
+    )
+    assert _severities(verdicts[-2:]) == [Severity.WATCH, Severity.CONFIRMED]
+
+
+def test_a_history_with_no_workload_column_is_judged_as_before():
+    verdicts = evaluate_series(_history(_STEADY + [120.0, 120.5]), series=_TIME)
+    assert _severities(verdicts[-2:]) == [Severity.WATCH, Severity.CONFIRMED]
+
+
+def test_the_noise_floor_only_applies_while_the_workload_is_unfixed():
+    values = _STEADY + [108.0, 108.4]
+    noise = [0.03] * len(values)
+
+    unfixed = _noisy_history(values, noise)
+    unfixed["workload"] = [None] * len(values)
+    assert all(v.severity is Severity.OK for v in evaluate_series(
+        unfixed, series=_TIME)[-2:])
+
+    fixed = _noisy_history(values, noise)
+    fixed["workload"] = [42] * len(values)
+    judged = evaluate_series(fixed, series=_TIME)
+    assert _severities(judged[-2:]) == [Severity.WATCH, Severity.CONFIRMED]
+    assert judged[-1].effect_floor == pytest.approx(EFFECT_FLOOR["time"])
+
+
+def test_a_seed_change_keeps_the_existing_baseline_and_judges_across_it():
+    # Pinning the seed must not cost a blind period. The first fixed-seed night
+    # is judged against the mature history that already exists, so a step that
+    # coincides with the change is still detected on the normal two-strike
+    # schedule rather than disappearing into a fresh warm-up.
+    values = _STEADY + [120.0, 120.5]
+    workloads = [None] * len(_STEADY) + [42, 42]
+    verdicts = evaluate_series(
+        _workload_history(values, workloads), series=_TIME,
+    )
+    first_fixed = verdicts[len(_STEADY)]
+    assert first_fixed.severity is not Severity.UNKNOWN
+    # Judged against the pre-existing baseline, not against a restarted one.
+    assert first_fixed.baseline_median == pytest.approx(100.0, abs=0.5)
+    assert _severities(verdicts[-2:]) == [Severity.WATCH, Severity.CONFIRMED]
+
+
+def test_a_seed_change_does_not_reset_a_pending_watch():
+    # The seam carries no state of its own: a WATCH raised on the last unfixed
+    # night is confirmed by the first fixed one, exactly as two consecutive
+    # nights of one workload would be.
+    values = _STEADY + [120.0, 120.5]
+    workloads = [None] * (len(_STEADY) + 1) + [42]
+    verdicts = evaluate_series(
+        _workload_history(values, workloads), series=_TIME,
+    )
+    assert _severities(verdicts[-2:]) == [Severity.WATCH, Severity.CONFIRMED]
+
+
+def test_a_quiet_seed_change_is_simply_quiet():
+    # The common case: the workload changes and the level does not move enough
+    # to matter. No flag, and no warm-up either.
+    values = _STEADY + [100.1, 99.9]
+    workloads = [None] * len(_STEADY) + [42, 42]
+    verdicts = evaluate_series(
+        _workload_history(values, workloads), series=_TIME,
+    )
+    assert _severities(verdicts[-2:]) == [Severity.OK, Severity.OK]

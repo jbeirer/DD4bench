@@ -482,11 +482,13 @@ def _random_seed_note(results_df: pd.DataFrame | None, tonight: str) -> str | No
     """A note for the report when tonight simulated a different Monte-Carlo
     workload than the night before it, or none at all.
 
-    Timing is a function of which events were simulated, so changing the ddsim
-    seed steps every series of the run group at once. The engine handles that
-    correctly — it is a step, and a release-boundary re-anchor absorbs it — but
-    a reader who is not told will spend the evening looking for the code change
-    that caused it. Saying so is cheaper than explaining it afterwards.
+    Timing is a function of which events were simulated, so a changed seed can
+    shift every series of the run group at once. Purely informational: the
+    engine keeps judging against the history it already has, so nothing about
+    the verdicts changes here. What changes is what a reader should conclude
+    from them — a simultaneous move on the night the workload changed has an
+    explanation that no code change competes with, and a reader who is not told
+    will spend the evening looking for one.
     """
     if results_df is None or results_df.empty or "random_seed" not in results_df.columns:
         return None
@@ -508,16 +510,19 @@ def _random_seed_note(results_df: pd.DataFrame | None, tonight: str) -> str | No
     now, before = _seed(seeds[tonight]), _seed(seeds[previous[-1]])
     if now == before:
         return None
+    shift = (
+        "this changes the simulated event workload and may cause a one-time "
+        "shift in every metric of this run group"
+    )
     if now is None:
         return (
-            "tonight drew a fresh ddsim seed — its event mix differs from "
-            f"{previous[-1]}'s (seed {before}), so every metric may step for "
-            "workload reasons rather than software ones"
+            "tonight drew a fresh ddsim seed, whereas "
+            f"{previous[-1]} used seed {before} — {shift}"
         )
     return (
-        f"tonight simulated ddsim seed {now}, {previous[-1]} used "
+        f"tonight used ddsim seed {now}, whereas {previous[-1]} used "
         + (f"seed {before}" if before is not None else "an unfixed seed")
-        + " — a changed workload steps every metric of this run group at once"
+        + f" — {shift}"
     )
 
 

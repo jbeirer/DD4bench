@@ -207,13 +207,28 @@ step-change detector (`k4bench/regression/`):
   efficiency, and a wider floor for the noisier region metrics. Requiring both
   keeps a very steady metric (tiny MAD) from flagging on a change too small to
   care about.
-- **The floor follows the measured noise.** A run total is the sum of its
-  per-event costs, and where that distribution is heavy-tailed the total moves
-  every night simply because ddsim simulated a different mix of events. Each run
-  measures its own **intrinsic event-mix noise** from its event file, and the
-  effect floor widens to three times that where it exceeds the fixed floor —
-  never below it, so a quiet series keeps exactly the floor it always had. The
-  flag's reason line quotes the noise it had to beat.
+- **The workload is pinned and recorded.** Timing measures software only if both
+  nights simulated the same events, so the benchmarks fix the ddsim seed and
+  each run records the seed it used in `run_info.json`. Without one, ddsim draws
+  a fresh seed per run and every night re-rolls the shower physics. When the
+  seed *changes* — the migration to a pinned seed, a later change of the value —
+  the report says so in its notes, because a simultaneous move across a whole
+  run group on that night has an explanation no code change competes with. The
+  note is informational: judging continues against the existing history, so
+  pinning the seed costs no blind period.
+- **The floor follows the measured noise — while there is noise to follow.**
+  A run total is the sum of its per-event costs, and where that distribution is
+  heavy-tailed the total moves for event-mix reasons alone. Each run measures
+  its own **intrinsic event-mix noise** from its event file, and the effect
+  floor widens to three times that where it exceeds the fixed floor — never
+  below it, so a quiet series keeps exactly the floor it always had. This
+  applies only to **timing** metrics (the noise is measured from event times and
+  says nothing about memory), each gated by the noise of the sample it was
+  computed from, and only while the workload is **unfixed** — the regime the
+  whole recorded history was measured in. Once the seed is pinned the same
+  events run every night, so that variation never reaches the night-to-night
+  comparison and the floor stands back down to the fixed one rather than
+  spending sensitivity on a source of noise that no longer exists.
 - **Shared moves are reported once.** When every config of a run group moves
   together — a host or stack effect rather than a detector one — that is one
   event, not one per config. The group-wide shift is judged as its own series,
