@@ -280,7 +280,7 @@ def test_large_patch_is_truncated_and_marked():
     res = resolve_repo_prs(_client(routes), "key4hep/k4geo", "a" * 40, "c" * 40)
     patch = res.patches[10]
     assert "… (truncated)" in patch
-    assert len(patch) < 2500  # bounded well below the raw 5000 by the per-file cap
+    assert patch.count("x") == gh_mod._MAX_PATCH_CHARS_PER_FILE
 
 
 def test_total_patch_bounded_across_many_files():
@@ -288,7 +288,7 @@ def test_total_patch_bounded_across_many_files():
     res = resolve_repo_prs(_client(_one_pr_routes(files)), "key4hep/k4geo", "a" * 40, "c" * 40)
     patch = res.patches[10]
     assert "… (truncated)" in patch
-    assert len(patch) < 7000  # per-PR cap holds even when each file is sizeable
+    assert patch.count("y") == gh_mod._MAX_PATCH_CHARS_PER_PR
 
 
 def test_reads_every_changed_file_page_and_keeps_late_geometry_evidence():

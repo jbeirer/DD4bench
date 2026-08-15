@@ -59,8 +59,8 @@ _MAX_COMMIT_PR_LOOKUPS = 250
 #: windows, and one runaway PR must not crowd out the others. Overflow past
 #: either cap is marked so the model knows it is reading a sample, not the whole
 #: change.
-_MAX_PATCH_CHARS_PER_FILE = 2000
-_MAX_PATCH_CHARS_PER_PR = 6000
+_MAX_PATCH_CHARS_PER_FILE = 4000
+_MAX_PATCH_CHARS_PER_PR = 12000
 _PATCH_TRUNCATION_MARK = "\n… (truncated)"
 
 
