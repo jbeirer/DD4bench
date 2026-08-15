@@ -187,6 +187,31 @@ def test_trend_preview_defaults_to_the_worst_confirmed_flag():
     assert any("No history could be loaded" in w.value for w in at.warning)
 
 
+def test_failed_metric_value_stays_in_preview_and_is_labelled_failure():
+    failure = _verdict(
+        "returncode", Severity.FAILURE, None,
+        metric_family="status", value=139.0,
+        baseline_median=None, baseline_mad=None, z_score=None,
+        direction=Direction.NONE,
+        reason="config exited with returncode 139 — its metrics were not judged",
+    )
+    raw_wall = _verdict(
+        "wall_time_s", Severity.UNKNOWN, None,
+        value=5.0, baseline_median=100.0, baseline_mad=1.0,
+        pct_change=-0.95, z_score=-95.0,
+        direction=Direction.NONE,
+        reason="config failed — value recorded but not judged",
+    )
+
+    at = _run(_report([_group(verdicts=[raw_wall, failure])]))
+
+    preview = _preview(at)
+    assert preview.value.metric == "wall_time_s"
+    assert preview.value.severity is Severity.FAILURE
+    assert preview.value.value == 5.0
+    assert preview.options[1] == "❌ Failure · wall time · baseline — Δ -95.0%"
+
+
 def test_scope_miss_names_the_detectors_other_groups():
     at = _run(
         _report([_group(sample="p8_ee_Zbb_ecm91", verdicts=_FLAGGED)]),

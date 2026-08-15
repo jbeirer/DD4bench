@@ -29,7 +29,7 @@ from remote_cache import (
     _cached_list_run_dates,
     _cached_scan_stack_samples,
 )
-from k4bench.analysis.loader import judgeable_config_rows
+from k4bench.analysis.loader import judgeable_config_data, judgeable_config_rows
 from k4bench.results.reliability_evidence import run_reliability_map
 from sections import visible_sections
 from tabs import detectors_overview, event_memory, event_timing, impact, machine_info, region_timing, regressions, stack_changes, trends
@@ -415,6 +415,13 @@ def main() -> None:
             results      = cached_load_results(data_dir)
             event_data   = cached_load_event_timing(data_dir)
             region_data  = cached_load_region_timing(data_dir)
+            # Current-run event/region files can be partial leftovers from a
+            # crashed config, or orphans with no result row at all. These views
+            # present their inputs as ordinary evidence (unlike regression
+            # plots, which can mark a failed point explicitly), so only
+            # successful result-backed labels belong here.
+            event_data = judgeable_config_data(event_data, results)
+            region_data = judgeable_config_data(region_data, results)
             available_labels = collect_labels(results, event_data, region_data)
             # The latest run alone can be missing every config (a failed/timed-out
             # job, or ones retired from the newest release) while the trend window

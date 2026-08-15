@@ -198,6 +198,11 @@ def _render_timeseries(
         dash         = _DASHES [cycle % len(_DASHES) ] if use_dash   else "solid"
         symbol       = _SYMBOLS[cycle % len(_SYMBOLS)] if use_marker else "circle"
         custom = cfg_df[["run_date_str", "k4h_release"]].values
+        failed_mask = (
+            cfg_df["_config_failed"].astype(bool)
+            if "_config_failed" in cfg_df.columns
+            else pd.Series(False, index=cfg_df.index)
+        )
 
         for plot_idx, (metric_col, metric_label) in enumerate(present_metrics):
             row = plot_idx // n_cols + 1
@@ -223,6 +228,15 @@ def _render_timeseries(
                 ),
                 row=row, col=col,
             )
+            failed = cfg_df.loc[
+                failed_mask & cfg_df[metric_col].notna()
+            ]
+            if not failed.empty:
+                add_severity_markers(
+                    fig, failed, x_col="x_date", y_col=metric_col,
+                    name_col="label", severity="FAILURE", hover_y="%{y:.4g}",
+                    row=row, col=col,
+                )
 
     # Regression flags on top of the judged panels — the same halo+badge
     # overlay as the Overview tab, matched to each plotted run by nightly tag.
@@ -232,15 +246,21 @@ def _render_timeseries(
         *(("WATCH",) if show_watch else ()),
     )
     if severity and flag_severities:
+        failed = df.get(
+            "_config_failed", pd.Series(False, index=df.index)
+        ).astype(bool)
+        healthy_panel = df.loc[~failed]
         for plot_idx, (metric_col, _) in enumerate(present_metrics):
             src_metric = _FLAG_SOURCE_METRIC.get(metric_col)
             if src_metric is None:
                 continue
             row = plot_idx // n_cols + 1
             col = plot_idx %  n_cols + 1
-            panel = df.assign(_severity=[
+            panel = healthy_panel.assign(_severity=[
                 severity.get((lbl, rel, src_metric))
-                for lbl, rel in zip(df["label"], df["k4h_release"])
+                for lbl, rel in zip(
+                    healthy_panel["label"], healthy_panel["k4h_release"]
+                )
             ])
             for sev in flag_severities:
                 flagged = panel[panel["_severity"] == sev]
@@ -322,10 +342,11 @@ def _trends_body(
     nightly reports behind the flag lookup rather than re-issuing the threaded
     HTTPS fetch whose shutdown can race a rerun.
     """
-    # A failed process can leave plausible partial resource metrics. Such rows
-    # are gaps, matching the regression engine; healthy sibling configs from
-    # the same run remain available.
-    trend_df = trend_df.loc[~failed_config_mask(trend_df)]
+    # Keep failed values for diagnostic plotting, but carry their status as a
+    # separate display dimension. They are removed from reliability filtering,
+    # verdict joins and line values below, then overlaid as FAILURE markers.
+    trend_df = trend_df.copy()
+    trend_df["_config_failed"] = failed_config_mask(trend_df)
 
     # Every surviving configuration in the window is plotted; there is no
     # config selector here, so this is both the palette-sizing hint and trace
@@ -400,11 +421,15 @@ def _trends_body(
     # Applied *before* the same-tag dedup below, so excluding a run means the run
     # is gone rather than the tag: a tag whose newest run is unreliable falls back
     # to its newest reliable one instead of dropping off the chart entirely.
-    runs, _excluded = resolve_reliability_filter(
-        df, reliability, key="trends_exclude_unreliable", slot=reliability_slot,
+    failed_runs = df[df["_config_failed"]]
+    judgeable_runs = df[~df["_config_failed"]]
+    healthy_runs, _excluded = resolve_reliability_filter(
+        judgeable_runs, reliability,
+        key="trends_exclude_unreliable", slot=reliability_slot,
     )
-    if runs.empty:
+    if healthy_runs.empty and failed_runs.empty:
         return
+    runs = pd.concat([healthy_runs, failed_runs], ignore_index=True)
 
     # When multiple CI runs share the same nightly tag, keep only the latest run.
     df = runs.loc[
@@ -426,7 +451,7 @@ def _trends_body(
     if (show_confirmed or show_watch) and all_run_ids:
         severity = _tag_severity(
             _severity_lookup(data_url, detector, platform, sample, all_run_ids),
-            runs,
+            healthy_runs,
         )
 
     # ── Time-series plots ──────────────────────────────────────────────────────

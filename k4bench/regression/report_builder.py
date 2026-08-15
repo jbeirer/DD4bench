@@ -20,6 +20,8 @@ from pathlib import Path
 import pandas as pd
 
 from k4bench.analysis.loader import (
+    config_rows_for_keys,
+    failed_config_keys,
     failed_config_mask,
     judgeable_config_keys,
     judgeable_config_rows,
@@ -152,8 +154,7 @@ def unjudged_value_verdicts(
     them even with "Exclude unreliable runs" off. This records tonight's raw
     value for every ``(label, metric)`` not *already* judged, marked ``UNKNOWN``
     (never a flag), so the value is preserved for display. A normally-judged
-    (reliable) run already has a verdict per metric, so *already* covers it and
-    this adds nothing.
+    run is already covered.
     """
     out: list[MetricVerdict] = []
 
@@ -467,9 +468,62 @@ def _group_report_from_frames(
         if v is not None
     ]
 
-    # Record raw values for metrics the engine didn't judge tonight — an
-    # unreliable run is skipped, so this is the only way its values reach the
-    # report for the dashboard to plot (marked UNKNOWN, never flagged).
+    config_failures = (
+        _failed_config_verdicts(
+            detector=detector, platform=platform, sample=sample,
+            results_df=results_df, run_id=tonight, run_date=tonight,
+        )
+        if not no_results else []
+    )
+
+    # Reuse the normal detector walk to attach the healthy-only baseline band
+    # and Δ to a failed measurement for display. This is a separate walk over
+    # judgeable history plus only tonight's failed rows: the raw value gets the
+    # same chart geometry as a healthy run but never enters real detector state,
+    # confirmation, or a later baseline.
+    failed_configs = failed_config_keys(results_df)
+    tonight_failed = {key for key in failed_configs if key[0] == str(tonight)}
+    if tonight_failed:
+        failed_results = config_rows_for_keys(results_df, tonight_failed)
+        failed_events = config_rows_for_keys(event_df, tonight_failed)
+        display_results = pd.concat(
+            [judgeable_results_df, failed_results], ignore_index=True,
+        )
+        event_frames = [
+            frame for frame in (judgeable_event_df, failed_events)
+            if frame is not None and not frame.empty
+        ]
+        display_events = (
+            pd.concat(event_frames, ignore_index=True) if event_frames else None
+        )
+        display_reliability = {**reliability, tonight: True}
+        display_series = evaluate_group_series(
+            detector=detector, platform=platform, sample=sample,
+            results_df=display_results, event_df=display_events,
+            reliability=display_reliability, hosts=hosts,
+        )
+        failure_reason = {v.label: v.reason for v in config_failures}
+        group.verdicts.extend(
+            dataclasses.replace(
+                verdict,
+                severity=Severity.UNKNOWN,
+                direction=Direction.NONE,
+                reason=failure_reason[verdict.label],
+                onset_run_id=None,
+                onset_run_date=None,
+                last_accepted_run_id=None,
+                last_accepted_run_date=None,
+                first_confirmed_run_id=None,
+                history=(),
+                region_deltas=(),
+            )
+            for verdicts in display_series.values()
+            for verdict in verdicts
+            if verdict.run_id == tonight
+            and (str(verdict.run_id), verdict.label) in tonight_failed
+        )
+
+    # Record values the normal engine skipped because the host was unreliable.
     already = {(v.label, v.metric) for v in group.verdicts}
     group.verdicts.extend(unjudged_value_verdicts(
         detector=detector, platform=platform, sample=sample,
@@ -483,11 +537,7 @@ def _group_report_from_frames(
             "metrics were not judged (see the Machine Info tab)"
         )
 
-    if not no_results:
-        group.verdicts.extend(_failed_config_verdicts(
-            detector=detector, platform=platform, sample=sample,
-            results_df=results_df, run_id=tonight, run_date=tonight,
-        ))
+    group.verdicts.extend(config_failures)
     group.job_failures.extend(
         _missing_config_failures(results_df, tonight, configured_labels)
     )

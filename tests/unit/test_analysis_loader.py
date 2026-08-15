@@ -12,10 +12,12 @@ import pytest
 from k4bench.analysis.loader import (
     failed_config_keys,
     failed_config_mask,
+    judgeable_config_data,
     judgeable_config_rows,
     load_event_timing,
     load_region_timing,
     load_results,
+    recorded_config_rows,
 )
 
 
@@ -136,6 +138,42 @@ class TestFailedConfigMask:
             ("night-1", "healthy"),
             ("night-2", "failed"),
         ]
+
+    def test_recorded_rows_keep_failure_for_diagnostics_but_drop_orphan(self):
+        results = pd.DataFrame({
+            "run_id": ["night-1", "night-1"],
+            "label": ["failed", "healthy"],
+            "returncode": [139, 0],
+        })
+        derived = pd.DataFrame({
+            "run_id": ["night-1", "night-1", "night-1"],
+            "label": ["failed", "healthy", "orphan"],
+            "mean_time_s": [0.1, 10.0, 0.2],
+        }, index=[7, 8, 9])
+
+        filtered = recorded_config_rows(derived, results)
+
+        assert filtered is not None
+        assert list(filtered.index) == [7, 8]
+        assert list(filtered["label"]) == ["failed", "healthy"]
+
+    def test_current_payloads_keep_only_judgeable_result_labels(self):
+        results = pd.DataFrame({
+            "label": ["healthy", "crashed", "legacy"],
+            "returncode": [0, 139, pd.NA],
+            "_returncode_recorded": [True, True, False],
+        })
+        payloads = {
+            "healthy": object(),
+            "crashed": object(),
+            "legacy": object(),
+            "orphan": object(),
+        }
+
+        filtered = judgeable_config_data(payloads, results)
+
+        assert filtered is not None
+        assert set(filtered) == {"healthy", "legacy"}
 
 
 # ---------------------------------------------------------------------------

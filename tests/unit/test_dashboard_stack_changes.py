@@ -1016,7 +1016,7 @@ def test_whole_platform_trend_caption_names_the_detector():
     assert "IDEA" not in local
 
 
-def test_metric_history_drops_failed_point_but_keeps_healthy_sibling(monkeypatch):
+def test_metric_history_keeps_failed_value_and_healthy_sibling(monkeypatch):
     import pandas as pd
 
     from tabs import _regression_trend as trend
@@ -1048,7 +1048,8 @@ def test_metric_history_drops_failed_point_but_keeps_healthy_sibling(monkeypatch
         )
 
     failed_df, _reliability, failed_configs, orphan_configs = _history(_confirmed())
-    assert list(failed_df["run_id"]) == ["2026-06-26"]
+    assert list(failed_df["run_id"]) == ["2026-06-26", "2026-06-27"]
+    assert list(failed_df["wall_time_s"]) == [100.0, 5.0]
     assert failed_configs == {("2026-06-27", "baseline")}
     assert orphan_configs == set()
 
@@ -1058,7 +1059,7 @@ def test_metric_history_drops_failed_point_but_keeps_healthy_sibling(monkeypatch
     assert list(sibling_df["run_id"]) == ["2026-06-26", "2026-06-27"]
 
 
-def test_metric_history_propagates_failed_config_filter_to_event_series(monkeypatch):
+def test_metric_history_keeps_failed_event_value_for_failure_marker(monkeypatch):
     import pandas as pd
 
     from tabs import _regression_trend as trend
@@ -1094,7 +1095,8 @@ def test_metric_history_propagates_failed_config_filter_to_event_series(monkeypa
     )
 
     event_df, _reliability, failed_configs, orphan_configs = history
-    assert list(event_df["run_id"]) == ["2026-06-26"]
+    assert list(event_df["run_id"]) == ["2026-06-26", "2026-06-27"]
+    assert list(event_df["mean_time_s"]) == [1.0, 0.05]
     assert failed_configs == {("2026-06-27", "baseline")}
     assert orphan_configs == set()
 
@@ -1126,12 +1128,17 @@ def test_failure_only_metric_history_keeps_reason_metadata(monkeypatch):
 
     assert history is not None
     frame, _reliability, failed_configs, orphan_configs = history
-    assert frame.empty
+    assert list(frame["wall_time_s"]) == [5.0]
     assert failed_configs == {("2026-06-27", "baseline")}
     assert orphan_configs == set()
 
     warnings = []
+    figures = []
     monkeypatch.setattr(trend.st, "warning", warnings.append)
+    monkeypatch.setattr(
+        trend.st, "plotly_chart", lambda fig, **_kwargs: figures.append(fig),
+    )
+    monkeypatch.setattr(trend.st, "caption", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(trend, "_metric_history", lambda *_args, **_kwargs: history)
     trend.render_metric_trend(
         _confirmed(), "url", "cache",
@@ -1139,8 +1146,20 @@ def test_failure_only_metric_history_keeps_reason_metadata(monkeypatch):
         fetch_runs_windowed=lambda *_args: (),
         widget_namespace="test",
     )
-    assert len(warnings) == 1
-    assert "returncode" in warnings[0] and "not judged" in warnings[0]
+    assert warnings == []
+    assert len(figures) == 1
+    metric_line = next(
+        trace for trace in figures[0].data if trace.mode == "lines+markers"
+    )
+    assert list(metric_line.y) == [5.0]
+    failure_badges = [
+        trace for trace in figures[0].data
+        if trace.mode == "markers" and trace.hoverinfo != "skip"
+    ]
+    assert len(failure_badges) == 1
+    assert list(failure_badges[0].y) == [5.0]
+    assert "Failed run" in failure_badges[0].hovertemplate
+    assert any(shape.type == "line" for shape in figures[0].layout.shapes)
 
 
 def test_orphan_event_history_reports_missing_result_record(monkeypatch):

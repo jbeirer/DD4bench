@@ -15,12 +15,14 @@ The verdict *severities* themselves come from the precomputed nightly reports
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
 from k4bench.blame.models import RANKING_DISCLOSURE, BlameReport, CandidatePR
-from k4bench.regression.models import MetricVerdict, Severity
+from k4bench.regression.models import Direction, MetricVerdict, Severity
 from k4bench.labels import pretty_sample
 from k4bench.regression.render import _badge, _fmt, _fmt_pct
 from ui_utils import _METRIC_LABELS, _to_rgba
@@ -35,6 +37,8 @@ from ui_utils import _METRIC_LABELS, _to_rgba
 #: same white-outline device the Regressions tab's drill-down uses). Shape *and*
 #: colour both carry the state, never colour alone.
 FLAG_MARKS = {
+    "FAILURE":   dict(symbol="x", badge_size=14, halo_size=27,
+                      color="#d03b3b", label="❌ Failed run — not judged"),
     "CONFIRMED": dict(symbol="circle", badge_size=13, halo_size=28,
                       color="#d03b3b", label="🔴 Confirmed regression"),
     "WATCH":     dict(symbol="triangle-up", badge_size=12, halo_size=24,
@@ -52,7 +56,63 @@ _FLAG_HELP = (
 #: quieter run of the same tag (a WATCH night before the confirmation, a
 #: marginal OK night, or a report predating the release-grouped engine).
 #: OK/UNKNOWN (rank 0) never outrank a flag.
-SEVERITY_RANK = {"CONFIRMED": 3, "WATCH": 2, "FAILURE": 1}
+SEVERITY_RANK = {"FAILURE": 4, "CONFIRMED": 3, "WATCH": 2}
+
+
+def failed_config_labels(verdicts: list[MetricVerdict]) -> set[str]:
+    """Config labels carrying a hard-failure status verdict."""
+    return {
+        v.label for v in verdicts if v.severity is Severity.FAILURE
+    }
+
+
+def failed_metric_options(
+    verdicts: list[MetricVerdict],
+    *,
+    metrics: set[str] | None = None,
+) -> list[MetricVerdict]:
+    """Display-only metric verdicts for configs that failed on this run.
+
+    The report stores one canonical ``returncode`` FAILURE per config plus raw
+    unjudged metric values.  Trend pickers need the latter's metric identity
+    and value, but the former's status and reason.  This joins the two without
+    turning a partial measurement into statistical evidence.  It also repairs
+    old reports that contain a false WATCH/CONFIRMED beside the config failure:
+    the displayed copy keeps the metric value, healthy-only baseline and Δ but
+    replaces the statistical status and clears any confirmation/blame window.
+    """
+    failures = {
+        v.label: v for v in verdicts if v.severity is Severity.FAILURE
+    }
+    out: list[MetricVerdict] = []
+    seen: set[tuple[str, str, str | None]] = set()
+    for verdict in verdicts:
+        failure = failures.get(verdict.label)
+        key = (verdict.label, verdict.metric, verdict.sub_detector)
+        if (
+            failure is None
+            or verdict.severity is Severity.FAILURE
+            or verdict.metric == "returncode"
+            or (metrics is not None and verdict.metric not in metrics)
+            or verdict.value is None
+            or key in seen
+        ):
+            continue
+        seen.add(key)
+        out.append(replace(
+            verdict,
+            severity=Severity.FAILURE,
+            direction=Direction.NONE,
+            reason=failure.reason,
+            onset_run_id=None,
+            onset_run_date=None,
+            last_accepted_run_id=None,
+            last_accepted_run_date=None,
+            first_confirmed_run_id=None,
+            history=(),
+            region_deltas=(),
+        ))
+    return out
 
 
 def render_flag_pills(key: str, *, label: str = "Regressions") -> tuple[bool, bool]:
@@ -138,8 +198,13 @@ def attention_key(v: MetricVerdict) -> tuple:
     """Worst-first ordering shared by the ledger tables and the trend
     previews: confirmed before watch, then the largest |Δ|, unknown magnitude
     last."""
+    severity_order = {
+        Severity.FAILURE: 0,
+        Severity.CONFIRMED: 1,
+        Severity.WATCH: 2,
+    }
     return (
-        v.severity is not Severity.CONFIRMED,
+        severity_order.get(v.severity, 3),
         v.pct_change is None,
         -abs(v.pct_change or 0.0),
     )
@@ -221,7 +286,10 @@ def flag_table(
 
     records = []
     for v in rows:
-        rec = {"": "🔴" if v.severity is Severity.CONFIRMED else "⚠️"}
+        rec = {"": {
+            Severity.FAILURE: "❌",
+            Severity.CONFIRMED: "🔴",
+        }.get(v.severity, "⚠️")}
         if scope:
             rec["Detector"] = v.detector
             rec["Sample"] = pretty_sample(v.sample)

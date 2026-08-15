@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
+from typing import TypeVar
 
 import pandas as pd
 
@@ -13,6 +15,8 @@ import pandas as pd
 # old-schema row and a genuinely missing return code as ``NA`` after concat,
 # even though only the latter is known-bad.
 _RETURNCODE_RECORDED = "_returncode_recorded"
+
+_T = TypeVar("_T")
 
 
 def failed_config_mask(df: pd.DataFrame) -> pd.Series:
@@ -59,7 +63,11 @@ def failed_config_keys(
     results_df: pd.DataFrame | None,
 ) -> set[tuple[str, str]]:
     """Return failed ``(run_id, label)`` pairs from a result-history frame."""
-    if not config_keys(results_df):
+    if (
+        results_df is None
+        or results_df.empty
+        or not {"run_id", "label"} <= set(results_df.columns)
+    ):
         return set()
     failed = results_df.loc[failed_config_mask(results_df), ["run_id", "label"]]
     return {
@@ -75,6 +83,42 @@ def judgeable_config_keys(
     return config_keys(results_df) - failed_config_keys(results_df)
 
 
+def config_rows_for_keys(
+    df: pd.DataFrame | None,
+    keys: set[tuple[str, str]],
+) -> pd.DataFrame | None:
+    """Keep rows whose normalized ``(run_id, label)`` pair is in *keys*.
+
+    The helper is the shared join primitive for result-backed derived data.
+    Keeping it separate from the policy helpers below lets callers retain
+    recorded failed rows for diagnostic plots while still rejecting orphaned
+    event/region files.
+    """
+    if (
+        df is None
+        or df.empty
+        or not {"run_id", "label"} <= set(df.columns)
+    ):
+        return df
+    row_keys = pd.MultiIndex.from_arrays([
+        df["run_id"].astype(str),
+        df["label"].astype(str),
+    ])
+    keep = (
+        row_keys.isin(pd.MultiIndex.from_tuples(sorted(keys)))
+        if keys else [False] * len(df)
+    )
+    return df.loc[keep].copy()
+
+
+def recorded_config_rows(
+    df: pd.DataFrame | None,
+    results_df: pd.DataFrame | None,
+) -> pd.DataFrame | None:
+    """Keep metric rows backed by any result row, including failed configs."""
+    return config_rows_for_keys(df, config_keys(results_df))
+
+
 def judgeable_config_rows(
     df: pd.DataFrame | None,
     results_df: pd.DataFrame | None,
@@ -86,18 +130,31 @@ def judgeable_config_rows(
     This also rejects orphaned partial files whose config never wrote a result
     row, while retaining healthy sibling configs from the same run.
     """
-    if (
-        df is None
-        or df.empty
-        or not {"run_id", "label"} <= set(df.columns)
-    ):
-        return df
-    judgeable = judgeable_config_keys(results_df)
-    keep_rows = [
-        (str(run_id), str(label)) in judgeable
-        for run_id, label in zip(df["run_id"], df["label"], strict=True)
-    ]
-    return df.loc[keep_rows].copy()
+    return config_rows_for_keys(df, judgeable_config_keys(results_df))
+
+
+def judgeable_config_data(
+    data: Mapping[str, _T] | None,
+    results_df: pd.DataFrame | None,
+) -> dict[str, _T] | None:
+    """Filter a current-run ``label -> payload`` mapping to successful configs.
+
+    Current event and region files are dict-backed rather than tabular.  A
+    label is kept only when the current result frame contains at least one
+    non-failed row for it; failed configs and orphaned partial files therefore
+    follow the same policy as their historical DataFrame counterparts.
+    """
+    if data is None:
+        return None
+    if results_df is None or results_df.empty or "label" not in results_df.columns:
+        return {}
+    all_labels = {str(label) for label in results_df["label"].dropna()}
+    failed_labels = {
+        str(label)
+        for label in results_df.loc[failed_config_mask(results_df), "label"].dropna()
+    }
+    labels = all_labels - failed_labels
+    return {label: value for label, value in data.items() if str(label) in labels}
 
 
 def load_results(log_dir: str | Path, labels: list[str] | None = None) -> pd.DataFrame:

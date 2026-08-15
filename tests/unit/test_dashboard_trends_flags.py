@@ -347,7 +347,7 @@ def test_render_shows_flag_pills_and_chart():
     assert len(at.get("plotly_chart")) == 1
 
 
-def test_render_treats_failed_config_measurement_as_a_gap():
+def test_render_shows_failed_value_on_line_with_failure_marker():
     at = _run({}, failed=True)
     specs = [json.loads(chart.proto.spec) for chart in at.get("plotly_chart")]
     curves = [
@@ -356,9 +356,23 @@ def test_render_treats_failed_config_measurement_as_a_gap():
         for trace in spec["data"]
         if trace.get("mode") == "lines+markers"
     ]
+    markers = [
+        trace
+        for spec in specs
+        for trace in spec["data"]
+        if trace.get("mode") == "markers"
+    ]
 
     assert curves
-    assert all(len(_axis(trace, "x")) == 1 for trace in curves)
+    assert all(len(_axis(trace, "x")) == 2 for trace in curves)
+    assert all(not np.isnan(_axis(trace, "y")[-1]) for trace in curves)
+    assert markers
+    assert all(
+        [pd.Timestamp(v) for v in _axis(trace, "x")]
+        == [pd.Timestamp("2026-05-21")]
+        for trace in markers
+    )
+    assert all(_axis(trace, "y") for trace in markers)
 
 
 def test_flags_reach_the_chart_end_to_end():

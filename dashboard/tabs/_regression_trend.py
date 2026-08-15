@@ -25,7 +25,7 @@ from data import (
 from k4bench.analysis.loader import (
     config_keys,
     failed_config_keys,
-    judgeable_config_rows,
+    recorded_config_rows,
 )
 from k4bench.analysis.plots._theme import PALETTE, _TEMPLATE
 from k4bench.regression.engine import Z_THRESHOLD
@@ -234,11 +234,11 @@ def _metric_history(
         df = df[df["label"] == verdict.label]
 
     # A failed config can leave plausible partial run metrics and event data;
-    # an event file can also outlive a missing result row. Discard either exact
-    # config-night without suppressing healthy siblings from the same run, but
-    # preserve the cause so a hidden legacy marker can still be explained.
+    # keep those values for an explicit FAILURE marker, but reject an event
+    # file with no result row at all. Statistical judgment and baselines were
+    # already built from judgeable rows in the report builder.
     orphan_configs = config_keys(df) - config_keys(results_df)
-    df = judgeable_config_rows(df, results_df)
+    df = recorded_config_rows(df, results_df)
 
     if verdict.metric not in df.columns:
         return None
@@ -316,15 +316,23 @@ def render_metric_trend(
 
     series_key = _series_key(verdict)
     fetched = df
-    df, excluded_runs = resolve_reliability_filter(
-        df, reliability,
+    failed_mask = pd.Series([
+        (str(run_id), str(label)) in failed_configs
+        for run_id, label in zip(df["run_id"], df["label"], strict=True)
+    ], index=df.index)
+    failed_df = df.loc[failed_mask]
+    judgeable_df = df.loc[~failed_mask]
+    judgeable_df, excluded_runs = resolve_reliability_filter(
+        judgeable_df, reliability,
         key=f"{widget_namespace}_drill_excl_{series_key}",
         date_col="x_date",
         slot=reliability_slot,
     )
-    if df.empty:
+    if judgeable_df.empty and failed_df.empty:
         return
-    x, y = df["x_date"], df[verdict.metric]
+    df = pd.concat([judgeable_df, failed_df]).sort_values("x_date")
+    x = df["x_date"]
+    y = df[verdict.metric]
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(
@@ -335,21 +343,32 @@ def render_metric_trend(
             line=dict(color=PALETTE[0], width=1.5),
         ),
     ))
-    med, mad = verdict.baseline_median, verdict.baseline_mad or 0.0
-    fig.add_hline(
-        y=med, line_dash="dash", line_color=PALETTE[0], line_width=1,
-        annotation_text="baseline median", annotation_font_size=11,
-    )
-    if mad > 0:
-        fig.add_hrect(
-            y0=med - Z_THRESHOLD * mad, y1=med + Z_THRESHOLD * mad,
-            fillcolor=_BASELINE_FILL, line_width=0,
+    failed_points = failed_df.loc[failed_df[verdict.metric].notna()]
+    if not failed_points.empty:
+        add_severity_markers(
+            fig, failed_points,
+            x_col="x_date", y_col=verdict.metric, name_col="label",
+            severity=Severity.FAILURE.value, hover_y="%{y:.4g}",
         )
+    med, mad = verdict.baseline_median, verdict.baseline_mad or 0.0
+    if med is not None:
+        fig.add_hline(
+            y=med, line_dash="dash", line_color=PALETTE[0], line_width=1,
+            annotation_text="baseline median", annotation_font_size=11,
+        )
+        if mad > 0:
+            fig.add_hrect(
+                y0=med - Z_THRESHOLD * mad, y1=med + Z_THRESHOLD * mad,
+                fillcolor=_BASELINE_FILL, line_width=0,
+            )
 
-    if verdict.severity is Severity.CONFIRMED:
-        onset = _blame.onset_point(df, verdict)
+    verdict_failed = (
+        str(verdict.run_id), str(verdict.label)
+    ) in failed_configs
+    if verdict.severity is Severity.CONFIRMED and not verdict_failed:
+        onset = _blame.onset_point(judgeable_df, verdict)
         if onset is None and verdict.onset_run_id is None:
-            onset = _prev_point(df, verdict)
+            onset = _prev_point(judgeable_df, verdict)
         if onset is not None:
             add_severity_markers(
                 fig,
@@ -361,13 +380,17 @@ def render_metric_trend(
                 severity=Severity.WATCH.value, hover_y="%{y:.4g}",
             )
         if _blame.has_window(verdict):
-            _blame.add_window_band(fig, df, verdict)
+            _blame.add_window_band(fig, judgeable_df, verdict)
     # The verdict's own badge sits on the run that earned it, never at bare
     # (release, value) coordinates: the run may have been dropped by the filter
     # above, and a badge floating over a line that no longer has a point there
     # reads as a flag on whatever the eye lands on next.
-    flagged = _blame.run_point(df, verdict.run_id, verdict.metric)
-    if flagged is not None:
+    flagged = _blame.run_point(
+        failed_df if verdict_failed else judgeable_df,
+        verdict.run_id,
+        verdict.metric,
+    )
+    if flagged is not None and not verdict_failed:
         add_severity_markers(
             fig,
             pd.DataFrame({

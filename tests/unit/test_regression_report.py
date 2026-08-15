@@ -264,9 +264,17 @@ def test_failed_config_metrics_are_not_judged(tmp_path):
     assert group is not None
     assert group.regressions == []
     assert not any(v.severity is Severity.WATCH for v in group.verdicts)
-    assert [(v.metric, v.severity) for v in group.verdicts] == [
+    assert [(v.metric, v.severity) for v in group.failures] == [
         ("returncode", Severity.FAILURE),
     ]
+    recorded = [v for v in group.verdicts if v.metric != "returncode"]
+    assert recorded
+    assert {v.severity for v in recorded} == {Severity.UNKNOWN}
+    wall = next(v for v in recorded if v.metric == "wall_time_s")
+    assert wall.value == pytest.approx(5.0)
+    assert wall.baseline_median == pytest.approx(100.0)
+    assert wall.pct_change == pytest.approx(-0.95)
+    assert "metrics were not judged" in wall.reason
     assert "metrics were not judged" in group.failures[0].reason
 
 
@@ -321,10 +329,14 @@ def test_failed_config_does_not_suppress_healthy_sibling(tmp_path):
     assert [(v.label, v.metric) for v in group.failures] == [
         ("crashed", "returncode"),
     ]
-    assert not any(
-        v.label == "crashed" and v.metric != "returncode"
-        for v in group.verdicts
-    )
+    crashed_values = [
+        v for v in group.verdicts
+        if v.label == "crashed" and v.metric != "returncode"
+    ]
+    assert crashed_values
+    assert {v.severity for v in crashed_values} == {Severity.UNKNOWN}
+    crashed_wall = next(v for v in crashed_values if v.metric == "wall_time_s")
+    assert crashed_wall.baseline_median == pytest.approx(100.0)
 
 
 def test_failed_config_partial_event_metrics_are_not_judged(tmp_path):
@@ -338,7 +350,11 @@ def test_failed_config_partial_event_metrics_are_not_judged(tmp_path):
 
     assert group is not None
     assert group.failures
-    assert not any(v.metric in EVENT_METRICS for v in group.verdicts)
+    event_values = [v for v in group.verdicts if v.metric in EVENT_METRICS]
+    assert event_values
+    assert {v.severity for v in event_values} == {Severity.UNKNOWN}
+    event_time = next(v for v in event_values if v.metric == "mean_time_s")
+    assert event_time.baseline_median == pytest.approx(1.0)
 
 
 def test_event_file_without_result_row_is_failure_only(tmp_path):
