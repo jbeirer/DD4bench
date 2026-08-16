@@ -59,7 +59,6 @@ so every gate errs toward *not* flagging:
    more than slower is "regressed" in the colloquial sense: either can be a
    deliberate change, an optimization, or a bug, and the report leaves that
    call to a human instead of asserting one.
-
 8. **Workload boundaries are not software changes**: a series is only a
    measurement of the software while the *events* being simulated stay the
    same. When the recorded ddsim seed changes — including the night a fixed
@@ -68,8 +67,10 @@ so every gate errs toward *not* flagging:
    report the changeover as a regression, and would do so *reproducibly*:
    the same fixed workload sits at the same offset every night, so the
    two-strike rule (gate 5) confirms it rather than protecting against it.
-   Such a release is left unjudged and its values re-anchor the baseline, the
-   same treatment a confirmed change gets. This costs one release of
+   The changed-over runs are left unjudged and re-anchor the baseline, the
+   same treatment a confirmed change gets. A seed change starts a new segment
+   wherever it lands, mid-release included, since nothing makes benchmark
+   configuration follow the release schedule. This costs one segment of
    sensitivity per workload change, which is the honest price of no longer
    measuring the same thing.
 
@@ -291,9 +292,12 @@ def evaluate_series(
       and the shift that was removed. Carried onto the verdict untouched; the
       engine judges ``value`` and never re-derives one from the other.
 
-    The unit of change is the **release**: nights sharing a ``run_date`` are
-    repeat measurements of one software state, and all engine state
-    transitions happen at release boundaries. Rows whose release date is
+    The unit of change is the **release, as measured on one workload**: nights
+    sharing a ``run_date`` *and* a ``workload`` are repeat measurements of one
+    software state on one event sample, and all engine state transitions happen
+    at those boundaries. A seed change splits a release rather than being
+    absorbed into it — benchmark configs are edited on their own schedule, so a
+    new seed usually lands mid-release. Rows whose release date is
     unknown fall back to their run date and therefore form single-night
     groups, where the walk degrades to a plain night-by-night pass. Within a
     release, every judged night is compared against one baseline snapshot
@@ -380,14 +384,24 @@ def evaluate_series(
             **kw,
         )
 
-    # Group the sorted rows by release: nights sharing a `run_date` are repeat
-    # measurements of one software state and must all be judged against the
-    # same snapshot. A row with no usable date keys on its run_id, so it forms
-    # a single-night group and the walk stays night-by-night for it.
-    def _release_key(row) -> str:
-        return release_key(row.run_date, row.run_id)
+    # Group the sorted rows by release *and workload*: nights sharing both are
+    # repeat measurements of one software state on one event sample, and must
+    # all be judged against the same snapshot. A row with no usable date keys
+    # on its run_id, so it forms a single-night group and the walk stays
+    # night-by-night for it.
+    #
+    # The workload belongs in this key because it does not change on the
+    # release's schedule. A benchmark configuration is edited whenever someone
+    # merges it, so a new seed lands mid-release far more often than not — and
+    # a release keyed on its date alone would fix its workload from its first
+    # night and never look again, judging the changeover night as a software
+    # change (gate 8) precisely in the rollout it exists to protect.
+    def _segment_key(row) -> tuple[str, object]:
+        return release_key(row.run_date, row.run_id), workload_of(row)
 
-    for release_date, group in groupby(df.itertuples(index=False), key=_release_key):
+    for (release_date, _), group in groupby(
+        df.itertuples(index=False), key=_segment_key,
+    ):
         # Per-release state, reset at every boundary.
         # snapshot: (med, mad, reanchoring, n_base)
         snapshot: tuple[float, float, bool, int] | None = None
@@ -435,7 +449,7 @@ def evaluate_series(
                     severity=Severity.UNKNOWN, direction=Direction.NONE,
                     reason=(
                         "simulated event workload changed — the baseline "
-                        "measured different events, so this release is not "
+                        "measured different events, so these runs are not "
                         "judged against it"
                         if workload_changed else
                         f"only {len(baseline)} reliable baseline runs "

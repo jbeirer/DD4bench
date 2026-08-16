@@ -712,6 +712,45 @@ def test_a_history_with_no_workload_column_is_judged_as_before():
     assert _severities(verdicts[-2:]) == [Severity.WATCH, Severity.CONFIRMED]
 
 
+def _shared_release_history(values, workloads, release="2026-02-01", n_shared=3):
+    """A history whose last *n_shared* nights re-measure one Key4hep release."""
+    history = _workload_history(values, workloads)
+    dates = list(history["run_date"])
+    history["run_date"] = pd.to_datetime(
+        [str(d)[:10] for d in dates[:-n_shared]] + [release] * n_shared
+    )
+    return history
+
+
+def test_a_seed_landing_mid_release_still_starts_a_new_segment():
+    # The rollout this actually gets: a benchmark config is edited whenever
+    # someone merges it, so the new seed almost never arrives on a Key4hep
+    # release boundary. A release that fixed its workload from its first night
+    # and never looked again would judge the changeover as a software step —
+    # and confirm it on the next night, since the offset now reproduces.
+    values = _STEADY + [100.1, 120.0, 120.5]
+    workloads = [None] * (len(_STEADY) + 1) + [42, 42]
+    verdicts = evaluate_series(
+        _shared_release_history(values, workloads), series=_TIME,
+    )
+    assert verdicts[-3].severity is Severity.OK       # last unseeded night
+    assert _severities(verdicts[-2:]) == [Severity.UNKNOWN, Severity.UNKNOWN]
+    assert all("workload changed" in v.reason for v in verdicts[-2:])
+
+
+def test_nights_of_one_release_on_one_workload_still_share_a_snapshot():
+    # The split is on the workload alone. Nights that re-measure one release on
+    # one event sample remain one segment, judged against one frozen baseline —
+    # which is what lets a second night of a release confirm the first's step.
+    values = _STEADY + [100.1, 120.0, 120.5]
+    workloads = [42] * len(values)
+    verdicts = evaluate_series(
+        _shared_release_history(values, workloads), series=_TIME,
+    )
+    assert _severities(verdicts[-2:]) == [Severity.WATCH, Severity.CONFIRMED]
+    assert verdicts[-1].baseline_median == verdicts[-2].baseline_median
+
+
 def test_a_workload_change_is_not_judged_against_the_old_baseline():
     # Pinning the seed lands the series at one particular draw and holds it
     # there. Judged against the unseeded history, that offset would look like a
