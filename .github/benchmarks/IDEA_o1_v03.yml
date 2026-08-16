@@ -54,6 +54,11 @@ sweep_detectors:
   - SiWrD
   - Muon-System
 
+# Fixed event seed to minimize random fluctuations in nightly benchmarks
+ddsim_args: >-
+  --random.seed 42
+  --random.enableEventSeed
+
 samples:
   - name: single_e-_10GeV
     n_events: 1200

@@ -15,6 +15,7 @@ import logging
 import re
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from k4bench.analysis.loader import load_event_timing, load_region_timing, load_results
@@ -24,6 +25,44 @@ _log = logging.getLogger(__name__)
 #: Errors raised by loaders on absent or malformed run data — expected for partial
 #: runs and skipped quietly rather than aborting a whole trend build.
 EXPECTED_LOAD_ERRORS = (FileNotFoundError, ValueError, pd.errors.ParserError)
+
+#: Fraction of the *slowest* events dropped by :func:`upper_trimmed_mean`.
+#: One-sided by construction: only the slow tail is removed, so the statistic
+#: is an upper-trimmed mean and not the symmetric trimmed mean the bare word
+#: usually names.
+TRIM_FRACTION = 0.05
+
+#: Events below which trimming is not attempted, since the trim would drop
+#: less than one event and the result would silently *be* the mean while
+#: claiming to be something else.
+MIN_TRIM_EVENTS = 20
+
+
+def upper_trimmed_mean(times: np.ndarray, fraction: float = TRIM_FRACTION) -> float | None:
+    """Mean of *times* with the slowest *fraction* of events dropped.
+
+    A run total is a sum of per-event costs, and where that distribution is
+    heavy-tailed a handful of events carry a disproportionate share of it. That
+    makes the plain mean a statistic about the tail as much as about the
+    software. Dropping the slow tail leaves a statistic about the *typical*
+    event, which moves when the typical event's cost moves and not otherwise.
+
+    Deliberately a complement to the untrimmed mean, never a replacement: the
+    same tail that destabilises the mean is where a tail-confined regression
+    would show up first, so a detector that only watched this would be blind to
+    exactly the most interesting kind of change.
+
+    Returns ``None`` for fewer than :data:`MIN_TRIM_EVENTS` events, where the
+    trim would drop nothing and the value would merely duplicate the mean.
+    """
+    n = len(times)
+    if n < MIN_TRIM_EVENTS:
+        return None
+    n_drop = int(n * fraction)
+    if n_drop <= 0:
+        return None
+    kept = np.sort(times)[: n - n_drop]
+    return float(kept.mean())
 
 
 def _parse_configured_labels(info: dict) -> list[str] | None:
@@ -62,6 +101,7 @@ def parse_run_dir(run_dir: Path) -> dict:
             "github_run_url":   None,
             "commit_sha":       None,
             "n_events":         None,
+            "random_seed":      None,
             "status":           None,
             "failed_configs":   [],
             "configured_labels": None,
@@ -96,6 +136,13 @@ def parse_run_dir(run_dir: Path) -> dict:
                 "github_run_url":   info.get("github_run_url"),
                 "commit_sha":       info.get("commit_sha"),
                 "n_events":         info.get("n_events"),
+                # The ddsim seed this run simulated with, or ``None``. Two
+                # different facts share that ``None``: a run that drew a fresh
+                # seed, and a run written before the seed was recorded at all.
+                # Neither can be shown to have simulated the same events as any
+                # other night, which is the only question downstream asks of
+                # this field, so they are deliberately not distinguished.
+                "random_seed":      info.get("random_seed"),
                 "status":           info.get("status"),
                 "failed_configs":   info.get("failed_configs") or [],
                 # Exact result labels planned by the expanded benchmark config.
@@ -143,7 +190,8 @@ def build_results_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
     """Load per-config results across *run_dirs* into one combined DataFrame.
 
     Each row gets ``run_id``, ``run_date``, ``platform``, ``k4h_release``,
-    ``k4h_release_date``, ``github_run_url`` and ``x_date`` columns.
+    ``k4h_release_date``, ``github_run_url``, ``random_seed`` and ``x_date``
+    columns.
     """
     if not run_dirs:
         return None
@@ -168,6 +216,7 @@ def build_results_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
         df["k4h_release_date"] = meta["k4h_release_date"]
         df["github_run_url"]   = meta["github_run_url"]
         df["xml_path"]         = meta["xml_path"]
+        df["random_seed"]      = meta["random_seed"]
         frames.append(df)
     if not frames:
         return None
@@ -244,8 +293,12 @@ def build_event_timing_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
 
     For each run directory, event timing is loaded for all available configs.
     Per config per run, summary statistics are computed (event 0 excluded):
-        mean_time_s, median_time_s, p95_time_s,
+        mean_time_s, median_time_s, p95_time_s, trimmed_mean_time_s,
         mean_rss_mb, median_rss_mb, p95_rss_mb, max_rss_mb
+
+    ``trimmed_mean_time_s`` (:func:`upper_trimmed_mean`) is a view of the
+    typical event, unmoved by how heavy this run's slow tail happened to be. It
+    is absent (NaN) for a config with too few events to support it.
 
     Returns a long-form DataFrame with those columns plus
         run_id, run_date, k4h_release_date, k4h_release, label
@@ -286,11 +339,15 @@ def build_event_timing_trend(run_dirs: tuple[str, ...]) -> pd.DataFrame | None:
                 t = df_ev["event_time_s"].dropna()
                 nt = len(t)
                 if nt:
+                    times = t.to_numpy(dtype=float)
                     row["n_events"]      = nt
                     row["mean_time_s"]   = float(t.mean())
                     row["median_time_s"] = float(t.median())
                     row["p95_time_s"]    = float(t.quantile(0.95))
                     row["std_time_s"]    = float(t.std()) if nt > 1 else 0.0
+                    trimmed = upper_trimmed_mean(times)
+                    if trimmed is not None:
+                        row["trimmed_mean_time_s"] = trimmed
             if "rss_end_mb" in df_ev.columns:
                 r = df_ev["rss_end_mb"].dropna()
                 nr = len(r)

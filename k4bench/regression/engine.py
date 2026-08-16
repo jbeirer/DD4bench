@@ -59,6 +59,28 @@ so every gate errs toward *not* flagging:
    more than slower is "regressed" in the colloquial sense: either can be a
    deliberate change, an optimization, or a bug, and the report leaves that
    call to a human instead of asserting one.
+8. **Workload boundaries are not software changes**: a series is only a
+   measurement of the software while the *events* being simulated stay the
+   same. When the recorded ddsim seed changes — including the night a fixed
+   seed is introduced over an unseeded history — the new level is a property
+   of the new event sample, so judging it against the old baseline would
+   report the changeover as a regression, and would do so *reproducibly*:
+   the same fixed workload sits at the same offset every night, so the
+   two-strike rule (gate 5) confirms it rather than protecting against it.
+   The changed-over runs are left unjudged and re-anchor the baseline, the
+   same treatment a confirmed change gets. A seed change starts a new segment
+   wherever it lands, mid-release included, since nothing makes benchmark
+   configuration follow the release schedule. This costs one segment of
+   sensitivity per workload change, which is the honest price of no longer
+   measuring the same thing.
+
+Series reaching this engine are not always raw measurements. Common-mode
+decomposition (:mod:`k4bench.regression.common_mode`) is applied by
+:mod:`k4bench.regression.report_builder` before a history gets here: a night
+where every config of a run group moves together is one event, not one per
+config, so the group-wide shift is judged as its own series and divided out of
+each config's. This is a decomposition, not a subtraction — nothing is
+discarded, and a stack-wide regression is still caught.
 
 Known v1 limitations (deliberate):
 
@@ -113,7 +135,7 @@ EFFECT_FLOOR: dict[str, float] = {
 
 #: Families whose :data:`EFFECT_FLOOR` is an absolute difference, not a
 #: fraction of the baseline median.
-_ABSOLUTE_FLOOR_FAMILIES = frozenset({"cpu_efficiency_pp"})
+ABSOLUTE_FLOOR_FAMILIES = frozenset({"cpu_efficiency_pp"})
 
 #: Additional *absolute* change floor per family, ANDed with the relative
 #: floor. Motivated by the retrospective run over the real EOS history
@@ -167,6 +189,57 @@ def _fmt_date(value) -> str:
     return "" if pd.isna(ts) else ts.strftime("%Y-%m-%d")
 
 
+#: Workload of a run that records no ddsim seed — it drew a fresh one, or it
+#: predates the seed being recorded. The two are not distinguished: neither
+#: pins the event sample, so both describe the same *regime*, which is the only
+#: thing gate 8 compares.
+WORKLOAD_UNKNOWN = None
+
+#: "No night of this release supplied a workload" — distinct from
+#: :data:`WORKLOAD_UNKNOWN`, which is a workload a night did supply.
+_UNSET = object()
+
+
+def workload_of(row) -> object:
+    """The Monte-Carlo workload a run simulated, from its optional ``workload``
+    column — the ddsim seed, or :data:`WORKLOAD_UNKNOWN` when there is none.
+
+    Compared by equality, so a history of unseeded nights is one workload and
+    not a new one every night. Those nights genuinely simulate different events,
+    but they scatter *randomly*, which is what the baseline spread and the
+    two-strike gate already model. What they cannot model is a workload that
+    changes and then stays changed — an unseeded history gaining a fixed seed
+    lands at one offset and reproduces it every night — and that is exactly
+    what a change in this value marks.
+    """
+    value = getattr(row, "workload", None)
+    if value is None:
+        return WORKLOAD_UNKNOWN
+    try:
+        if isinstance(value, float) and math.isnan(value):
+            return WORKLOAD_UNKNOWN
+        return int(value)
+    except (TypeError, ValueError):
+        return WORKLOAD_UNKNOWN
+
+
+def _optional(row, name: str) -> float | None:
+    """A finite float from an optional history column, else ``None``.
+
+    The columns read this way (``raw_value``, ``common_mode_shift``) are
+    annotations a caller may or may not have computed, so their absence is
+    normal and must degrade to the plain behaviour rather than raise.
+    """
+    value = getattr(row, name, None)
+    if value is None:
+        return None
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
 def _identity(row) -> tuple[str, str]:
     """``(run_id, run_date)`` of *row* — the run directory and the release it
     measured. Kept as one value so the pair can never drift apart."""
@@ -208,9 +281,23 @@ def evaluate_series(
       excluding it would starve baselines on histories without machine info —
       the same policy as the dashboard's reliability filter.
 
-    The unit of change is the **release**: nights sharing a ``run_date`` are
-    repeat measurements of one software state, and all engine state
-    transitions happen at release boundaries. Rows whose release date is
+    Three further columns are optional annotations, each defaulting to absent:
+
+    - ``workload`` — the ddsim seed this run simulated (see
+      :func:`workload_of`). A release whose workload differs from the one the
+      baseline was built under is left unjudged and re-anchors the baseline
+      (gate 8), because its numbers measure a different event sample.
+    - ``raw_value`` / ``common_mode_shift`` — where ``value`` is a residual
+      after a group-wide shift was divided out, the measurement it came from
+      and the shift that was removed. Carried onto the verdict untouched; the
+      engine judges ``value`` and never re-derives one from the other.
+
+    The unit of change is the **release, as measured on one workload**: nights
+    sharing a ``run_date`` *and* a ``workload`` are repeat measurements of one
+    software state on one event sample, and all engine state transitions happen
+    at those boundaries. A seed change splits a release rather than being
+    absorbed into it — benchmark configs are edited on their own schedule, so a
+    new seed usually lands mid-release. Rows whose release date is
     unknown fall back to their run date and therefore form single-night
     groups, where the walk degrades to a plain night-by-night pass. Within a
     release, every judged night is compared against one baseline snapshot
@@ -266,15 +353,20 @@ def evaluate_series(
     """
     floor = EFFECT_FLOOR[series.metric_family]
     abs_delta_floor = ABS_DELTA_FLOOR.get(series.metric_family, 0.0)
-    absolute_floor = series.metric_family in _ABSOLUTE_FLOOR_FAMILIES
+    absolute_floor = series.metric_family in ABSOLUTE_FLOOR_FAMILIES
 
     df = history.sort_values(["run_date", "run_id"], kind="stable")
     baseline: deque[float] = deque(maxlen=BASELINE_WINDOW_RUNS)
+    # The workload every run currently in `baseline` simulated. A release
+    # arriving on a different one is not comparable to it (gate 8).
+    baseline_workload: object = None
+    baseline_seeded = False   # whether `baseline_workload` has been established
     pending: Direction | None = None
     pending_run: tuple[str, str] | None = None   # the WATCH night's identity (the onset)
     last_accepted: tuple[str, str] | None = None  # newest night seen at the accepted level
     anchor_date: str | None = None      # date of the last confirmed change-point
     anchor_mad: float = 0.0             # pre-change spread, proxy while re-anchoring
+    anchor_reason = "confirmed change"  # what the current re-anchor is recovering from
     verdicts: list[MetricVerdict] = []
 
     def _verdict(row, **kw) -> MetricVerdict:
@@ -292,17 +384,30 @@ def evaluate_series(
             **kw,
         )
 
-    # Group the sorted rows by release: nights sharing a `run_date` are repeat
-    # measurements of one software state and must all be judged against the
-    # same snapshot. A row with no usable date keys on its run_id, so it forms
-    # a single-night group and the walk stays night-by-night for it.
-    def _release_key(row) -> str:
-        return release_key(row.run_date, row.run_id)
+    # Group the sorted rows by release *and workload*: nights sharing both are
+    # repeat measurements of one software state on one event sample, and must
+    # all be judged against the same snapshot. A row with no usable date keys
+    # on its run_id, so it forms a single-night group and the walk stays
+    # night-by-night for it.
+    #
+    # The workload belongs in this key because it does not change on the
+    # release's schedule. A benchmark configuration is edited whenever someone
+    # merges it, so a new seed lands mid-release far more often than not — and
+    # a release keyed on its date alone would fix its workload from its first
+    # night and never look again, judging the changeover night as a software
+    # change (gate 8) precisely in the rollout it exists to protect.
+    def _segment_key(row) -> tuple[str, object]:
+        return release_key(row.run_date, row.run_id), workload_of(row)
 
-    for release_date, group in groupby(df.itertuples(index=False), key=_release_key):
+    for (release_date, _), group in groupby(
+        df.itertuples(index=False), key=_segment_key,
+    ):
         # Per-release state, reset at every boundary.
-        snapshot: tuple[float, float, bool, int] | None = None  # (med, mad, reanchoring, n_base)
+        # snapshot: (med, mad, reanchoring, n_base)
+        snapshot: tuple[float, float, bool, int] | None = None
         warming: bool | None = None       # decided once, at the first reliable night
+        workload_changed = False          # this release simulates different events
+        release_workload: object = _UNSET  # its workload, once a night supplies one
         release_windows: dict[Direction, tuple] = {}  # direction -> (window, first-confirmed night)
         release_values: list[float] = []  # reliable judged values, night order
         release_last_reliable: tuple[str, str] | None = None
@@ -314,9 +419,22 @@ def evaluate_series(
             if x is None or (isinstance(x, float) and math.isnan(x)):
                 continue
             x = float(x)
+            annotations = dict(
+                raw_value=_optional(row, "raw_value"),
+                common_mode_shift=_optional(row, "common_mode_shift"),
+            )
 
             if warming is None:
-                warming = len(baseline) < MIN_BASELINE_RUNS and anchor_date is None
+                # Decided once per release, at its first reliable night, from
+                # state that predates the release entirely.
+                release_workload = workload_of(row)
+                workload_changed = (
+                    baseline_seeded and release_workload != baseline_workload
+                )
+                warming = (
+                    workload_changed
+                    or (len(baseline) < MIN_BASELINE_RUNS and anchor_date is None)
+                )
             if warming:
                 # Warm-up covers the whole release: judging a later night of
                 # this release against a window already containing its earlier
@@ -329,8 +447,15 @@ def evaluate_series(
                     value=x, baseline_median=None, baseline_mad=None,
                     pct_change=None, z_score=None,
                     severity=Severity.UNKNOWN, direction=Direction.NONE,
-                    reason=f"only {len(baseline)} reliable baseline runs "
-                           f"(<{MIN_BASELINE_RUNS}) — not judged",
+                    reason=(
+                        "simulated event workload changed — the baseline "
+                        "measured different events, so these runs are not "
+                        "judged against it"
+                        if workload_changed else
+                        f"only {len(baseline)} reliable baseline runs "
+                        f"(<{MIN_BASELINE_RUNS}) — not judged"
+                    ),
+                    **annotations,
                 ))
                 release_values.append(x)
                 continue
@@ -402,7 +527,7 @@ def evaluate_series(
                 last_accepted = _identity(row)
                 reason = "within baseline variation"
                 if reanchoring:
-                    reason += (f" (re-anchoring after confirmed change on {anchor_date}, "
+                    reason += (f" (re-anchoring after {anchor_reason} on {anchor_date}, "
                                f"{n_base}/{MIN_BASELINE_RUNS} runs at the new level)")
                 if release_windows:
                     _, retained_first = next(iter(release_windows.values()))
@@ -488,30 +613,61 @@ def evaluate_series(
                 first_confirmed_run_id=(
                     first_confirmed[0] if first_confirmed is not None else None
                 ),
+                **annotations,
             ))
             release_values.append(x)
             release_last_reliable = _identity(row)
 
+        # The workload this release ran becomes the one the baseline is held
+        # under, whether or not the release was judged — including the very
+        # first release, which establishes it without counting as a change.
+        if release_workload is not _UNSET:
+            baseline_workload, baseline_seeded = release_workload, True
+
         # Release boundary: the only place baseline state moves for judged
         # nights.
-        if release_windows:
-            # Change-point: the confirmed level is the new normal. Re-anchor
-            # the window on all of the release's judged values so the
-            # pre-change median stops being the yardstick from the next
-            # release on; keep the pre-change spread as the interim noise
-            # estimate.
-            _, snap_mad, _, _ = snapshot
+        if release_windows or workload_changed:
+            # A change-point: the new level is the normal one from here on.
+            # Re-anchor the window on the release's values so the old median
+            # stops being the yardstick, and keep the old spread as the interim
+            # noise estimate. Reached two ways — a *confirmed* step, where the
+            # level moved and the report has said so, and a *workload* change,
+            # where the level may have moved for a reason no software caused
+            # and this release was never judged at all (gate 8).
+            #
+            # The re-anchor only shortens the blind period if there is a
+            # trustworthy spread to carry across it. A confirmation always has
+            # one (it was judged against a frozen snapshot). A workload change
+            # during warm-up does not, and inheriting a MAD of zero would make
+            # every z infinite on a one-night baseline — so that case simply
+            # warms up again, which is what a series with no usable history was
+            # doing anyway.
+            if snapshot is not None:
+                anchor_mad = snapshot[1]
+                inherited = True
+            elif len(baseline) >= MIN_BASELINE_RUNS:
+                # Unjudged release: no snapshot was ever frozen, so take the
+                # spread straight off the baseline being retired.
+                anchor_mad = robust_baseline(np.asarray(baseline))[1]
+                inherited = True
+            else:
+                inherited = False
             baseline.clear()
             baseline.extend(release_values)
-            anchor_date = release_date
-            anchor_mad = snap_mad
+            anchor_date = release_date if inherited else None
+            anchor_reason = (
+                "workload change" if workload_changed else "confirmed change"
+            )
             pending = pending_run = None
             # Re-anchoring redefines the accepted level as the post-change
             # one, and the release's last reliable night is the newest sitting
             # at it. Carrying the pre-change night forward would blame an
             # already-accepted change; clearing it would leave a second step
             # that confirms before any OK night — the case the re-anchor
-            # exists to keep catching — with no lower bound at all.
+            # exists to keep catching — with no lower bound at all. After a
+            # workload change no night was judged, so this is None and the next
+            # step's window is left open-ended rather than reaching back across
+            # the boundary to a night that measured different events.
             last_accepted = release_last_reliable
         else:
             # No confirmation: the release's judged values age into the

@@ -33,7 +33,14 @@ from k4bench.analysis.trend import (
     build_results_trend,
     parse_run_dir,
 )
+from k4bench.regression.common_mode import (
+    COMMON_MODE_LABEL,
+    MIN_COMMON_MODE_CONFIGS,
+    common_mode_shifts,
+    shift_history,
+)
 from k4bench.regression.engine import (
+    ABSOLUTE_FLOOR_FAMILIES,
     BASELINE_WINDOW_RUNS,
     evaluate_series,
     release_key,
@@ -93,7 +100,6 @@ MISSING_RUN_GRACE_DAYS = 7
 #: the sign flipped.
 RUN_METRICS: dict[str, str] = {
     "wall_time_s":     "time",
-    "user_cpu_s":      "time",
     "peak_rss_mb":     "memory",
     "cpu_efficiency":  "cpu_efficiency_pp",
 }
@@ -102,27 +108,95 @@ RUN_METRICS: dict[str, str] = {
 #: ``p95_rss_mb`` and ``max_rss_mb`` are dropped: noisy tail order-statistics
 #: over a few hundred events that add detection overhead without much signal
 #: beyond ``mean``/``median`` (time) and run-level ``peak_rss_mb`` (memory).
+#:
+#: ``trimmed_mean_time_s`` is the mean of the events left after the slowest 5%
+#: are dropped (:func:`k4bench.analysis.trend.upper_trimmed_mean`) — a view of
+#: the typical event, judged *alongside* the untrimmed mean rather than
+#: replacing it, because the tail it drops is where a tail-confined regression
+#: would appear first.
 EVENT_METRICS: dict[str, str] = {
-    "mean_time_s":   "time",
-    "median_time_s": "time",
-    "mean_rss_mb":   "memory",
+    "mean_time_s":         "time",
+    "median_time_s":       "time",
+    "trimmed_mean_time_s": "time",
+    "mean_rss_mb":         "memory",
 }
+
+#: Metrics recorded in the report but never judged. ``user_cpu_s`` tracks
+#: ``wall_time_s`` almost exactly — CPU efficiency on these runs is close
+#: enough to 1 that the two flag together on the same events — so judging both
+#: is one test counted twice. It stays in the report because a night where the
+#: two *stop* agreeing is worth being able to look up.
+REPORTED_ONLY_METRICS: dict[str, str] = {
+    "user_cpu_s": "time",
+}
+
+#: Every run-level metric whose value is recorded, judged or not.
+RUN_VALUE_METRICS: dict[str, str] = {**RUN_METRICS, **REPORTED_ONLY_METRICS}
+
 
 def _reliable_column(run_ids: pd.Series, reliability: dict[str, bool | None]) -> list:
     """Per-row tri-state reliability, kept as Python objects (no NaN coercion)."""
     return [reliability.get(rid) for rid in run_ids]
 
 
+def workload_map(results_df: pd.DataFrame | None) -> dict[str, int]:
+    """``{run_id: random_seed}`` for every run that recorded one.
+
+    A run absent from this map has an unknown workload (see
+    :data:`~k4bench.regression.engine.WORKLOAD_UNKNOWN`) — it drew a fresh
+    event mix, or predates the seed being recorded. The engine re-anchors its
+    baseline when this value changes, so the map only has to say what was
+    recorded, never why.
+    """
+    if (
+        results_df is None or results_df.empty
+        or "random_seed" not in results_df.columns
+    ):
+        return {}
+    sub = results_df[["run_id", "random_seed"]].dropna().drop_duplicates("run_id")
+    out: dict[str, int] = {}
+    for row in sub.itertuples(index=False):
+        try:
+            out[str(row.run_id)] = int(row.random_seed)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 def _series_history(
-    df: pd.DataFrame, mask: pd.Series, metric: str, reliability: dict[str, bool | None]
+    df: pd.DataFrame,
+    mask: pd.Series,
+    metric: str,
+    reliability: dict[str, bool | None],
+    *,
+    shifts: dict[str, float] | None = None,
+    workloads: dict[str, int] | None = None,
 ) -> pd.DataFrame:
+    """One config's metric history, annotated with everything the engine needs
+    to judge it in context (see :func:`~k4bench.regression.engine.evaluate_series`).
+
+    With *shifts*, ``value`` becomes the residual after the run's group-wide
+    common mode is divided out, and the measurement is preserved as
+    ``raw_value``. Without them the two are the same number and only ``value``
+    is written.
+    """
     sub = df.loc[mask, ["run_id", "x_date", metric]]
-    return pd.DataFrame({
-        "run_id":   sub["run_id"].to_numpy(),
+    run_ids = sub["run_id"].astype(str)
+    values = sub[metric]
+    history = pd.DataFrame({
+        "run_id":   run_ids.to_numpy(),
         "run_date": sub["x_date"].to_numpy(),
-        "value":    sub[metric].to_numpy(),
+        "value":    values.to_numpy(),
         "reliable": _reliable_column(sub["run_id"], reliability),
     })
+    if workloads:
+        history["workload"] = [workloads.get(rid) for rid in run_ids]
+    if shifts:
+        factors = run_ids.map(lambda rid: shifts.get(rid, 1.0)).astype(float)
+        history["raw_value"] = values.to_numpy()
+        history["common_mode_shift"] = (factors - 1.0).to_numpy()
+        history["value"] = (values.to_numpy() / factors.to_numpy())
+    return history
 
 
 def unjudged_value_verdicts(
@@ -137,13 +211,16 @@ def unjudged_value_verdicts(
 ) -> list[MetricVerdict]:
     """Raw metric values for *tonight*'s run as unjudged ``UNKNOWN`` verdicts.
 
-    The engine skips unreliable runs (they must not pollute baselines or flags),
-    so their metrics get no verdict and their values would never reach the
-    report the dashboard's Overview tab reads — leaving that tab unable to plot
-    them even with "Exclude unreliable runs" off. This records tonight's raw
-    value for every ``(label, metric)`` not *already* judged, marked ``UNKNOWN``
-    (never a flag), so the value is preserved for display. A normally-judged
-    run is already covered.
+    Two different things end up here. The engine skips unreliable runs (they
+    must not pollute baselines or flags), so their metrics get no verdict and
+    their values would never reach the report the dashboard's Overview tab
+    reads — leaving that tab unable to plot them even with "Exclude unreliable
+    runs" off. And :data:`REPORTED_ONLY_METRICS` are never judged on any night
+    by design, but are still worth being able to look up.
+
+    Either way this records tonight's raw value for every ``(label, metric)``
+    not *already* judged, marked ``UNKNOWN`` (never a flag), so the value is
+    preserved for display. A normally-judged run is already covered.
     """
     out: list[MetricVerdict] = []
 
@@ -166,11 +243,16 @@ def unjudged_value_verdicts(
                     value=float(val), baseline_median=None, baseline_mad=None,
                     pct_change=None, z_score=None,
                     severity=Severity.UNKNOWN, direction=Direction.NONE,
-                    reason="unreliable host — value recorded but not judged",
+                    reason=(
+                        "recorded but not judged — reports the same measurement "
+                        "as an already-judged metric"
+                        if metric in REPORTED_ONLY_METRICS else
+                        "unreliable host — value recorded but not judged"
+                    ),
                 ))
 
     results = with_cpu_efficiency(results_df) if results_df is not None else None
-    _emit(results, RUN_METRICS)
+    _emit(results, RUN_VALUE_METRICS)
     _emit(event_df, EVENT_METRICS)
     return out
 
@@ -232,33 +314,67 @@ def evaluate_group_series(
     machine behind each run, and only reaches the history tails attached to
     confirmed verdicts; it never enters the judgement itself. Omitted, the tails
     simply carry no host.
+
+    Where a run group has enough configurations to support it, each metric is
+    first decomposed into a group-wide common mode and per-config residuals
+    (:mod:`k4bench.regression.common_mode`). Both halves are walked: the shift
+    as one group-level series under
+    :data:`~k4bench.regression.common_mode.COMMON_MODE_LABEL`, and each config
+    on what is left after it. A night where the whole group moved together
+    therefore produces one finding instead of one per config, without the move
+    going unjudged.
     """
     out: dict[SeriesId, list[MetricVerdict]] = {}
+    workloads = workload_map(results_df)
 
-    def _run(df, mask, series):
-        history = _series_history(df, mask, series.metric, reliability)
-        verdicts = evaluate_series(history, series=series)
-        if verdicts:
-            out[series] = _with_history(history, verdicts, hosts or {})
+    def _walk(df: pd.DataFrame, metrics: dict[str, str]) -> None:
+        labels = sorted(df["label"].dropna().unique())
+        run_dates = dict(zip(df["run_id"].astype(str), df["x_date"], strict=True))
+        # Too few configurations for a cross-config median to mean anything:
+        # judge every series exactly as measured.
+        decomposable = len(labels) >= MIN_COMMON_MODE_CONFIGS
+
+        for metric, family in metrics.items():
+            if metric not in df.columns:
+                continue
+            # A ratio in percentage points has no multiplicative common mode to
+            # divide out, so it is judged as measured whatever the group size.
+            shifts = (
+                common_mode_shifts(df, metric)
+                if decomposable and family not in ABSOLUTE_FLOOR_FAMILIES
+                else {}
+            )
+            for label in labels:
+                name = str(label)
+                sid = SeriesId(detector, platform, sample, name, family, metric)
+                history = _series_history(
+                    df, df["label"] == label, metric, reliability,
+                    shifts=shifts, workloads=workloads,
+                )
+                verdicts = evaluate_series(history, series=sid)
+                if verdicts:
+                    out[sid] = _with_history(history, verdicts, hosts or {})
+
+            if not shifts:
+                continue
+            # The common mode itself, judged as its own series.
+            group_sid = SeriesId(
+                detector, platform, sample, COMMON_MODE_LABEL, family, metric,
+            )
+            group_history = shift_history(
+                shifts, run_dates, reliability, workloads=workloads,
+            )
+            group_verdicts = evaluate_series(group_history, series=group_sid)
+            if group_verdicts:
+                out[group_sid] = _with_history(
+                    group_history, group_verdicts, hosts or {},
+                )
 
     if results_df is not None and not results_df.empty:
-        df = with_cpu_efficiency(results_df)
-        for label in sorted(df["label"].dropna().unique()):
-            mask = df["label"] == label
-            for metric, family in RUN_METRICS.items():
-                if metric not in df.columns:
-                    continue
-                sid = SeriesId(detector, platform, sample, str(label), family, metric)
-                _run(df, mask, sid)
+        _walk(with_cpu_efficiency(results_df), RUN_METRICS)
 
     if event_df is not None and not event_df.empty:
-        for label in sorted(event_df["label"].dropna().unique()):
-            mask = event_df["label"] == label
-            for metric, family in EVENT_METRICS.items():
-                if metric not in event_df.columns:
-                    continue
-                sid = SeriesId(detector, platform, sample, str(label), family, metric)
-                _run(event_df, mask, sid)
+        _walk(event_df, EVENT_METRICS)
 
     return out
 
@@ -303,6 +419,59 @@ def _failed_config_verdicts(
             reason=reason,
         ))
     return verdicts
+
+
+def _random_seed_note(results_df: pd.DataFrame | None, tonight: str) -> str | None:
+    """A note for the report when tonight simulated a different Monte-Carlo
+    workload than the night before it, or none at all.
+
+    Timing is a function of which events were simulated, so a changed seed can
+    shift every series of the run group at once. The engine already acts on
+    this — such a release is not judged against the old baseline and re-anchors
+    it instead (:func:`k4bench.regression.engine.evaluate_series`, gate 8) —
+    and every verdict of the re-anchoring period says so in its own reason.
+    This note is the human headline for the one night the change lands on, so a
+    reader does not spend the evening hunting for a code change that explains a
+    group-wide move.
+    """
+    if results_df is None or results_df.empty or "random_seed" not in results_df.columns:
+        return None
+    seen = (
+        results_df[["run_id", "random_seed"]]
+        .drop_duplicates("run_id")
+        .sort_values("run_id")
+    )
+    if len(seen) < 2 or tonight not in set(seen["run_id"]):
+        return None
+
+    def _seed(value):
+        return None if pd.isna(value) else int(value)
+
+    seeds = dict(zip(seen["run_id"].astype(str), seen["random_seed"], strict=True))
+    previous = [rid for rid in seen["run_id"].astype(str) if rid < tonight]
+    if not previous:
+        return None
+    now, before = _seed(seeds[tonight]), _seed(seeds[previous[-1]])
+    if now == before:
+        return None
+    shift = (
+        "this changes the simulated event workload, so this release is judged "
+        "against a baseline re-anchored on it rather than on nights that "
+        "simulated different events"
+    )
+    # "No recorded seed", never "an unfixed seed": a run predating seed
+    # recording and a run that deliberately drew a fresh one both land here,
+    # and the note must not assert which of the two it was.
+    if now is None:
+        return (
+            f"tonight recorded no ddsim seed, whereas {previous[-1]} used "
+            f"seed {before} — {shift}"
+        )
+    return (
+        f"tonight used ddsim seed {now}, whereas {previous[-1]} recorded "
+        + (f"seed {before}" if before is not None else "none")
+        + f" — {shift}"
+    )
 
 
 def _missing_config_failures(
@@ -526,6 +695,9 @@ def _group_report_from_frames(
             "metrics were not judged (see the Machine Info tab)"
         )
 
+    if seed_note := _random_seed_note(results_df, tonight):
+        group.notes.append(seed_note)
+
     group.verdicts.extend(config_failures)
     group.job_failures.extend(
         _missing_config_failures(results_df, tonight, configured_labels)
@@ -558,6 +730,7 @@ def _with_region_deltas(
         for v in group.verdicts
         if v.severity is Severity.CONFIRMED
         and v.metric_family == "time"
+        and v.label != COMMON_MODE_LABEL  # no config, so no region files
         and v.last_accepted_run_date and v.onset_run_date
     }
     if not windows:

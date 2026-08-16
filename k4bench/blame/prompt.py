@@ -34,6 +34,7 @@ from k4bench.blame.history import (
     HistoricalBoundary,
     HistoricalPR,
 )
+from k4bench.regression.common_mode import pretty_config
 from k4bench.labels import describe_platform, pretty_sample
 from k4bench.regression.models import RegionDelta
 
@@ -163,7 +164,10 @@ def pct_phrase(fraction: float | None, *, signed: bool = True) -> str:
 
 
 def measurement_phrase(
-    value: float | None, baseline_median: float | None, z_score: float | None
+    value: float | None,
+    baseline_median: float | None,
+    z_score: float | None,
+    common_mode_shift: float | None = None,
 ) -> str:
     """The size of a step in absolute terms, next to how far outside the noise it
     is — ``"0.412 vs 0.348 baseline, z=8.1"``.
@@ -171,6 +175,13 @@ def measurement_phrase(
     A percentage alone under-reads: +18% on a 0.4 s job and +18% on a 400 s job
     invite different mechanisms, and a marginal step and an unmistakable one
     deserve different confidence. Anything missing is simply left out.
+
+    *common_mode_shift* names what was taken out before this number was judged.
+    Where a run group moved as a whole, that shared move is reported once as its
+    own finding and divided out of every config, so this row is the config's
+    movement *beyond* the group's. A model shown the residual with no sign that
+    anything was removed would read it as the whole measurement and look for a
+    cause of the wrong size.
     """
     bits = []
     if value is not None and baseline_median is not None:
@@ -179,6 +190,11 @@ def measurement_phrase(
         bits.append(f"{value:.4g}")
     if z_score is not None and math.isfinite(z_score):
         bits.append(f"z={z_score:.1f}")
+    if common_mode_shift is not None and abs(common_mode_shift) >= 0.005:
+        bits.append(
+            f"beyond a {common_mode_shift:+.1%} move shared by the whole run "
+            "group, already removed"
+        )
     return ", ".join(bits)
 
 
@@ -473,7 +489,7 @@ def outcome_lines(
     for outcome in outcomes[:limit]:
         where = (
             f"{outcome.detector} · {outcome.sample} · {outcome.platform} · "
-            f"{outcome.label}"
+            f"{pretty_config(outcome.label)}"
         )
         # An unjudged metric is one this configuration measured but had too
         # little settled history to read — it is neither agreement nor

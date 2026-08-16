@@ -185,6 +185,17 @@ class MetricVerdict:
     equals ``run_id`` on that first night; on a later night of the same
     release re-confirming the change it points back — letting the report and
     email render a repeat as a repeat rather than fresh news.
+
+    ``value`` is the number that was **judged**, and it is not always the
+    number that was measured. Where a run group's common mode was decomposed
+    away (see :mod:`k4bench.regression.common_mode`), ``value`` is the residual
+    after the night's group-wide shift was divided out, ``raw_value`` is the
+    measurement itself, and ``common_mode_shift`` is the relative shift that
+    was removed. Every other statistic here — ``baseline_median``,
+    ``baseline_mad``, ``pct_change``, ``z_score`` — describes the same residual
+    series as ``value``, so the whole verdict is on one basis and a reader
+    never has to guess which. All three are ``None`` on a series that was
+    judged as measured.
     """
 
     detector: str
@@ -209,6 +220,11 @@ class MetricVerdict:
     last_accepted_run_id: str | None = None
     last_accepted_run_date: str | None = None
     first_confirmed_run_id: str | None = None
+    #: The measurement behind ``value`` before this night's group-wide common
+    #: mode was divided out, and the relative shift that was removed. ``None``
+    #: on a series judged exactly as measured.
+    raw_value: float | None = None
+    common_mode_shift: float | None = None
     #: A bounded, release-level tail of this metric's own history, oldest first
     #: and ending at this verdict's release (see
     #: :mod:`k4bench.regression.history`). Carried on ``CONFIRMED`` verdicts
