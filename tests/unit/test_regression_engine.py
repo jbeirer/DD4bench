@@ -409,6 +409,74 @@ def test_downward_carry_over_window_mirrors_upward():
     assert _window(confirmed) == ("2026-02-10", "2026-02-11")
 
 
+def test_a_watch_the_other_way_bounds_a_later_step():
+    # A one-night swing upward says nothing about a *downward* step except
+    # that it had not entered yet: 120.0 is further from the post-step level
+    # than any quiet night is. So it bounds the window, and the search range
+    # stays (that night, onset] instead of reaching back past it.
+    rows = _steady_rows() + [
+        ("2026-02-11", "2026-02-11", 120.0),   # release B: a swing the other way
+        ("2026-02-12", "2026-02-12", 70.0),    # release C: first strike, DOWN
+        ("2026-02-13", "2026-02-13", 70.5),    # release D confirms
+    ]
+    verdicts = evaluate_series(_release_rows(rows), series=_TIME)
+    assert _severities(verdicts[-3:]) == [
+        Severity.WATCH, Severity.WATCH, Severity.CONFIRMED,
+    ]
+    confirmed = verdicts[-1]
+    assert confirmed.direction is Direction.DOWN
+    assert _window(confirmed) == ("2026-02-11", "2026-02-12")
+
+
+def test_a_watch_the_other_way_bounds_a_later_step_mirrored():
+    # The mirror image, since direction is a mechanical sign and neither way
+    # may be privileged.
+    rows = _steady_rows() + [
+        ("2026-02-11", "2026-02-11", 80.0),    # release B: a swing the other way
+        ("2026-02-12", "2026-02-12", 130.0),   # release C: first strike, UP
+        ("2026-02-13", "2026-02-13", 129.5),   # release D confirms
+    ]
+    verdicts = evaluate_series(_release_rows(rows), series=_TIME)
+    confirmed = verdicts[-1]
+    assert confirmed.severity is Severity.CONFIRMED
+    assert confirmed.direction is Direction.UP
+    assert _window(confirmed) == ("2026-02-11", "2026-02-12")
+
+
+def test_a_watch_the_same_way_never_bounds_the_step_it_belongs_to():
+    # The other half of the rule: a night that tripped the way the step
+    # eventually goes is the step being measured, not evidence against it.
+    # It must never become the base, or the window would exclude the very
+    # release the change entered under and the search would find nothing.
+    rows = _steady_rows() + [
+        ("2026-02-11", "2026-02-11", 70.0),    # release B: first strike, DOWN
+        ("2026-02-12", "2026-02-12", 70.5),    # release C confirms
+    ]
+    verdicts = evaluate_series(_release_rows(rows), series=_TIME)
+    confirmed = verdicts[-1]
+    assert confirmed.severity is Severity.CONFIRMED
+    assert _window(confirmed) == ("2026-02-10", "2026-02-11")
+
+
+def test_sibling_metrics_stepping_together_agree_on_one_window():
+    # Everything downstream — the blame sidecar's grouping, the dashboard's
+    # window picker, the email's ranking cards — keys on the window, so two
+    # metrics of one run group that stepped on the same release must produce
+    # the same one. They diverge only if one of them is allowed to widen its
+    # base over its own unrelated noise, which is what the per-direction rule
+    # prevents.
+    step = [("2026-02-12", "2026-02-12", 70.0), ("2026-02-13", "2026-02-13", 70.5)]
+    quiet = evaluate_series(
+        _release_rows(_steady_rows() + [("2026-02-11", "2026-02-11", 100.1)] + step),
+        series=_TIME,
+    )
+    noisy = evaluate_series(
+        _release_rows(_steady_rows() + [("2026-02-11", "2026-02-11", 120.0)] + step),
+        series=_TIME,
+    )
+    assert _window(quiet[-1]) == _window(noisy[-1]) == ("2026-02-11", "2026-02-12")
+
+
 def test_once_per_release_cadence_still_confirms_a_persistent_step():
     # The common cadence: every release benchmarked exactly once. The carried
     # strike is what makes confirmation possible at all here — clearing
