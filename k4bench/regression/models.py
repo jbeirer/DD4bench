@@ -173,11 +173,12 @@ class MetricVerdict:
     entered in, and are ``None`` on every other severity. Confirmation is a
     two-strike rule, so the night a change is *reported* is one reliable night
     after the night it first *appeared*: ``onset_*`` identifies that first
-    night, and ``last_accepted_*`` the newest night before it observed at the
-    then-accepted level. The change therefore landed in
-    ``(last_accepted, onset]`` — the interval to search for a cause.
-    ``last_accepted_*`` is ``None`` when no such night exists (a change
-    confirmed before the series ever settled), which makes the window
+    night, and ``last_accepted_*`` the newest night before it whose value ruled
+    that change out — one within baseline variation, or one that tripped the
+    opposite way and so sat even further from the changed level. The change
+    therefore landed in ``(last_accepted, onset]`` — the interval to search for
+    a cause. ``last_accepted_*`` is ``None`` when no such night exists (a
+    change confirmed before the series ever settled), which makes the window
     open-ended rather than empty.
 
     ``first_confirmed_run_id`` names the night a ``CONFIRMED`` change was

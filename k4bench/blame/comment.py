@@ -636,14 +636,21 @@ def _collapse_nested_windows(plans: list[CommentPlan]) -> list[CommentPlan]:
     """One comment per ``(pull request, onset)``, bounded as tightly as the
     night can bound it.
 
-    A window's *base* is inferred per metric series — the last release that
-    series was settled on — so one step is reported against several bases
-    whenever a series happened to wobble the night before the onset
-    (:func:`~k4bench.blame.evidence.steps_in_window` documents why the base
+    A window's *base* is inferred per metric series — the newest release that
+    series' own values ruled the change out on — so one step can still be
+    reported against several bases: a series that never settled has no bound at
+    all, and two run groups stepping on one release need not reach back equally
+    far (:func:`~k4bench.blame.evidence.steps_in_window` documents why the base
     therefore cannot be part of the match). Those are not several findings:
     evidence is collected by onset alone (:func:`_collect_window`), so plans
     sharing a pull request and an onset are filled with the *identical* rows and
     can differ only in how far back their bound reaches.
+
+    This is the last check before a comment is published on a repository
+    k4Bench does not own, so it deduplicates on the pull request and the onset
+    alone — deliberately coarser than the engine's own per-direction bound and
+    than :func:`~k4bench.blame.models.rank_group_key`, both of which key on the
+    run group as well.
 
     Left alone they publish as separate comments — the marker is the window
     (:func:`marker_for`) — so one finding notifies a pull request twice, in a

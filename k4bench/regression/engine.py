@@ -182,6 +182,11 @@ def _fmt_date(value) -> str:
     return "" if pd.isna(ts) else ts.strftime("%Y-%m-%d")
 
 
+#: The other way a metric can move. A night that tripped one way is evidence
+#: that a change the other way had not entered yet.
+_OPPOSITE = {Direction.UP: Direction.DOWN, Direction.DOWN: Direction.UP}
+
+
 def _identity(row) -> tuple[str, str]:
     """``(run_id, run_date)`` of *row* — the run directory and the release it
     measured. Kept as one value so the pair can never drift apart."""
@@ -271,13 +276,21 @@ def evaluate_series(
     Each ``CONFIRMED`` verdict also carries the window the change entered in:
     ``onset_*`` (the WATCH night — where it first appeared, one reliable night
     before it was confirmed) and ``last_accepted_*`` (the newest night before
-    that observed at the then-accepted level). Because confirmation trails
+    that whose value ruled this change out). Because confirmation trails
     onset, the confirmed night is the wrong place to look for a cause; the
     change landed in ``(last_accepted, onset]``. Both ends may fall inside
     one release (first night OK, later nights confirm): such a same-release
     window proves the stack did not move between them. An unreliable night
     inside the window is skipped, not judged, so it never narrows the
     window — it is spanned by it.
+
+    The base end is read per direction: a night is evidence against a change
+    *this* way if it sat within baseline variation, and equally if it tripped
+    the *other* way — a value on the far side of the baseline is further still
+    from where a change this way would have put it. So an unrelated one-night
+    swing upward does not push the base of a later downward step back past it,
+    and the sibling metrics of one run group, which usually step together,
+    keep agreeing on one window instead of fanning out over their own noise.
     """
     floor = EFFECT_FLOOR[series.metric_family]
     abs_delta_floor = ABS_DELTA_FLOOR.get(series.metric_family, 0.0)
@@ -287,7 +300,17 @@ def evaluate_series(
     baseline: deque[float] = deque(maxlen=BASELINE_WINDOW_RUNS)
     pending: Direction | None = None
     pending_run: tuple[str, str] | None = None   # the WATCH night's identity (the onset)
-    last_accepted: tuple[str, str] | None = None  # newest night seen at the accepted level
+    #: Per direction, the newest reliable judged night that measured the series
+    #: as *not* having moved that way — the base end of a window confirmed in
+    #: that direction. A night within baseline variation testifies for both
+    #: directions; a night that tripped testifies for the opposite one, since
+    #: its value sits on the far side of the baseline and is therefore even
+    #: further from the level a change this way would have put it at. Keeping
+    #: the two ends apart is what stops an unrelated trip one way from
+    #: widening the window of a change the other way.
+    last_absent: dict[Direction, tuple[str, str] | None] = {
+        Direction.UP: None, Direction.DOWN: None,
+    }
     anchor_date: str | None = None      # date of the last confirmed change-point
     anchor_mad: float = 0.0             # pre-change spread, proxy while re-anchoring
     verdicts: list[MetricVerdict] = []
@@ -324,6 +347,13 @@ def evaluate_series(
         release_windows: dict[Direction, tuple] = {}  # direction -> (window, first-confirmed night)
         release_values: list[float] = []  # reliable judged values, night order
         release_last_reliable: tuple[str, str] | None = None
+        #: The release's newest night that measured the level it confirmed —
+        #: a ``CONFIRMED`` night, so its value is the changed one. This is
+        #: what the re-anchor below seeds the directional bounds with: a
+        #: confirmed release may also hold nights that dipped back or flapped
+        #: the other way, and those sat at the *old* level, so neither of them
+        #: is evidence about the level the re-anchor is about to accept.
+        release_last_at_new_level: tuple[str, str] | None = None
 
         for row in group:
             if row.reliable is False:
@@ -421,7 +451,7 @@ def evaluate_series(
             if not tripped:
                 severity, direction = Severity.OK, Direction.NONE
                 pending = pending_run = None  # a clean night clears an unconfirmed WATCH
-                last_accepted = _identity(row)
+                last_absent[Direction.UP] = last_absent[Direction.DOWN] = _identity(row)
                 reason = "within baseline variation"
                 if reanchoring:
                     reason += (f" (re-anchoring after confirmed change on "
@@ -443,6 +473,7 @@ def evaluate_series(
                                f"{revised_first[0]})")
             else:
                 direction = Direction.UP if delta > 0 else Direction.DOWN
+                last_absent[_OPPOSITE[direction]] = _identity(row)
                 if direction in release_windows:
                     # The release already confirmed a change this way: every
                     # further night re-measuring it reports the same verdict
@@ -468,7 +499,7 @@ def evaluate_series(
                             if pending_run is not None
                             else _identity(row)
                         )
-                        window = (onset, last_accepted)
+                        window = (onset, last_absent[direction])
                         first_confirmed = _identity(row)
                         release_windows[direction] = (window, first_confirmed)
                         pending = pending_run = None
@@ -514,6 +545,8 @@ def evaluate_series(
             ))
             release_values.append(x)
             release_last_reliable = _identity(row)
+            if severity is Severity.CONFIRMED:
+                release_last_at_new_level = _identity(row)
 
         # Release boundary: the only place baseline state moves for judged
         # nights.
@@ -530,12 +563,16 @@ def evaluate_series(
             anchor_date = release_date
             pending = pending_run = None
             # Re-anchoring redefines the accepted level as the post-change
-            # one, and the release's last reliable night is the newest sitting
-            # at it. Carrying the pre-change night forward would blame an
-            # already-accepted change; clearing it would leave a second step
+            # one, so both bounds restart from the newest night measured *at*
+            # that level. Carrying a pre-change night forward would blame an
+            # already-accepted change; clearing them would leave a second step
             # that confirms before any OK night — the case the re-anchor
-            # exists to keep catching — with no lower bound at all.
-            last_accepted = release_last_reliable
+            # exists to keep catching — with no lower bound at all. A release
+            # that confirmed always has such a night, so the fallback is only
+            # a guard.
+            last_absent[Direction.UP] = last_absent[Direction.DOWN] = (
+                release_last_at_new_level or release_last_reliable
+            )
         else:
             # No confirmation: the release's judged values age into the
             # baseline in night order (a WATCH value included — one outlier

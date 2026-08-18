@@ -280,7 +280,7 @@ def _history_rows(history: MetricHistory) -> list[str]:
     for point in history.points:
         marker = ""
         if history.base_release and point.release == history.base_release:
-            marker = "  <- window base: last release at the accepted level"
+            marker = "  <- window base: newest release ruling this step out"
         elif point.release == history.onset_release:
             marker = "  <- the step appeared here"
         value = "—" if point.value is None else f"{point.value:.4g}"
