@@ -674,22 +674,7 @@ def test_window_reports_release_dates_alongside_run_ids():
     assert confirmed.last_accepted_run_date == confirmed.onset_run_date == "2026-01-20"
 
 
-# ── Common-mode annotations ───────────────────────────────────────────────────
-
-def test_common_mode_annotations_are_carried_onto_the_verdict():
-    # The engine judges `value` and reports what it was derived from, without
-    # re-deriving one from the other.
-    history = _history(_STEADY + [120.0, 120.5])
-    history["raw_value"] = history["value"] * 1.1
-    history["common_mode_shift"] = 0.1
-    confirmed = evaluate_series(history, series=_TIME)[-1]
-    assert confirmed.severity is Severity.CONFIRMED
-    assert confirmed.value == pytest.approx(120.5)
-    assert confirmed.raw_value == pytest.approx(120.5 * 1.1)
-    assert confirmed.common_mode_shift == pytest.approx(0.1)
-
-
-# ── Workload identity ─────────────────────────────────────────────────────────
+# ── The event sample is not engine state ──────────────────────────────────────
 
 def _workload_history(values, workloads, start="2026-01-01") -> pd.DataFrame:
     history = _history(values, start=start)
@@ -697,148 +682,42 @@ def _workload_history(values, workloads, start="2026-01-01") -> pd.DataFrame:
     return history
 
 
-def test_a_step_within_one_workload_is_still_confirmed():
-    # The restart must be a response to the workload changing, not to a seed
-    # being present: a real step under a stable seed is judged as ever.
-    values = _STEADY + [120.0, 120.5]
-    verdicts = evaluate_series(
-        _workload_history(values, [42] * len(values)), series=_TIME,
-    )
-    assert _severities(verdicts[-2:]) == [Severity.WATCH, Severity.CONFIRMED]
-
-
-def test_a_history_with_no_workload_column_is_judged_as_before():
-    verdicts = evaluate_series(_history(_STEADY + [120.0, 120.5]), series=_TIME)
-    assert _severities(verdicts[-2:]) == [Severity.WATCH, Severity.CONFIRMED]
-
-
-def _shared_release_history(values, workloads, release="2026-02-01", n_shared=3):
-    """A history whose last *n_shared* nights re-measure one Key4hep release."""
-    history = _workload_history(values, workloads)
-    dates = list(history["run_date"])
-    history["run_date"] = pd.to_datetime(
-        [str(d)[:10] for d in dates[:-n_shared]] + [release] * n_shared
-    )
-    return history
-
-
-def test_a_seed_landing_mid_release_still_starts_a_new_segment():
-    # The rollout this actually gets: a benchmark config is edited whenever
-    # someone merges it, so the new seed almost never arrives on a Key4hep
-    # release boundary. A release that fixed its workload from its first night
-    # and never looked again would judge the changeover as a software step —
-    # and confirm it on the next night, since the offset now reproduces.
-    values = _STEADY + [100.1, 120.0, 120.5]
-    workloads = [None] * (len(_STEADY) + 1) + [42, 42]
-    verdicts = evaluate_series(
-        _shared_release_history(values, workloads), series=_TIME,
-    )
-    assert verdicts[-3].severity is Severity.OK       # last unseeded night
-    assert _severities(verdicts[-2:]) == [Severity.UNKNOWN, Severity.UNKNOWN]
-    assert all("workload changed" in v.reason for v in verdicts[-2:])
-
-
-def test_nights_of_one_release_on_one_workload_still_share_a_snapshot():
-    # The split is on the workload alone. Nights that re-measure one release on
-    # one event sample remain one segment, judged against one frozen baseline —
-    # which is what lets a second night of a release confirm the first's step.
-    values = _STEADY + [100.1, 120.0, 120.5]
-    workloads = [42] * len(values)
-    verdicts = evaluate_series(
-        _shared_release_history(values, workloads), series=_TIME,
-    )
-    assert _severities(verdicts[-2:]) == [Severity.WATCH, Severity.CONFIRMED]
-    assert verdicts[-1].baseline_median == verdicts[-2].baseline_median
-
-
-def test_a_workload_change_is_not_judged_against_the_old_baseline():
-    # Pinning the seed lands the series at one particular draw and holds it
-    # there. Judged against the unseeded history, that offset would look like a
-    # step — and unlike a fluctuation it would repeat every night, so the
-    # two-strike rule would confirm it rather than protect against it.
+def test_a_recorded_workload_changes_no_verdict():
+    # Which events a run simulated is recorded on the run and headlined in the
+    # report, but the walk never reads it: a fixed seed arriving over an
+    # unseeded history judges exactly like a history that recorded none.
     values = _STEADY + [120.0, 120.5]
     workloads = [None] * len(_STEADY) + [42, 42]
-    verdicts = evaluate_series(
-        _workload_history(values, workloads), series=_TIME,
-    )
-    changeover = verdicts[len(_STEADY)]
-    assert changeover.severity is Severity.UNKNOWN
-    assert "workload changed" in changeover.reason
-    # And the level it changed to is the one everything after is judged against,
-    # so the changeover is never re-reported as a step either.
-    assert Severity.CONFIRMED not in _severities(verdicts)
-    assert verdicts[-1].severity is Severity.OK
-    assert verdicts[-1].baseline_median == pytest.approx(120.0, abs=0.1)
+    seeded = evaluate_series(_workload_history(values, workloads), series=_TIME)
+    plain = evaluate_series(_history(values), series=_TIME)
+    assert _severities(seeded) == _severities(plain)
+    assert [v.baseline_median for v in seeded] == [v.baseline_median for v in plain]
 
 
-def test_only_the_changeover_release_is_given_up():
-    # One release of sensitivity is the whole price. A genuine step arriving
-    # after the changeover is caught on the normal two-strike schedule.
-    values = _STEADY + [120.0, 120.5, 120.2, 145.0, 145.4]
-    workloads = [None] * len(_STEADY) + [42] * 5
-    verdicts = evaluate_series(
-        _workload_history(values, workloads), series=_TIME,
-    )
-    assert "re-anchoring after workload change" in verdicts[len(_STEADY) + 1].reason
+def test_a_step_arriving_with_a_new_seed_is_confirmed_on_the_normal_schedule():
+    values = _STEADY + [120.0, 120.5]
+    workloads = [None] * len(_STEADY) + [42, 42]
+    verdicts = evaluate_series(_workload_history(values, workloads), series=_TIME)
     assert _severities(verdicts[-2:]) == [Severity.WATCH, Severity.CONFIRMED]
 
 
-def test_a_step_right_after_a_workload_change_gets_no_window_across_it():
-    # The window a confirmed step reports must not reach back over the boundary
-    # to a night that simulated different events. There is no lower bound on
-    # when such a change entered, and the verdict says so rather than naming a
-    # tighter one it cannot support.
-    values = _STEADY + [120.0, 145.0, 145.4]
-    workloads = [None] * len(_STEADY) + [42] * 3
-    verdicts = evaluate_series(
-        _workload_history(values, workloads), series=_TIME,
-    )
+def test_a_step_arriving_with_a_new_seed_keeps_a_bounded_window():
+    # Giving the baseline up at the changeover left `last_accepted` empty, and
+    # an open window is one the blame sidecar refuses to attribute. The newest
+    # night at the accepted level bounds it, seed change or not.
+    values = _STEADY + [120.0, 120.5]
+    workloads = [None] * len(_STEADY) + [42, 42]
+    verdicts = evaluate_series(_workload_history(values, workloads), series=_TIME)
     confirmed = verdicts[-1]
     assert confirmed.severity is Severity.CONFIRMED
-    assert confirmed.last_accepted_run_id is None
+    assert confirmed.onset_run_id == verdicts[-2].run_id
+    assert confirmed.last_accepted_run_id == verdicts[len(_STEADY) - 1].run_id
 
 
-def test_a_pending_watch_does_not_survive_a_workload_change():
-    # A WATCH raised on the last unfixed night was measured on events the next
-    # night did not simulate, so it cannot be the first of two strikes.
-    values = _STEADY + [120.0, 120.5]
-    workloads = [None] * (len(_STEADY) + 1) + [42]
-    verdicts = evaluate_series(
-        _workload_history(values, workloads), series=_TIME,
-    )
-    assert _severities(verdicts[-2:]) == [Severity.WATCH, Severity.UNKNOWN]
-
-
-def test_an_unseeded_history_is_one_workload_not_a_new_one_each_night():
-    # Unseeded nights do simulate different events, but they scatter randomly
-    # and the baseline spread already models that. Treating each as its own
-    # workload would re-anchor nightly and detect nothing, ever.
-    values = _STEADY + [120.0, 120.5]
-    verdicts = evaluate_series(
-        _workload_history(values, [None] * len(values)), series=_TIME,
-    )
-    assert _severities(verdicts[-2:]) == [Severity.WATCH, Severity.CONFIRMED]
-
-
-def test_a_workload_change_during_warm_up_just_warms_up_again():
-    # There is no settled spread to carry across the boundary yet, and
-    # inheriting a MAD of zero would make every z infinite against a one-night
-    # baseline. The series restarts instead, which is what it was doing anyway.
-    values = [100.0, 100.4, 99.6, 120.0, 120.5, 120.2, 119.8, 120.1, 120.3]
-    workloads = [None] * 3 + [42] * 6
-    verdicts = evaluate_series(
-        _workload_history(values, workloads), series=_TIME,
-    )
-    assert Severity.CONFIRMED not in _severities(verdicts)
-    assert all(v.severity is Severity.UNKNOWN
-               for v in verdicts[3:3 + MIN_BASELINE_RUNS])
-
-
-def test_a_quiet_workload_change_costs_one_release_and_no_more():
-    # The common case: the workload changes and the level barely moves.
+def test_a_quiet_seed_change_costs_no_sensitivity():
+    # The common case: the workload changes and the level barely moves. Every
+    # night stays judged, so a real step the next week is caught on schedule.
     values = _STEADY + [100.1, 99.9]
     workloads = [None] * len(_STEADY) + [42, 42]
-    verdicts = evaluate_series(
-        _workload_history(values, workloads), series=_TIME,
-    )
-    assert _severities(verdicts[-2:]) == [Severity.UNKNOWN, Severity.OK]
+    verdicts = evaluate_series(_workload_history(values, workloads), series=_TIME)
+    assert _severities(verdicts[-2:]) == [Severity.OK, Severity.OK]

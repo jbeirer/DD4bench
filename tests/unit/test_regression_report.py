@@ -11,7 +11,6 @@ import pytest
 
 import pandas as pd
 
-from k4bench.regression.common_mode import COMMON_MODE_LABEL
 from k4bench.regression.models import Direction, Severity
 from k4bench.regression.report_builder import (
     EVENT_METRICS,
@@ -643,11 +642,10 @@ def test_local_report_quiet_night_not_alertable(tmp_path):
     assert any(v.severity is Severity.OK for v in group.verdicts)
 
 
-# ── Common-mode decomposition and workload identity ───────────────────────────
+# ── Sweep-shaped run groups ───────────────────────────────────────────────────
 #
 # These exercise the report assembly end to end over a *sweep*: several configs
-# in one run group, which is the shape the decomposition needs and the shape
-# every production detector has.
+# in one run group, the shape every production detector has.
 
 _SWEEP_LABELS = tuple(f"config_{i}" for i in range(6))
 
@@ -705,16 +703,17 @@ def _report_for(run_dirs: tuple[str, ...]):
     return group_report_from_run_dirs("DET", _PLAT, "single_e", run_dirs)
 
 
-def test_whole_group_moving_together_is_reported_once(tmp_path):
-    # Every config 20% slower for two nights. That is one event about the run
-    # group, and the report must say it once instead of once per config.
+def test_whole_group_moving_together_is_reported_per_config(tmp_path):
+    # Every config 20% slower for two nights. Each config measured that move,
+    # so each reports it — with the change it actually recorded, not a residual
+    # left over after a group-wide factor was divided out.
     scales = {i: dict.fromkeys(_SWEEP_LABELS, 1.20) for i in (10, 11)}
     group = _report_for(_sweep_history(tmp_path, 12, scales=scales))
 
     wall = [v for v in group.regressions if v.metric == "wall_time_s"]
-    assert [v.label for v in wall] == [COMMON_MODE_LABEL]
-    assert wall[0].direction is Direction.UP
-    assert wall[0].pct_change == pytest.approx(0.20, abs=0.02)
+    assert sorted(v.label for v in wall) == sorted(_SWEEP_LABELS)
+    assert all(v.direction is Direction.UP for v in wall)
+    assert all(v.pct_change == pytest.approx(0.20, abs=0.02) for v in wall)
 
 
 def test_one_config_moving_alone_still_confirms_against_its_own_series(tmp_path):
@@ -728,7 +727,10 @@ def test_one_config_moving_alone_still_confirms_against_its_own_series(tmp_path)
     assert wall[0].pct_change == pytest.approx(0.30, abs=0.02)
 
 
-def test_a_shared_move_and_a_private_one_are_reported_as_two_facts(tmp_path):
+def test_a_shared_move_and_a_private_one_each_report_what_was_measured(tmp_path):
+    # One config carries both the group's 20% and its own 30% on top. Its row
+    # states the whole move it measured (1.20 x 1.30 = +56%), and the others
+    # state theirs — every number reproducible from the run data alone.
     scales = {
         i: {**dict.fromkeys(_SWEEP_LABELS, 1.20), _SWEEP_LABELS[0]: 1.20 * 1.30}
         for i in (10, 11)
@@ -736,28 +738,9 @@ def test_a_shared_move_and_a_private_one_are_reported_as_two_facts(tmp_path):
     group = _report_for(_sweep_history(tmp_path, 12, scales=scales))
 
     wall = {v.label: v for v in group.regressions if v.metric == "wall_time_s"}
-    assert set(wall) == {COMMON_MODE_LABEL, _SWEEP_LABELS[0]}
-    assert wall[COMMON_MODE_LABEL].pct_change == pytest.approx(0.20, abs=0.02)
-    # The config's own row reports only the part that was its own.
-    assert wall[_SWEEP_LABELS[0]].pct_change == pytest.approx(0.30, abs=0.02)
-
-
-def test_a_decomposed_verdict_keeps_the_measurement_it_came_from(tmp_path):
-    scales = {
-        i: {**dict.fromkeys(_SWEEP_LABELS, 1.20), _SWEEP_LABELS[0]: 1.20 * 1.30}
-        for i in (10, 11)
-    }
-    group = _report_for(_sweep_history(tmp_path, 12, scales=scales))
-
-    v = next(v for v in group.regressions
-             if v.metric == "wall_time_s" and v.label == _SWEEP_LABELS[0])
-    assert v.common_mode_shift == pytest.approx(0.20, abs=0.02)
-    assert v.raw_value == pytest.approx(_SWEEP_LEVELS[_SWEEP_LABELS[0]] * 1.2 * 1.3)
-    # The judged value is the residual, and every statistic beside it agrees.
-    assert v.value == pytest.approx(v.raw_value / (1 + v.common_mode_shift))
-    assert v.value == pytest.approx(
-        v.baseline_median * (1 + v.pct_change), rel=1e-6
-    )
+    assert set(wall) == set(_SWEEP_LABELS)
+    assert wall[_SWEEP_LABELS[0]].pct_change == pytest.approx(0.56, abs=0.02)
+    assert wall[_SWEEP_LABELS[1]].pct_change == pytest.approx(0.20, abs=0.02)
 
 
 def test_the_trimmed_mean_is_judged_alongside_the_totals(tmp_path):
@@ -786,7 +769,7 @@ def test_the_trimmed_mean_is_judged_alongside_the_totals(tmp_path):
 def test_a_real_step_survives_every_new_gate(tmp_path):
     # The sensitivity guarantee for all of the above at once: a large step
     # confined to one config, on a run group that also carries a tail-heavy
-    # event distribution and a common mode, is still CONFIRMED.
+    # event distribution and a group-wide move, is still CONFIRMED.
     tail_heavy = [1.0] * 90 + [20.0] * 10
     scales = {
         i: {**dict.fromkeys(_SWEEP_LABELS, 1.05), _SWEEP_LABELS[0]: 1.05 * 1.60}
@@ -833,19 +816,21 @@ def test_losing_a_fixed_seed_is_announced_too(tmp_path):
     assert any("recorded no ddsim seed" in note for note in group.notes)
 
 
-def test_a_new_fixed_seed_is_not_reported_as_a_regression(tmp_path):
-    # The night after this PR merges. A fixed seed lands the whole run group at
-    # one particular draw and holds it there, so the offset from the unseeded
-    # history repeats every night — the two-strike rule would confirm it rather
-    # than protect against it. The release is not judged against a baseline
-    # that measured different events.
+def test_a_new_fixed_seed_that_moves_the_level_is_reported_like_any_step(tmp_path):
+    # A fixed seed lands the whole run group at one particular draw and holds
+    # it there. The step is judged, confirmed and bounded like any other — the
+    # note on the changeover night is what tells the reader the events, not the
+    # software, are what changed.
     n = 12
     scales = {i: dict.fromkeys(_SWEEP_LABELS, 1.25) for i in (10, 11)}
-    group = _report_for(_sweep_history(
-        tmp_path, n, scales=scales, seeds={10: 42, 11: 42},
-    ))
-    assert group.regressions == []
-    assert any("workload" in v.reason for v in group.verdicts)
+    run_dirs = _sweep_history(tmp_path, n, scales=scales, seeds={10: 42, 11: 42})
+    group = _report_for(run_dirs)
+    wall = [v for v in group.regressions if v.metric == "wall_time_s"]
+    assert sorted(v.label for v in wall) == sorted(_SWEEP_LABELS)
+    assert all(v.pct_change == pytest.approx(0.25, abs=0.02) for v in wall)
+    # And every row carries a window an attribution can be hung on.
+    assert all(v.last_accepted_run_id is not None for v in wall)
+    assert any("seed 42" in note for note in _report_for(run_dirs[:11]).notes)
 
 
 def test_a_regression_after_the_seed_settles_is_still_caught(tmp_path):
@@ -859,3 +844,35 @@ def test_a_regression_after_the_seed_settles_is_still_caught(tmp_path):
     ))
     wall = [v for v in group.regressions if v.metric == "wall_time_s"]
     assert [v.label for v in wall] == [_SWEEP_LABELS[0]]
+
+
+def test_a_confirmation_across_a_seed_change_says_so_on_the_night_it_lands(tmp_path):
+    # The changeover note speaks on the night the seed lands; a two-strike
+    # confirmation trails its onset and lands a night later, when that note has
+    # already fallen silent. The window note is what the reader of *that* night
+    # sees, so a group-wide step is not read as a software change.
+    n = 12
+    scales = {i: dict.fromkeys(_SWEEP_LABELS, 1.25) for i in (10, 11)}
+    run_dirs = _sweep_history(tmp_path, n, scales=scales, seeds={10: 42, 11: 42})
+    group = _report_for(run_dirs)
+
+    # Tonight (night 11) recorded the same seed as night 10, so the changeover
+    # note is silent — this is exactly the gap the window note closes.
+    assert not any("tonight used ddsim seed" in note for note in group.notes)
+    spanning = [note for note in group.notes if "spans a ddsim seed change" in note]
+    assert spanning, group.notes
+    assert "no recorded seed → seed 42" in spanning[0]
+    # One note per window, not one per metric carrying it.
+    assert len(spanning) == len(set(spanning))
+
+
+def test_a_confirmation_within_one_workload_gets_no_seed_note(tmp_path):
+    # The note must not fire on an ordinary regression that happens to sit in a
+    # history with a fixed seed, or it would be on every report forever.
+    n = 12
+    scales = {i: {_SWEEP_LABELS[0]: 1.30} for i in (10, 11)}
+    group = _report_for(_sweep_history(
+        tmp_path, n, scales=scales, seeds=dict.fromkeys(range(n), 42),
+    ))
+    assert group.regressions
+    assert not any("spans a ddsim seed change" in note for note in group.notes)

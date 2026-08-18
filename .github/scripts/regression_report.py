@@ -12,6 +12,10 @@ and writes
 
 Exit code is 0 whenever the report was produced, regardless of its content —
 alert delivery is gated on report.json's ``summary`` block by the workflow.
+
+``--as-of`` rebuilds a *past* night instead of the newest one, truncating every
+series to runs on or before it. That is how a report is regenerated after the
+judging rules change: the same runs, walked by today's engine.
 """
 from __future__ import annotations
 
@@ -58,6 +62,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--output-dir", default=".", help="Where report.json/report.md are written",
     )
+    parser.add_argument(
+        "--as-of",
+        help="Judge the history as it stood on this night (YYYY-MM-DD): every "
+             "series is truncated to runs on or before it, and the report night "
+             "becomes the newest run that survives. Rebuilds a past night's "
+             "report exactly as that night would have built it; omit for the "
+             "nightly CI case, which judges everything uploaded so far",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -70,9 +82,11 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if args.data_dir:
-        report = build_nightly_report_local(args.data_dir)
+        report = build_nightly_report_local(args.data_dir, as_of=args.as_of)
     elif args.data_url:
-        report = build_nightly_report(args.data_url, args.cache_dir)
+        report = build_nightly_report(
+            args.data_url, args.cache_dir, as_of=args.as_of,
+        )
     else:
         parser.error("either --data-url (or $K4BENCH_DATA_URL) or --data-dir is required")
 

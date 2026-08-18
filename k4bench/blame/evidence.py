@@ -31,7 +31,6 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from k4bench.regression.common_mode import is_common_mode
 from k4bench.regression.models import (
     HostFact,
     MetricVerdict,
@@ -399,8 +398,7 @@ def outcomes_for_window(
     compare against — it ran one of *stacks* (the releases the regressed rows were
     measured on), its host was judged reliable, its group had no job failure, it
     recorded no metric failure of its own, it confirmed no step inside this
-    window, its group's *common mode* confirmed no step inside this window
-    either, and at least one of its metrics could actually be judged. Everything
+    window, and at least one of its metrics could actually be judged. Everything
     else is silence from a run that did not happen or cannot be read, and silence
     must never be rendered as evidence of absence: ``reliable is None`` means *no
     evidence either way*, so it is treated like an unreliable run rather than like
@@ -425,19 +423,6 @@ def outcomes_for_window(
         # in tonight's report measured it. A group that ran a different release
         # than the regressed rows is not a like-for-like control.
         if group.k4h_release not in stacks:
-            continue
-        if any(
-            is_common_mode(v.label) and steps_in_window(v, window)
-            for v in group.verdicts
-        ):
-            # The whole group moved together, and that move was divided out of
-            # every configuration in it before any of them was judged (see
-            # :mod:`k4bench.regression.common_mode`). Their flatness is then an
-            # arithmetic consequence of the decomposition, not a measurement
-            # that they held still — offering it as "did not move" would hand
-            # the model a control it manufactured itself. The shared move is
-            # already reported as its own finding; the configurations have
-            # nothing independent left to say about this window.
             continue
         by_label: dict[str, list[MetricVerdict]] = {}
         for verdict in group.verdicts:

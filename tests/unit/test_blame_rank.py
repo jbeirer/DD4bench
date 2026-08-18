@@ -645,28 +645,6 @@ def test_the_prompt_shows_the_measurement_not_only_the_percentage():
     assert "14.5 vs 12 baseline, z=41.6" in prompt
 
 
-def test_the_prompt_says_what_the_common_mode_took_out_of_the_number():
-    # A residual shown as if it were the whole measurement sends the model
-    # looking for a cause of the wrong size — the shared move is reported once,
-    # as its own row, and this row is only what the config did beyond it.
-    prompt = rank_mod._build_user_prompt(_request(metrics=(
-        MetricStep(metric="wall_time_s", metric_family="time", direction="UP",
-                   pct_change=0.2, label="baseline",
-                   value=14.5, baseline_median=12.0, z_score=41.6,
-                   common_mode_shift=0.18),
-    )))
-    assert "beyond a +18.0% move shared by the whole run group" in prompt
-
-
-def test_a_series_judged_as_measured_says_nothing_about_a_common_mode():
-    prompt = rank_mod._build_user_prompt(_request(metrics=(
-        MetricStep(metric="wall_time_s", metric_family="time", direction="UP",
-                   pct_change=0.2, label="baseline",
-                   value=14.5, baseline_median=12.0, z_score=41.6),
-    )))
-    assert "shared by the whole run group" not in prompt
-
-
 def test_the_prompt_carries_the_metrics_history():
     prompt = rank_mod._build_user_prompt(_request(metrics=(
         MetricStep(metric="wall_time_s", metric_family="time", direction="UP",

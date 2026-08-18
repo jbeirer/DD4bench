@@ -98,7 +98,6 @@ from k4bench.blame.prompt import (
     sample_line,
     window_phrase,
 )
-from k4bench.regression.common_mode import pretty_config
 from k4bench.regression.models import RegionDelta
 
 _log = logging.getLogger(__name__)
@@ -171,11 +170,6 @@ class RegressionFact:
     value: float | None = None
     baseline_median: float | None = None
     z_score: float | None = None
-    #: The group-wide move divided out of ``value`` before it was judged, where
-    #: the run group moved as a whole (:mod:`k4bench.regression.common_mode`).
-    #: Without it the residual reads as the entire measurement, and the model
-    #: goes looking for a cause of the wrong size.
-    common_mode_shift: float | None = None
     scope_score: float | None = None
     scope_reason: str = ""
     scope_state: ScopeCandidateState = "discovery_incomplete"
@@ -705,12 +699,11 @@ def _regression_lines(request: AttributionRequest) -> list[str]:
         lines.append(sample_line(sample, prefix="  "))
         lines.append(platform_line(platform, prefix="  "))
         for fact in facts:
-            subject = f"{fact.metric} ({pretty_config(fact.label)})"
+            subject = f"{fact.metric} ({fact.label})"
             if fact.sub_detector:
                 subject += f" [{fact.sub_detector}]"
             detail = measurement_phrase(
                 fact.value, fact.baseline_median, fact.z_score,
-                fact.common_mode_shift,
             )
             lines.append(
                 f"  - [{fact.id}] {subject} {fact.metric_family} "
@@ -746,7 +739,7 @@ def _history_lines(request: AttributionRequest) -> list[str]:
         "behaves when nothing is done to it:",
     ]
     for fact in shown:
-        subject = f"{fact.detector} · {fact.metric} ({pretty_config(fact.label)})"
+        subject = f"{fact.detector} · {fact.metric} ({fact.label})"
         if fact.sub_detector:
             subject += f" [{fact.sub_detector}]"
         lines.append("")
@@ -1094,7 +1087,7 @@ def _fact_phrase(fact: RegressionFact) -> str:
     not the default one, since that is then part of what identifies the row."""
     where = fact.detector
     if fact.label and fact.label != "baseline":
-        where += f" {pretty_config(fact.label)}"
+        where += f" {fact.label}"
     return f"{where} {fact.metric}"
 
 def _parse_likelihoods(
