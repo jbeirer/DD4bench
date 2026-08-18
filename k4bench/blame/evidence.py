@@ -140,8 +140,10 @@ class MetricHistory:
     @property
     def before_window(self) -> tuple[HistoryPoint, ...]:
         """The releases at or before the window's older end — the series as it
-        was when it was still accepted. Empty when the window is open-ended,
-        since then nothing here is known to predate the change."""
+        was before this step. The end itself is the newest release whose value
+        ruled the step out, which is one within normal variation or one that
+        moved the opposite way. Empty when the window is open-ended, since then
+        nothing here is known to predate the change."""
         if not self.base_release:
             return ()
         return tuple(p for p in self.points if p.release <= self.base_release)

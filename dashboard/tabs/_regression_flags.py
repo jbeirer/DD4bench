@@ -330,8 +330,8 @@ def flag_table(
     if blame_window:
         column_config["Blame window"] = st.column_config.TextColumn(
             "Blame window",
-            help="The release range this step actually entered in (last "
-                 "accepted → onset).",
+            help="The release range this step actually entered in "
+                 "(last release ruling it out → onset).",
         )
     st.dataframe(
         pd.DataFrame(records),

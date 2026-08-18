@@ -347,6 +347,13 @@ def evaluate_series(
         release_windows: dict[Direction, tuple] = {}  # direction -> (window, first-confirmed night)
         release_values: list[float] = []  # reliable judged values, night order
         release_last_reliable: tuple[str, str] | None = None
+        #: The release's newest night that measured the level it confirmed —
+        #: a ``CONFIRMED`` night, so its value is the changed one. This is
+        #: what the re-anchor below seeds the directional bounds with: a
+        #: confirmed release may also hold nights that dipped back or flapped
+        #: the other way, and those sat at the *old* level, so neither of them
+        #: is evidence about the level the re-anchor is about to accept.
+        release_last_at_new_level: tuple[str, str] | None = None
 
         for row in group:
             if row.reliable is False:
@@ -538,6 +545,8 @@ def evaluate_series(
             ))
             release_values.append(x)
             release_last_reliable = _identity(row)
+            if severity is Severity.CONFIRMED:
+                release_last_at_new_level = _identity(row)
 
         # Release boundary: the only place baseline state moves for judged
         # nights.
@@ -554,12 +563,16 @@ def evaluate_series(
             anchor_date = release_date
             pending = pending_run = None
             # Re-anchoring redefines the accepted level as the post-change
-            # one, and the release's last reliable night is the newest sitting
-            # at it. Carrying the pre-change night forward would blame an
-            # already-accepted change; clearing it would leave a second step
+            # one, so both bounds restart from the newest night measured *at*
+            # that level. Carrying a pre-change night forward would blame an
+            # already-accepted change; clearing them would leave a second step
             # that confirms before any OK night — the case the re-anchor
-            # exists to keep catching — with no lower bound at all.
-            last_absent[Direction.UP] = last_absent[Direction.DOWN] = release_last_reliable
+            # exists to keep catching — with no lower bound at all. A release
+            # that confirmed always has such a night, so the fallback is only
+            # a guard.
+            last_absent[Direction.UP] = last_absent[Direction.DOWN] = (
+                release_last_at_new_level or release_last_reliable
+            )
         else:
             # No confirmation: the release's judged values age into the
             # baseline in night order (a WATCH value included — one outlier

@@ -670,6 +670,31 @@ def test_confirmed_repeat_invalidates_an_opposite_pending_watch():
     }
 
 
+def test_reanchor_bounds_from_the_confirmed_level_not_a_trailing_dip():
+    # Re-anchoring restarts both bounds at the newly accepted level, so it
+    # must seed them from a night that measured *that* level. A confirmed
+    # release may end on a night that flapped the other way — here a DOWN
+    # WATCH closing an UP release — and that night sat at the old level. Using
+    # it would bound a following downward step at the very dip that step
+    # began with, hiding the release the change entered under from the
+    # harness range the blame builder diffs.
+    rows = _steady_rows() + [
+        ("2026-02-11", "2026-02-11", 120.0),   # release R: WATCH UP
+        ("2026-02-12", "2026-02-11", 120.5),   # CONFIRMED UP
+        ("2026-02-13", "2026-02-11", 80.0),    # WATCH DOWN
+        ("2026-02-14", "2026-02-11", 120.2),   # repeat CONFIRMED UP — the new level
+        ("2026-02-15", "2026-02-11", 80.2),    # dips again, closing the release
+        ("2026-02-16", "2026-02-16", 80.1),    # release S: the step persists
+        ("2026-02-17", "2026-02-16", 80.3),    # release S confirms it
+    ]
+    verdicts = evaluate_series(_release_rows(rows), series=_TIME)
+    confirmed = verdicts[-1]
+    assert confirmed.severity is Severity.CONFIRMED
+    assert confirmed.direction is Direction.DOWN
+    # 2026-02-14 measured the accepted level; 2026-02-15 is already the dip.
+    assert _window(confirmed) == ("2026-02-14", "2026-02-16")
+
+
 def test_trip_after_a_revoked_confirmation_starts_a_fresh_watch():
     # Once the release median revoked the confirmation, a later tripping
     # night is a new hypothesis, not a repeat: it starts a fresh two-strike
