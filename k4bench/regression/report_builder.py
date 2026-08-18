@@ -33,14 +33,7 @@ from k4bench.analysis.trend import (
     build_results_trend,
     parse_run_dir,
 )
-from k4bench.regression.common_mode import (
-    COMMON_MODE_LABEL,
-    MIN_COMMON_MODE_CONFIGS,
-    common_mode_shifts,
-    shift_history,
-)
 from k4bench.regression.engine import (
-    ABSOLUTE_FLOOR_FAMILIES,
     BASELINE_WINDOW_RUNS,
     evaluate_series,
     release_key,
@@ -139,64 +132,23 @@ def _reliable_column(run_ids: pd.Series, reliability: dict[str, bool | None]) ->
     return [reliability.get(rid) for rid in run_ids]
 
 
-def workload_map(results_df: pd.DataFrame | None) -> dict[str, int]:
-    """``{run_id: random_seed}`` for every run that recorded one.
-
-    A run absent from this map has an unknown workload (see
-    :data:`~k4bench.regression.engine.WORKLOAD_UNKNOWN`) — it drew a fresh
-    event mix, or predates the seed being recorded. The engine re-anchors its
-    baseline when this value changes, so the map only has to say what was
-    recorded, never why.
-    """
-    if (
-        results_df is None or results_df.empty
-        or "random_seed" not in results_df.columns
-    ):
-        return {}
-    sub = results_df[["run_id", "random_seed"]].dropna().drop_duplicates("run_id")
-    out: dict[str, int] = {}
-    for row in sub.itertuples(index=False):
-        try:
-            out[str(row.run_id)] = int(row.random_seed)
-        except (TypeError, ValueError):
-            continue
-    return out
-
-
 def _series_history(
     df: pd.DataFrame,
     mask: pd.Series,
     metric: str,
     reliability: dict[str, bool | None],
-    *,
-    shifts: dict[str, float] | None = None,
-    workloads: dict[str, int] | None = None,
 ) -> pd.DataFrame:
-    """One config's metric history, annotated with everything the engine needs
-    to judge it in context (see :func:`~k4bench.regression.engine.evaluate_series`).
-
-    With *shifts*, ``value`` becomes the residual after the run's group-wide
-    common mode is divided out, and the measurement is preserved as
-    ``raw_value``. Without them the two are the same number and only ``value``
-    is written.
-    """
+    """One config's metric history in the shape the engine walks (see
+    :func:`~k4bench.regression.engine.evaluate_series`) — the measurement as
+    measured, with the per-run reliability the walk needs to skip contended
+    nights."""
     sub = df.loc[mask, ["run_id", "x_date", metric]]
-    run_ids = sub["run_id"].astype(str)
-    values = sub[metric]
-    history = pd.DataFrame({
-        "run_id":   run_ids.to_numpy(),
+    return pd.DataFrame({
+        "run_id":   sub["run_id"].astype(str).to_numpy(),
         "run_date": sub["x_date"].to_numpy(),
-        "value":    values.to_numpy(),
+        "value":    sub[metric].to_numpy(),
         "reliable": _reliable_column(sub["run_id"], reliability),
     })
-    if workloads:
-        history["workload"] = [workloads.get(rid) for rid in run_ids]
-    if shifts:
-        factors = run_ids.map(lambda rid: shifts.get(rid, 1.0)).astype(float)
-        history["raw_value"] = values.to_numpy()
-        history["common_mode_shift"] = (factors - 1.0).to_numpy()
-        history["value"] = (values.to_numpy() / factors.to_numpy())
-    return history
 
 
 def unjudged_value_verdicts(
@@ -315,60 +267,25 @@ def evaluate_group_series(
     confirmed verdicts; it never enters the judgement itself. Omitted, the tails
     simply carry no host.
 
-    Where a run group has enough configurations to support it, each metric is
-    first decomposed into a group-wide common mode and per-config residuals
-    (:mod:`k4bench.regression.common_mode`). Both halves are walked: the shift
-    as one group-level series under
-    :data:`~k4bench.regression.common_mode.COMMON_MODE_LABEL`, and each config
-    on what is left after it. A night where the whole group moved together
-    therefore produces one finding instead of one per config, without the move
-    going unjudged.
+    Every configuration is judged on what it measured. A night where the whole
+    run group moved together therefore reports each config's own move, rather
+    than one synthetic finding standing in for all of them.
     """
     out: dict[SeriesId, list[MetricVerdict]] = {}
-    workloads = workload_map(results_df)
 
     def _walk(df: pd.DataFrame, metrics: dict[str, str]) -> None:
         labels = sorted(df["label"].dropna().unique())
-        run_dates = dict(zip(df["run_id"].astype(str), df["x_date"], strict=True))
-        # Too few configurations for a cross-config median to mean anything:
-        # judge every series exactly as measured.
-        decomposable = len(labels) >= MIN_COMMON_MODE_CONFIGS
 
         for metric, family in metrics.items():
             if metric not in df.columns:
                 continue
-            # A ratio in percentage points has no multiplicative common mode to
-            # divide out, so it is judged as measured whatever the group size.
-            shifts = (
-                common_mode_shifts(df, metric)
-                if decomposable and family not in ABSOLUTE_FLOOR_FAMILIES
-                else {}
-            )
             for label in labels:
                 name = str(label)
                 sid = SeriesId(detector, platform, sample, name, family, metric)
-                history = _series_history(
-                    df, df["label"] == label, metric, reliability,
-                    shifts=shifts, workloads=workloads,
-                )
+                history = _series_history(df, df["label"] == label, metric, reliability)
                 verdicts = evaluate_series(history, series=sid)
                 if verdicts:
                     out[sid] = _with_history(history, verdicts, hosts or {})
-
-            if not shifts:
-                continue
-            # The common mode itself, judged as its own series.
-            group_sid = SeriesId(
-                detector, platform, sample, COMMON_MODE_LABEL, family, metric,
-            )
-            group_history = shift_history(
-                shifts, run_dates, reliability, workloads=workloads,
-            )
-            group_verdicts = evaluate_series(group_history, series=group_sid)
-            if group_verdicts:
-                out[group_sid] = _with_history(
-                    group_history, group_verdicts, hosts or {},
-                )
 
     if results_df is not None and not results_df.empty:
         _walk(with_cpu_efficiency(results_df), RUN_METRICS)
@@ -421,43 +338,90 @@ def _failed_config_verdicts(
     return verdicts
 
 
+def _seed_map(results_df: pd.DataFrame | None) -> dict[str, int | None]:
+    """``{run_id: random_seed}`` for every run in the window, ``None`` where a
+    run recorded no seed (it drew a fresh one, or predates seed recording)."""
+    if results_df is None or results_df.empty or "random_seed" not in results_df.columns:
+        return {}
+    seen = results_df[["run_id", "random_seed"]].drop_duplicates("run_id")
+    out: dict[str, int | None] = {}
+    for row in seen.itertuples(index=False):
+        out[str(row.run_id)] = None if pd.isna(row.random_seed) else int(row.random_seed)
+    return out
+
+
+def _windows_spanning_a_seed_change(
+    verdicts: list[MetricVerdict], results_df: pd.DataFrame | None,
+) -> list[str]:
+    """Notes for every confirmed change window that straddles a seed change.
+
+    The changeover note below speaks on the one night the seed lands, but a
+    two-strike confirmation trails its onset — the night that *reports* a step
+    is generally not the night the seed moved, and by then the changeover note
+    has fallen silent. A reader looking at eight confirmed regressions needs to
+    know the events under them changed, on the night they are actually reading.
+
+    The window is ``(last_accepted, onset]``, so every run *after* the accepted
+    night up to and including the onset is a candidate for having introduced the
+    new workload. One note per distinct window, not per metric carrying it.
+    """
+    seeds = _seed_map(results_df)
+    if not seeds:
+        return []
+    notes: dict[tuple, str] = {}
+    for v in verdicts:
+        base, onset = v.last_accepted_run_id, v.onset_run_id
+        if v.severity is not Severity.CONFIRMED or not base or not onset:
+            continue
+        if base not in seeds:
+            continue
+        before = seeds[base]
+        changed = sorted(
+            run_id for run_id, seed in seeds.items()
+            if base < run_id <= onset and seed != before
+        )
+        if not changed:
+            continue
+        after = seeds[changed[0]]
+        key = (base, onset, before, after)
+        if key in notes:
+            continue
+        notes[key] = (
+            f"the confirmed change window {base} → {onset} spans a ddsim seed "
+            f"change on {changed[0]} ("
+            + (f"seed {before}" if before is not None else "no recorded seed")
+            + " → "
+            + (f"seed {after}" if after is not None else "no recorded seed")
+            + ") — the runs on either side simulated different events, so a step "
+            "confirmed across this window may be the new event sample rather "
+            "than a software change"
+        )
+    return [notes[k] for k in sorted(notes)]
+
+
 def _random_seed_note(results_df: pd.DataFrame | None, tonight: str) -> str | None:
     """A note for the report when tonight simulated a different Monte-Carlo
     workload than the night before it, or none at all.
 
     Timing is a function of which events were simulated, so a changed seed can
-    shift every series of the run group at once. The engine already acts on
-    this — such a release is not judged against the old baseline and re-anchors
-    it instead (:func:`k4bench.regression.engine.evaluate_series`, gate 8) —
-    and every verdict of the re-anchoring period says so in its own reason.
-    This note is the human headline for the one night the change lands on, so a
-    reader does not spend the evening hunting for a code change that explains a
-    group-wide move.
+    shift every series of the run group at once. The engine does not act on it
+    — the series is judged across the change like any other, and a step that
+    holds is confirmed with a bounded onset window — so this note is the only
+    place the reader learns that the events themselves changed, and it is what
+    keeps them from hunting for a code change that explains a group-wide move.
     """
-    if results_df is None or results_df.empty or "random_seed" not in results_df.columns:
+    seeds = _seed_map(results_df)
+    if len(seeds) < 2 or tonight not in seeds:
         return None
-    seen = (
-        results_df[["run_id", "random_seed"]]
-        .drop_duplicates("run_id")
-        .sort_values("run_id")
-    )
-    if len(seen) < 2 or tonight not in set(seen["run_id"]):
-        return None
-
-    def _seed(value):
-        return None if pd.isna(value) else int(value)
-
-    seeds = dict(zip(seen["run_id"].astype(str), seen["random_seed"], strict=True))
-    previous = [rid for rid in seen["run_id"].astype(str) if rid < tonight]
+    previous = sorted(rid for rid in seeds if rid < tonight)
     if not previous:
         return None
-    now, before = _seed(seeds[tonight]), _seed(seeds[previous[-1]])
+    now, before = seeds[tonight], seeds[previous[-1]]
     if now == before:
         return None
     shift = (
-        "this changes the simulated event workload, so this release is judged "
-        "against a baseline re-anchored on it rather than on nights that "
-        "simulated different events"
+        "this changes the simulated event workload, so a move shared by the "
+        "whole run group may be the new event sample rather than the software"
     )
     # "No recorded seed", never "an unfixed seed": a run predating seed
     # recording and a run that deliberately drew a fresh one both land here,
@@ -697,6 +661,7 @@ def _group_report_from_frames(
 
     if seed_note := _random_seed_note(results_df, tonight):
         group.notes.append(seed_note)
+    group.notes.extend(_windows_spanning_a_seed_change(group.verdicts, results_df))
 
     group.verdicts.extend(config_failures)
     group.job_failures.extend(
@@ -730,7 +695,6 @@ def _with_region_deltas(
         for v in group.verdicts
         if v.severity is Severity.CONFIRMED
         and v.metric_family == "time"
-        and v.label != COMMON_MODE_LABEL  # no config, so no region files
         and v.last_accepted_run_date and v.onset_run_date
     }
     if not windows:

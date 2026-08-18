@@ -85,7 +85,6 @@ from k4bench.blame.prompt import (
     sample_line,
     window_phrase,
 )
-from k4bench.regression.common_mode import pretty_config
 from k4bench.regression.models import RegionDelta
 
 _log = logging.getLogger(__name__)
@@ -143,11 +142,6 @@ class MetricStep:
     value: float | None = None
     baseline_median: float | None = None
     z_score: float | None = None
-    #: The group-wide move divided out of ``value`` before it was judged, where
-    #: the run group moved as a whole (:mod:`k4bench.regression.common_mode`).
-    #: Without it the residual reads as the entire measurement, and the model
-    #: goes looking for a cause of the wrong size.
-    common_mode_shift: float | None = None
     #: This metric's own recent releases (:mod:`k4bench.blame.evidence`), or
     #: ``None`` for a report that predates recorded histories. The evidence that
     #: lets a model conclude the step is noise and blame nobody.
@@ -644,11 +638,11 @@ def _step_lines(request: RankRequest) -> list[str]:
     ones."""
     lines = ["- Metrics that stepped across the window:"]
     for step in request.metrics:
-        subject = f"{step.metric} ({pretty_config(step.label)})"
+        subject = f"{step.metric} ({step.label})"
         if step.sub_detector:
             subject += f" [{step.sub_detector}]"
         detail = measurement_phrase(
-            step.value, step.baseline_median, step.z_score, step.common_mode_shift,
+            step.value, step.baseline_median, step.z_score,
         )
         lines.append(
             f"  - {subject} {direction_phrase(step.direction, step.pct_change)}"
@@ -686,7 +680,7 @@ def _history_lines(request: RankRequest) -> list[str]:
     shown = [step for step in ranked if step.history][:_MAX_HISTORY_BLOCKS]
     lines: list[str] = []
     for step in shown:
-        subject = f"{step.metric} ({pretty_config(step.label)})"
+        subject = f"{step.metric} ({step.label})"
         if step.sub_detector:
             subject += f" [{step.sub_detector}]"
         lines.append("")

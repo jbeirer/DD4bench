@@ -1871,28 +1871,28 @@ def test_every_prior_state_has_its_own_wording():
 # ── Package facts belong to the window they were read for ─────────────────────
 
 def test_a_narrower_windows_package_diff_is_not_folded_into_this_one():
-    # A metric settled later carries a later base, so its regression enters this
-    # comment's window on a range of its own. Its package diff is that range's,
-    # not this window's — folding it in would state a changed-package set, and a
-    # "N of M tracked" denominator, that no provenance read ever produced.
-    subject = _verdict(metric="wall_time_s", base="2026-07-03", onset="2026-07-04")
-    narrower = _verdict(metric="peak_rss_mb", base="2026-07-035", onset="2026-07-04")
+    # A metric settled earlier carries an older base, so its regression enters
+    # this comment's window on a wider range of its own. Its package diff is
+    # that range's, not this window's — folding it in would state a
+    # changed-package set, and a "N of M tracked" denominator, that no
+    # provenance read ever produced. (The tighter window is the one that
+    # survives :func:`_collapse_nested_windows`, so it is the subject here.)
+    subject = _verdict(metric="wall_time_s", base="2026-07-035", onset="2026-07-04")
+    wider = _verdict(metric="peak_rss_mb", base="2026-07-03", onset="2026-07-04")
     blame = BlameReport("x", "2026-07-05", entries=(
-        _entry_with(subject, ["k4geo"], n_unchanged=18),
-        replace(
-            _entry_with(narrower, ["k4geo", "DD4hep", "edm4hep"], n_unchanged=2),
-            base_release="2026-07-035",
-        ),
+        replace(_entry_with(subject, ["k4geo"], n_unchanged=18),
+                base_release="2026-07-035"),
+        _entry_with(wider, ["k4geo", "DD4hep", "edm4hep"], n_unchanged=2),
     ))
     attributor = _FakeAttributor({"r1": 90.0, "r2": 90.0})
-    _comments(_report(subject, narrower), blame, attributor=attributor)
+    _comments(_report(subject, wider), blame, attributor=attributor)
     request = attributor.requests[0]
-    # Only the entry measuring exactly 2026-07-03 → 2026-07-04 contributes.
+    # Only the entry measuring exactly 2026-07-035 → 2026-07-04 contributes.
     assert [p.package for p in request.packages_by_platform[_PLAT]] == ["k4geo"]
     assert request.unchanged_by_platform == {_PLAT: 18}
     assert "1 of 19 tracked" in build_user_prompt(request)
-    # The narrower row is still collected as evidence — only its package diff
-    # is left out.
+    # The wider window's row is still collected as evidence — only its package
+    # diff is left out.
     assert len(request.regressions) == 2
 
 
@@ -1900,11 +1900,11 @@ def test_a_platform_with_no_diff_for_this_window_is_named_not_omitted():
     # "No diff was read for this platform" and "nothing changed on this
     # platform" are opposite claims; silence would assert the second.
     dbg = "x86_64-almalinux9-gcc14.2.0-dbg"
-    subject = _verdict(platform=_PLAT, base="2026-07-03")
-    other = _verdict(platform=dbg, base="2026-07-035")
+    subject = _verdict(platform=_PLAT, base="2026-07-035")
+    other = _verdict(platform=dbg, base="2026-07-03")
     blame = BlameReport("x", "2026-07-05", entries=(
-        _entry_with(subject, ["k4geo"]),
-        replace(_entry_with(other, ["DD4hep"]), base_release="2026-07-035"),
+        replace(_entry_with(subject, ["k4geo"]), base_release="2026-07-035"),
+        _entry_with(other, ["DD4hep"]),
     ))
     attributor = _FakeAttributor({"r1": 90.0, "r2": 90.0})
     _comments(_report(subject, other), blame, attributor=attributor)
@@ -2447,16 +2447,20 @@ def test_an_entry_measuring_a_narrower_window_contributes_no_references():
     blame = BlameReport(
         generated_at="x", report_night="2026-07-05",
         entries=(
-            _blame([wide], [_candidate()]).entries[0],
+            dataclasses.replace(
+                _blame([wide], [_candidate()]).entries[0],
+                historical_evidence=(_ref(pr=777),),
+            ),
             dataclasses.replace(
                 _blame([narrow], [_candidate()]).entries[0],
                 base_release="2026-07-03T-later",
-                historical_evidence=(_ref(pr=777),),
             ),
         ),
     )
+    # The tighter window is the one that survives, and it read no analogue of
+    # its own — the wider window's must not travel to it.
     plans = select(_report(wide, narrow), blame, _policy())
-    assert plans[0].base_release == "2026-07-03"
+    assert plans[0].base_release == "2026-07-03T-later"
     assert plans[0].historical_refs == ()
 
 
@@ -2560,3 +2564,47 @@ def test_exactly_the_cap_is_still_reviewed():
         plans, attributor=attributor, patch_for=patch_for, body_for=body_for,
     )
     assert len(attributor.requests[0].historical) == MAX_COMMENT_ANALOGUES
+
+
+def test_windows_nested_in_one_another_are_one_comment():
+    # The real shape: every series steps on the same onset, but one of them
+    # wobbled the night before and so infers an older base. Evidence is
+    # collected by onset alone, so the two windows hold identical rows — one
+    # finding, and the pull request must be notified once.
+    settled = _verdict(label="baseline", base="2026-07-03", onset="2026-07-04")
+    wobbled = _verdict(label="without_X", base="2026-07-02", onset="2026-07-04")
+    report = _report(settled, wobbled)
+    blame = _blame([settled, wobbled], [_candidate(number=611, score=95.0)])
+
+    plans = _plans(report, blame)
+    assert len(plans) == 1
+    # The surviving bound is the tightest one the night can support.
+    assert plans[0].base_release == "2026-07-03"
+    assert plans[0].onset_release == "2026-07-04"
+    # And it still carries every row, which is what made the two identical.
+    assert {row.verdict.label for row in plans[0].rows} == {"baseline", "without_X"}
+
+
+def test_an_unbounded_window_yields_to_a_dated_one():
+    # An open base is not a bound at all, so it can never be the tighter of two.
+    open_window = _verdict(label="baseline", base=None, onset="2026-07-04")
+    bounded = _verdict(label="without_X", base="2026-07-03", onset="2026-07-04")
+    report = _report(open_window, bounded)
+    blame = _blame([open_window, bounded], [_candidate(number=611, score=95.0)])
+
+    plans = _plans(report, blame)
+    assert len(plans) == 1
+    assert plans[0].base_release == "2026-07-03"
+
+
+def test_windows_with_different_onsets_stay_separate():
+    # Two genuinely different changes. Collapsing these would merge findings the
+    # nested-window rule has no claim over.
+    first = _verdict(label="baseline", base="2026-07-01", onset="2026-07-02")
+    second = _verdict(label="baseline", base="2026-07-03", onset="2026-07-04",
+                      metric="mean_time_s")
+    report = _report(first, second)
+    blame = _blame([first, second], [_candidate(number=611, score=95.0)])
+
+    plans = _plans(report, blame)
+    assert {p.onset_release for p in plans} == {"2026-07-02", "2026-07-04"}

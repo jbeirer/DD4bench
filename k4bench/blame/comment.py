@@ -624,6 +624,51 @@ def _confirmed_rows(report: NightlyReport) -> Iterator[tuple[MetricVerdict, str]
 _Confirmed = tuple[MetricVerdict, str, "BlameEntry | None"]
 
 
+def _tighter(base: str | None, than: str | None) -> bool:
+    """Is *base* a tighter lower bound on a window than *than*? ``None`` is not
+    a bound at all, so any date beats it and it never beats anything."""
+    if base is None:
+        return False
+    return than is None or base > than
+
+
+def _collapse_nested_windows(plans: list[CommentPlan]) -> list[CommentPlan]:
+    """One comment per ``(pull request, onset)``, bounded as tightly as the
+    night can bound it.
+
+    A window's *base* is inferred per metric series — the last release that
+    series was settled on — so one step is reported against several bases
+    whenever a series happened to wobble the night before the onset
+    (:func:`~k4bench.blame.evidence.steps_in_window` documents why the base
+    therefore cannot be part of the match). Those are not several findings:
+    evidence is collected by onset alone (:func:`_collect_window`), so plans
+    sharing a pull request and an onset are filled with the *identical* rows and
+    can differ only in how far back their bound reaches.
+
+    Left alone they publish as separate comments — the marker is the window
+    (:func:`marker_for`) — so one finding notifies a pull request twice, in a
+    repository k4Bench does not own. The tightest base survives: it is the most
+    informative bound, and the widest one is the likeliest to span some
+    unrelated change and invite the reader to look for it.
+    """
+    best: dict[tuple[str, int, str], CommentPlan] = {}
+    for plan in plans:
+        key = (plan.repo.lower(), plan.number, plan.onset_release)
+        kept = best.get(key)
+        if kept is None:
+            best[key] = plan
+        elif _tighter(plan.base_release, kept.base_release):
+            # The collapsed windows share their rows, so the identity rendered
+            # must not depend on which of them was walked first: carry the
+            # strongest first-pass judgement onto the surviving plan.
+            if kept.subject.score > plan.subject.score:
+                plan.subject = kept.subject
+            best[key] = plan
+        elif plan.subject.score > kept.subject.score:
+            kept.subject = plan.subject
+    return list(best.values())
+
+
 def _targets(
     confirmed: list[_Confirmed], policy: CommentPolicy
 ) -> list[CommentPlan]:
@@ -634,7 +679,10 @@ def _targets(
     allowlisted repo, merged, ranked, at or above ``min_score``, from an entry
     whose candidate discovery was complete, and whose step the ranker did not
     read as noise. Evidence is gathered afterwards (:func:`_collect_window`), so
-    no row can widen or narrow the field here."""
+    no row can widen or narrow the field here.
+
+    Windows nested inside one another are one target, not several — see
+    :func:`_collapse_nested_windows`."""
     plans: dict[tuple[str, int, str | None, str], CommentPlan] = {}
     for _verdict, _stack, entry in confirmed:
         if entry is None or entry.discovery_incomplete:
@@ -677,7 +725,7 @@ def _targets(
                 # so the identity rendered never depends on which metric was
                 # walked first.
                 plan.subject = candidate
-    return list(plans.values())
+    return _collapse_nested_windows(list(plans.values()))
 
 
 def _collect_window(confirmed: list[_Confirmed], plan: CommentPlan) -> None:
@@ -1173,7 +1221,6 @@ def _fact(row: RegressionRow) -> RegressionFact:
         sub_detector=v.sub_detector, direction=str(getattr(v.direction, "value", v.direction)),
         pct_change=v.pct_change, value=v.value,
         baseline_median=v.baseline_median, z_score=v.z_score,
-        common_mode_shift=v.common_mode_shift,
         scope_score=row.scope_score, scope_reason=row.scope_reason,
         scope_state=row.scope_state,
         # The release-boundary package counts come from the sidecar entry that
