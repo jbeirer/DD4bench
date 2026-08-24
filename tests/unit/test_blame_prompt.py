@@ -213,7 +213,7 @@ def test_sub_threshold_movement_reads_as_movement_not_as_flatness():
 
 def test_a_thinly_covered_control_says_how_much_it_could_not_read():
     lines = outcome_lines((_outcome("IDEA_o1_v03", unjudged=3),), 10)
-    assert "3 further metric(s) had too little history to judge" in lines[2]
+    assert "3 further metric(s) were recorded but not judged" in lines[2]
 
 
 def test_controls_past_the_cap_are_counted_rather_than_dropped_silently():

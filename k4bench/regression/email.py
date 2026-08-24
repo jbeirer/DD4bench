@@ -51,6 +51,8 @@ from k4bench.regression.models import (
     NightlyReport,
     RunGroupReport,
     Severity,
+    Unjudged,
+    unjudged_cause,
 )
 from k4bench.labels import pretty_platform, pretty_sample
 from k4bench.regression.render import (
@@ -1467,16 +1469,28 @@ def _html_detail_row(v: MetricVerdict) -> str:
 
 
 def _quiet_summary(group: RunGroupReport) -> str:
-    """One-line OK/Watch/insufficient-history summary for a group — never a row
-    per quiet metric."""
+    """One-line summary of quiet and unjudged metrics in a group."""
     n_ok = sum(1 for v in group.verdicts if v.severity is Severity.OK)
     n_watch = len(group.watches)
-    n_unknown = sum(1 for v in group.verdicts if v.severity is Severity.UNKNOWN)
-    parts = [f"{n_ok} within baseline"]
+    causes = [
+        unjudged_cause(v)
+        for v in group.verdicts
+        if v.severity is Severity.UNKNOWN
+    ]
+    n_insufficient = causes.count(Unjudged.INSUFFICIENT_HISTORY)
+    n_unreliable = causes.count(Unjudged.UNRELIABLE_HOST)
+    n_unplaced = causes.count(None)
+    has_judged = any(v.severity is not Severity.UNKNOWN for v in group.verdicts)
+
+    parts = [f"{n_ok} within baseline" if has_judged else "no metrics judged"]
     if n_watch:
         parts.append(f"{n_watch} on watch (unconfirmed)")
-    if n_unknown:
-        parts.append(f"{n_unknown} with insufficient history")
+    if n_insufficient:
+        parts.append(f"{n_insufficient} with insufficient history")
+    if n_unreliable:
+        parts.append(f"{n_unreliable} not judged (unreliable host)")
+    if n_unplaced:
+        parts.append(f"{n_unplaced} not judged")
     reliability = {True: "reliable", False: "unreliable", None: "reliability unknown"}[group.reliable]
     return f"{', '.join(parts)} · {reliability}"
 

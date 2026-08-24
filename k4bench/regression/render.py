@@ -36,6 +36,7 @@ from k4bench.regression.models import (
     ReleasePoint,
     RunGroupReport,
     Severity,
+    Unjudged,
 )
 
 #: Badge vocabulary, matching the dashboard's (✅/🔴/⚠️/➖/❔). A confirmed
@@ -79,7 +80,10 @@ def _detector_badge(groups: list[RunGroupReport]) -> str:
         return "🔴"
     if any(g.watches for g in groups):
         return "⚠️"
-    if all(not g.verdicts and g.notes for g in groups):
+    if all(
+        not any(v.severity is not Severity.UNKNOWN for v in g.verdicts)
+        for g in groups
+    ):
         return "❔"
     return "✅"
 
@@ -250,7 +254,7 @@ def regression_href(
 def _sanitize(obj):
     """Make the dataclass dump strictly JSON-serializable: enums → values,
     non-finite floats → None (strict JSON has no Infinity/NaN)."""
-    if isinstance(obj, Severity | Direction):
+    if isinstance(obj, Severity | Direction | Unjudged):
         return obj.value
     if isinstance(obj, float) and not math.isfinite(obj):
         return None
@@ -371,6 +375,16 @@ def _region_deltas(raw: object) -> tuple[RegionDelta, ...]:
     return tuple(deltas)
 
 
+def _unjudged(raw: object) -> Unjudged | None:
+    """Best-effort parser for an additive unjudged-cause value."""
+    if raw is None:
+        return None
+    try:
+        return Unjudged(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def from_json(data: dict) -> NightlyReport:
     """Rebuild a :class:`NightlyReport` from :func:`to_json` output (used by
     the dashboard when reading ``_reports/{date}/report.json`` off EOS)."""
@@ -383,6 +397,7 @@ def from_json(data: dict) -> NightlyReport:
                 "direction": Direction(v["direction"]),
                 "history": _history(v.get("history")),
                 "region_deltas": _region_deltas(v.get("region_deltas")),
+                "unjudged": _unjudged(v.get("unjudged")),
             })
             for v in g.get("verdicts", [])
         ]

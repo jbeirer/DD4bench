@@ -32,6 +32,8 @@ from k4bench.regression.models import (
     NightlyReport,
     RunGroupReport,
     Severity,
+    Unjudged,
+    unjudged_cause,
 )
 from k4bench.labels import pretty_sample
 from sections import SectionScope, regressions_derived_release
@@ -820,11 +822,22 @@ def _render_group(
         if v.severity in (Severity.WATCH, Severity.CONFIRMED)
         and v.label not in failure_labels
     ]
-    n_unknown = sum(
-        1 for v in group.verdicts if v.severity is Severity.UNKNOWN
-    )
-    if n_unknown:
-        st.caption(f"❔ {n_unknown} metric(s) not judged — insufficient history.")
+    unjudged_causes = [
+        unjudged_cause(v)
+        for v in group.verdicts
+        if v.severity is Severity.UNKNOWN
+    ]
+    n_insufficient = unjudged_causes.count(Unjudged.INSUFFICIENT_HISTORY)
+    n_unreliable = unjudged_causes.count(Unjudged.UNRELIABLE_HOST)
+    n_unplaced = unjudged_causes.count(None)
+    if n_insufficient:
+        st.caption(f"❔ {n_insufficient} metric(s) with insufficient history.")
+    if n_unreliable:
+        st.caption(
+            f"❔ {n_unreliable} metric(s) not judged (unreliable host)."
+        )
+    if n_unplaced:
+        st.caption(f"❔ {n_unplaced} metric(s) not judged.")
 
     # The trend comes first — it's the first question a flagged night raises
     # ("what does this look like?") — the upstream-changes card follows with

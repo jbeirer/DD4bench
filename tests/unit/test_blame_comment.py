@@ -45,6 +45,7 @@ from k4bench.regression.models import (
     NightlyReport,
     RunGroupReport,
     Severity,
+    Unjudged,
 )
 from k4bench.regression.render import regression_href
 
@@ -62,7 +63,8 @@ def _policy(**kw) -> CommentPolicy:
 def _verdict(*, metric="wall_time_s", label="baseline", onset="2026-07-04",
              base="2026-07-03", pct=0.2, detector="ALLEGRO_o1_v03",
              sample="single_e-_10GeV", sub=None, platform=_PLAT,
-             severity=Severity.CONFIRMED) -> MetricVerdict:
+             severity=Severity.CONFIRMED,
+             unjudged: Unjudged | None = None) -> MetricVerdict:
     return MetricVerdict(
         detector=detector, platform=platform, sample=sample,
         label=label, metric_family="time", metric=metric, sub_detector=sub,
@@ -72,6 +74,7 @@ def _verdict(*, metric="wall_time_s", label="baseline", onset="2026-07-04",
         onset_run_id=onset, onset_run_date=onset,
         last_accepted_run_id=base, last_accepted_run_date=base,
         first_confirmed_run_id="2026-07-05",
+        unjudged=unjudged,
     )
 
 
@@ -479,12 +482,16 @@ def test_a_control_is_found_even_though_the_onset_is_long_past():
 
 
 def test_a_configuration_with_nothing_judged_is_not_a_clean_control():
-    # UNKNOWN is "too little history to judge", not "flat". A configuration whose
-    # every metric is still warming up measured nothing that can disagree with
-    # the regressed rows, and showing it as one that did not move is the false
-    # negative evidence that can talk the review out of a real attribution.
+    # A configuration whose every metric is still warming up measured nothing
+    # that can disagree with the regressed rows. Showing it as one that did not
+    # move is false negative evidence that can talk the review out of a real
+    # attribution.
     allegro = _verdict(detector="ALLEGRO_o1_v03")
-    idea = _verdict(detector="IDEA_o1_v03", severity=Severity.UNKNOWN)
+    idea = _verdict(
+        detector="IDEA_o1_v03",
+        severity=Severity.UNKNOWN,
+        unjudged=Unjudged.INSUFFICIENT_HISTORY,
+    )
     attributor = _FakeAttributor({"r1": 90.0})
     _comments(_report(allegro, idea), _blame([allegro], [_candidate()]),
               attributor=attributor)
@@ -497,7 +504,8 @@ def test_a_partly_judged_configuration_is_offered_with_its_gap_stated():
     idea_ok = _verdict(detector="IDEA_o1_v03", metric="wall_time_s",
                        severity=Severity.OK)
     idea_new = _verdict(detector="IDEA_o1_v03", metric="peak_rss_mb",
-                        severity=Severity.UNKNOWN)
+                        severity=Severity.UNKNOWN,
+                        unjudged=Unjudged.INSUFFICIENT_HISTORY)
     attributor = _FakeAttributor({"r1": 90.0})
     _comments(_report(allegro, idea_ok, idea_new),
               _blame([allegro], [_candidate()]), attributor=attributor)
@@ -505,7 +513,7 @@ def test_a_partly_judged_configuration_is_offered_with_its_gap_stated():
     assert (outcome.detector, outcome.status, outcome.unjudged) == (
         "IDEA_o1_v03", "clean", 1,
     )
-    assert "too little history to judge" in build_user_prompt(
+    assert "recorded but not judged" in build_user_prompt(
         attributor.requests[0]
     )
 
@@ -1730,7 +1738,8 @@ def test_the_digest_changes_when_a_controls_coverage_changes():
     blame = _blame([v], [_candidate()])
     clean = _verdict(detector="IDEA_o1_v03", severity=Severity.OK)
     unjudged = _verdict(detector="IDEA_o1_v03", metric="peak_rss_mb",
-                        severity=Severity.UNKNOWN)
+                        severity=Severity.UNKNOWN,
+                        unjudged=Unjudged.INSUFFICIENT_HISTORY)
     assert _digest(_report(v, clean), blame) != _digest(
         _report(v, clean, unjudged), blame
     )

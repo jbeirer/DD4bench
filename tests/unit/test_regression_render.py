@@ -22,8 +22,12 @@ from k4bench.regression.models import (
     ReleasePoint,
     RunGroupReport,
     Severity,
+    Unjudged,
+    REPORTED_ONLY_REASON,
+    UNRELIABLE_HOST_REASON,
+    unjudged_cause,
 )
-from k4bench.regression.render import from_json, to_json
+from k4bench.regression.render import _detector_badge, from_json, to_json
 
 
 def _verdict(**overrides) -> MetricVerdict:
@@ -57,6 +61,38 @@ def _full_report() -> NightlyReport:
         notes=["tonight's run failed the host reliability check"],
     )
     return NightlyReport(generated_at="2026-01-12T06:00:00+00:00", groups=[group])
+
+
+def test_detector_badge_marks_groups_with_nothing_judged_as_unknown():
+    unknown_group = RunGroupReport(
+        detector="DET", platform="PLAT", sample="single_e",
+        k4h_release="key4hep-2026-01-01", run_date="2026-01-12",
+        run_id="2026-01-12",
+        verdicts=[_verdict(
+            severity=Severity.UNKNOWN,
+            unjudged=Unjudged.UNRELIABLE_HOST,
+        )],
+    )
+    assert _detector_badge([unknown_group]) == "❔"
+    assert _detector_badge([]) == "❔"
+
+
+def test_detector_badge_is_ok_when_any_group_has_a_judged_metric():
+    unknown_group = RunGroupReport(
+        detector="DET", platform="PLAT", sample="single_e",
+        k4h_release="key4hep-2026-01-01", run_date="2026-01-12",
+        run_id="2026-01-12",
+        verdicts=[_verdict(
+            severity=Severity.UNKNOWN,
+            unjudged=Unjudged.REPORTED_ONLY,
+        )],
+    )
+    judged_group = dataclasses.replace(
+        unknown_group,
+        sample="p8_ee_Zbb_ecm91",
+        verdicts=[_verdict(severity=Severity.OK)],
+    )
+    assert _detector_badge([unknown_group, judged_group]) == "✅"
 
 
 def test_group_title_prettifies_known_sample_and_platform_layouts():
@@ -225,6 +261,8 @@ _REPEAT_FIELDS = {"first_confirmed_run_id"}
 #: weigh a step against the series it stepped out of, and the region breakdown
 #: saying where inside the detector a timing step landed.
 _HISTORY_FIELDS = {"history", "region_deltas"}
+#: Machine-readable reason an UNKNOWN verdict was not judged.
+_UNJUDGED_FIELDS = {"unjudged"}
 #: The verdict schema a reader deployed before these features knew about. The
 #: compatibility contract is that the new fields are *purely additive* to this
 #: set — anything else (a renamed or dropped field) breaks an old reader in a
@@ -240,15 +278,14 @@ def test_new_report_is_additive_over_the_pre_window_schema():
     # The load-bearing compatibility direction: a report the *current* writer
     # emits must stay readable by a reader deployed before these fields existed
     # (once that reader also drops unknowns — the deployed reader must ship
-    # first). That holds iff the window and repeat fields are the *only*
-    # additions, so a verdict stripped of them reconstructs exactly the old
-    # schema.
+    # first). That holds iff every newer field is purely additive, so a verdict
+    # stripped of those fields reconstructs exactly the old schema.
     data = to_json(_full_report())
     for g in data["groups"]:
         for v in g["verdicts"]:
             assert v.keys() == (
                 _PRE_WINDOW_FIELDS | _WINDOW_FIELDS | _REPEAT_FIELDS
-                | _HISTORY_FIELDS
+                | _HISTORY_FIELDS | _UNJUDGED_FIELDS
             )
             old_view = {k: val for k, val in v.items() if k in _PRE_WINDOW_FIELDS}
             MetricVerdict(**{
@@ -256,6 +293,58 @@ def test_new_report_is_additive_over_the_pre_window_schema():
                 "severity": Severity(old_view["severity"]),
                 "direction": Direction(old_view["direction"]),
             })
+
+
+def test_unjudged_cause_survives_json_roundtrip():
+    verdict = _verdict(
+        severity=Severity.UNKNOWN, direction=Direction.NONE,
+        baseline_median=None, baseline_mad=None, pct_change=None, z_score=None,
+        reason=REPORTED_ONLY_REASON, unjudged=Unjudged.REPORTED_ONLY,
+    )
+    report = NightlyReport(generated_at="", groups=[RunGroupReport(
+        detector="DET", platform="PLAT", sample="single_e",
+        k4h_release="key4hep-2026-01-12", run_date="2026-01-12",
+        run_id="2026-01-12", verdicts=[verdict],
+    )])
+
+    data = to_json(report)
+    assert data["groups"][0]["verdicts"][0]["unjudged"] == "reported_only"
+    restored = from_json(json.loads(json.dumps(data))).groups[0].verdicts[0]
+    assert restored.unjudged is Unjudged.REPORTED_ONLY
+    assert unjudged_cause(restored) is Unjudged.REPORTED_ONLY
+
+
+def test_from_json_tolerates_missing_and_unknown_unjudged_cause():
+    data = to_json(_full_report())
+    verdicts = data["groups"][0]["verdicts"]
+    verdicts[0].pop("unjudged")
+    verdicts[1]["unjudged"] = "some_future_cause"
+
+    restored = from_json(data).groups[0].verdicts
+    assert restored[0].unjudged is None
+    assert restored[1].unjudged is None
+
+
+def test_unjudged_cause_places_legacy_reason_strings():
+    cases = {
+        UNRELIABLE_HOST_REASON: Unjudged.UNRELIABLE_HOST,
+        REPORTED_ONLY_REASON: Unjudged.REPORTED_ONLY,
+        "only 3 reliable baseline runs (<7) — not judged": (
+            Unjudged.INSUFFICIENT_HISTORY
+        ),
+    }
+    for reason, expected in cases.items():
+        verdict = _verdict(
+            severity=Severity.UNKNOWN, direction=Direction.NONE,
+            reason=reason, unjudged=None,
+        )
+        assert unjudged_cause(verdict) is expected
+
+    assert unjudged_cause(_verdict(reason=UNRELIABLE_HOST_REASON)) is None
+    assert unjudged_cause(_verdict(
+        severity=Severity.UNKNOWN, direction=Direction.NONE,
+        reason="not judged for an unknown future reason",
+    )) is None
 
 
 # ── What the blame pipeline reads back ────────────────────────────────────────

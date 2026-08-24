@@ -30,6 +30,7 @@ from k4bench.regression.models import (
     NightlyReport,
     RunGroupReport,
     Severity,
+    Unjudged,
 )
 
 DET = "ALLEGRO_o1_v03"
@@ -157,6 +158,73 @@ def test_failure_count_precedes_regression_counts_in_subject():
 def test_preheader_expands_subject_with_coverage_and_watch():
     r = _report(_group(_v(Severity.WATCH), reliable=True))
     assert preheader(r) == "0 failures · 0 new · 0 reconfirmed · 1 watch · 1/1 groups judged"
+
+
+def test_quiet_summary_for_ok_metrics():
+    group = _group(_v(Severity.OK), reliable=True)
+    assert email._quiet_summary(group) == "1 within baseline · reliable"
+
+
+def test_quiet_summary_includes_watches():
+    group = _group(
+        _v(Severity.OK),
+        _v(Severity.WATCH, metric="mean_time_s"),
+        reliable=True,
+    )
+    assert email._quiet_summary(group) == (
+        "1 within baseline, 1 on watch (unconfirmed) · reliable"
+    )
+
+
+def test_quiet_summary_names_unreliable_host_metrics():
+    group = _group(
+        _v(
+            Severity.UNKNOWN,
+            unjudged=Unjudged.UNRELIABLE_HOST,
+            baseline_median=None,
+        ),
+        reliable=False,
+    )
+    assert email._quiet_summary(group) == (
+        "no metrics judged, 1 not judged (unreliable host) · unreliable"
+    )
+
+
+def test_quiet_summary_omits_reported_only_metrics():
+    group = _group(
+        _v(Severity.OK),
+        _v(
+            Severity.UNKNOWN,
+            metric="user_cpu_s",
+            unjudged=Unjudged.REPORTED_ONLY,
+            baseline_median=None,
+        ),
+        reliable=True,
+    )
+    summary = email._quiet_summary(group)
+    assert summary == "1 within baseline · reliable"
+    assert "insufficient history" not in summary
+
+
+def test_quiet_summary_distinguishes_history_and_unplaced_unknowns():
+    group = _group(
+        _v(
+            Severity.UNKNOWN,
+            unjudged=Unjudged.INSUFFICIENT_HISTORY,
+            baseline_median=None,
+        ),
+        _v(
+            Severity.UNKNOWN,
+            metric="future_metric",
+            unjudged=None,
+            reason="not judged for a future reason",
+            baseline_median=None,
+        ),
+        reliable=True,
+    )
+    assert email._quiet_summary(group) == (
+        "no metrics judged, 1 with insufficient history, 1 not judged · reliable"
+    )
 
 
 # ── Rendering and ordering ────────────────────────────────────────────────────

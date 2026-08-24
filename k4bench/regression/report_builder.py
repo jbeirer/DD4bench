@@ -40,6 +40,8 @@ from k4bench.regression.engine import (
 from k4bench.regression.history import history_tail, host_facts, release_points
 from k4bench.regression.models import (
     MISSING_RUN_FAILURE,
+    REPORTED_ONLY_REASON,
+    UNRELIABLE_HOST_REASON,
     Direction,
     HostFact,
     MetricVerdict,
@@ -47,6 +49,7 @@ from k4bench.regression.models import (
     RunGroupReport,
     SeriesId,
     Severity,
+    Unjudged,
 )
 from k4bench.regression.regions import region_deltas
 from k4bench.remote import (
@@ -195,11 +198,15 @@ def unjudged_value_verdicts(
                     value=float(val), baseline_median=None, baseline_mad=None,
                     pct_change=None, z_score=None,
                     severity=Severity.UNKNOWN, direction=Direction.NONE,
-                    reason=(
-                        "recorded but not judged — reports the same measurement "
-                        "as an already-judged metric"
+                    unjudged=(
+                        Unjudged.REPORTED_ONLY
                         if metric in REPORTED_ONLY_METRICS else
-                        "unreliable host — value recorded but not judged"
+                        Unjudged.UNRELIABLE_HOST
+                    ),
+                    reason=(
+                        REPORTED_ONLY_REASON
+                        if metric in REPORTED_ONLY_METRICS else
+                        UNRELIABLE_HOST_REASON
                     ),
                 ))
 
@@ -637,6 +644,7 @@ def _group_report_from_frames(
                 first_confirmed_run_id=None,
                 history=(),
                 region_deltas=(),
+                unjudged=None,
             )
             for verdicts in display_series.values()
             for verdict in verdicts

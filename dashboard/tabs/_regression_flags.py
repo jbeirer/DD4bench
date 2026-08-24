@@ -113,6 +113,7 @@ def failed_metric_options(
             first_confirmed_run_id=None,
             history=(),
             region_deltas=(),
+            unjudged=None,
         ))
     return out
 
