@@ -27,7 +27,7 @@ from k4bench.regression.models import (
     UNRELIABLE_HOST_REASON,
     unjudged_cause,
 )
-from k4bench.regression.render import from_json, to_json
+from k4bench.regression.render import _detector_badge, from_json, to_json
 
 
 def _verdict(**overrides) -> MetricVerdict:
@@ -61,6 +61,38 @@ def _full_report() -> NightlyReport:
         notes=["tonight's run failed the host reliability check"],
     )
     return NightlyReport(generated_at="2026-01-12T06:00:00+00:00", groups=[group])
+
+
+def test_detector_badge_marks_groups_with_nothing_judged_as_unknown():
+    unknown_group = RunGroupReport(
+        detector="DET", platform="PLAT", sample="single_e",
+        k4h_release="key4hep-2026-01-01", run_date="2026-01-12",
+        run_id="2026-01-12",
+        verdicts=[_verdict(
+            severity=Severity.UNKNOWN,
+            unjudged=Unjudged.UNRELIABLE_HOST,
+        )],
+    )
+    assert _detector_badge([unknown_group]) == "❔"
+    assert _detector_badge([]) == "❔"
+
+
+def test_detector_badge_is_ok_when_any_group_has_a_judged_metric():
+    unknown_group = RunGroupReport(
+        detector="DET", platform="PLAT", sample="single_e",
+        k4h_release="key4hep-2026-01-01", run_date="2026-01-12",
+        run_id="2026-01-12",
+        verdicts=[_verdict(
+            severity=Severity.UNKNOWN,
+            unjudged=Unjudged.REPORTED_ONLY,
+        )],
+    )
+    judged_group = dataclasses.replace(
+        unknown_group,
+        sample="p8_ee_Zbb_ecm91",
+        verdicts=[_verdict(severity=Severity.OK)],
+    )
+    assert _detector_badge([unknown_group, judged_group]) == "✅"
 
 
 def test_group_title_prettifies_known_sample_and_platform_layouts():

@@ -80,7 +80,10 @@ def _detector_badge(groups: list[RunGroupReport]) -> str:
         return "🔴"
     if any(g.watches for g in groups):
         return "⚠️"
-    if all(not g.verdicts and g.notes for g in groups):
+    if all(
+        not any(v.severity is not Severity.UNKNOWN for v in g.verdicts)
+        for g in groups
+    ):
         return "❔"
     return "✅"
 

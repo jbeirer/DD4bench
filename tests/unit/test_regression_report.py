@@ -298,6 +298,22 @@ def test_failed_config_metrics_are_not_judged(tmp_path):
     assert "metrics were not judged" in group.failures[0].reason
 
 
+def test_failed_warmup_metrics_do_not_keep_an_unjudged_cause(tmp_path):
+    run_dirs = _make_history(
+        tmp_path, [100.0, 100.0, 5.0], {2: {"returncode": 139}},
+    )
+
+    group = group_report_from_run_dirs(
+        "DET", _PLAT, "single_e", tuple(str(d) for d in run_dirs)
+    )
+
+    assert group is not None
+    recorded = [v for v in group.verdicts if v.metric != "returncode"]
+    assert recorded
+    assert {v.severity for v in recorded} == {Severity.FAILURE}
+    assert all(v.unjudged is None for v in recorded)
+
+
 def test_historical_failures_do_not_poison_recovery_baseline(tmp_path):
     run_dirs = _make_history(
         tmp_path,

@@ -193,6 +193,22 @@ comparison, and treating the missing side as zero would report the whole detecto
 as newly appearing. A region present on one end only keeps `null` on the other:
 it genuinely appeared or disappeared.
 
+### Why a metric was not judged (`report.json`)
+
+Every verdict with `severity: "UNKNOWN"` may carry an `unjudged` discriminator
+that explains why no judgement was made:
+
+- `insufficient_history` — too few settled baseline runs were available;
+- `unreliable_host` — the run failed the host-reliability check; or
+- `reported_only` — the metric duplicates a measurement that another metric
+  already judges and is therefore never judged by design.
+
+The field is `null` on judged verdicts. Older reports may omit it entirely, and
+readers must also tolerate values introduced by newer writers that they do not
+yet recognise. In either case, readers may use the verdict's reason text as a
+compatibility fallback, but must not assume every `UNKNOWN` means insufficient
+history.
+
 ### Blame sidecar (`blame.json`)
 
 For each confirmed regression whose blame window spans two *different* releases,

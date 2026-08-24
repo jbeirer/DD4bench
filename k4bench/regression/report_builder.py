@@ -644,6 +644,7 @@ def _group_report_from_frames(
                 first_confirmed_run_id=None,
                 history=(),
                 region_deltas=(),
+                unjudged=None,
             )
             for verdicts in display_series.values()
             for verdict in verdicts

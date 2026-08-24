@@ -27,6 +27,7 @@ from k4bench.regression.models import (  # noqa: E402
     NightlyReport,
     RunGroupReport,
     Severity,
+    Unjudged,
 )
 from k4bench.regression.render import to_json  # noqa: E402
 
@@ -169,6 +170,28 @@ def test_banner_counts_the_groups_verdicts():
     assert "Detectors checked" not in by_label  # cross-detector count is Overview's
 
 
+def test_reported_only_unknown_has_no_unjudged_caption():
+    reported_only = _verdict(
+        "user_cpu_s", Severity.UNKNOWN, None,
+        unjudged=Unjudged.REPORTED_ONLY, baseline_median=None,
+    )
+    at = _run(_report([_group(verdicts=[reported_only])]))
+    assert not any("metric(s) not judged" in c.value for c in at.caption)
+    assert not any("insufficient history" in c.value for c in at.caption)
+
+
+def test_unreliable_host_unknown_is_named_in_caption():
+    unreliable = _verdict(
+        "wall_time_s", Severity.UNKNOWN, None,
+        unjudged=Unjudged.UNRELIABLE_HOST, baseline_median=None,
+    )
+    at = _run(_report([_group(verdicts=[unreliable])]))
+    assert any(
+        c.value == "❔ 1 metric(s) not judged (unreliable host)."
+        for c in at.caption
+    )
+
+
 def test_trend_preview_defaults_to_the_worst_confirmed_flag():
     at = _run(_report([_group(verdicts=_FLAGGED)]))
     # A single-night release still shows the report-night picker (one option),
@@ -196,10 +219,11 @@ def test_failed_metric_value_stays_in_preview_and_is_labelled_failure():
         reason="config exited with returncode 139 — its metrics were not judged",
     )
     raw_wall = _verdict(
-        "wall_time_s", Severity.FAILURE, None,
+        "wall_time_s", Severity.UNKNOWN, None,
         value=5.0, baseline_median=100.0, baseline_mad=1.0,
         pct_change=-0.95, z_score=-95.0,
         direction=Direction.NONE,
+        unjudged=Unjudged.INSUFFICIENT_HISTORY,
         reason="config failed — value recorded but not judged",
     )
 
@@ -208,6 +232,7 @@ def test_failed_metric_value_stays_in_preview_and_is_labelled_failure():
     preview = _preview(at)
     assert preview.value.metric == "wall_time_s"
     assert preview.value.severity is Severity.FAILURE
+    assert preview.value.unjudged is None
     assert preview.value.value == 5.0
     assert preview.options[1] == "❌ Failure · wall time · baseline — Δ -95.0%"
 
