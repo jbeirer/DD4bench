@@ -477,13 +477,12 @@ def outcome_lines(
             f"{outcome.detector} · {outcome.sample} · {outcome.platform} · "
             f"{outcome.label}"
         )
-        # An unjudged metric is one this configuration measured but had too
-        # little settled history to read — it is neither agreement nor
-        # disagreement, and saying so keeps a thinly-covered control from being
-        # weighed like a fully-read one.
+        # An unjudged metric is one this configuration measured but could not
+        # assess — it is neither agreement nor disagreement, and saying so keeps
+        # a thinly-covered control from being weighed like a fully-read one.
         gap = (
-            f"; {outcome.unjudged} further metric(s) had too little history to "
-            "judge" if outcome.unjudged else ""
+            f"; {outcome.unjudged} further metric(s) were recorded but not "
+            "judged" if outcome.unjudged else ""
         )
         if outcome.status == "watch":
             watched = ", ".join(outcome.watched[:6]) or "some metrics"

@@ -28,6 +28,7 @@ from k4bench.regression.models import (
     ReleasePoint,
     RunGroupReport,
     Severity,
+    Unjudged,
 )
 
 _PLAT = "x86_64-almalinux9-gcc14.2.0-opt"
@@ -195,11 +196,13 @@ def _group(detector, *, reliable=True, verdicts=(), failures=(),
     )
 
 
-def _flat(label="baseline", severity=Severity.OK, metric="wall_time_s") -> MetricVerdict:
+def _flat(label="baseline", severity=Severity.OK, metric="wall_time_s",
+          **kw) -> MetricVerdict:
     return _verdict(
         label=label, metric=metric, severity=severity, direction=Direction.NONE,
         onset_run_id=None, onset_run_date=None,
         last_accepted_run_id=None, last_accepted_run_date=None,
+        **kw,
     )
 
 
@@ -233,15 +236,47 @@ def test_an_unreliable_or_failed_run_is_silence_not_a_clean_result():
 
 
 def test_a_configuration_with_nothing_judged_never_becomes_a_control():
-    unread = _flat(severity=Severity.UNKNOWN)
+    unread = _flat(
+        severity=Severity.UNKNOWN,
+        unjudged=Unjudged.INSUFFICIENT_HISTORY,
+    )
     assert _outcomes([_group("IDEA_o1_v03", verdicts=[unread])]) == ()
 
 
 def test_partial_coverage_is_offered_as_the_partial_evidence_it_is():
     outcomes = _outcomes([_group("IDEA_o1_v03", verdicts=[
-        _flat(), _flat(metric="peak_rss_mb", severity=Severity.UNKNOWN),
+        _flat(),
+        _flat(
+            metric="peak_rss_mb",
+            severity=Severity.UNKNOWN,
+            unjudged=Unjudged.INSUFFICIENT_HISTORY,
+        ),
     ])])
     assert outcomes[0].unjudged == 1
+
+
+def test_reported_only_metric_does_not_reduce_control_coverage():
+    outcomes = _outcomes([_group("IDEA_o1_v03", verdicts=[
+        _flat(),
+        _flat(
+            metric="user_cpu_s",
+            severity=Severity.UNKNOWN,
+            unjudged=Unjudged.REPORTED_ONLY,
+        ),
+    ])])
+    assert len(outcomes) == 1
+    assert outcomes[0].unjudged == 0
+
+
+def test_only_reported_only_metrics_never_become_a_control():
+    reported_only = _flat(
+        metric="user_cpu_s",
+        severity=Severity.UNKNOWN,
+        unjudged=Unjudged.REPORTED_ONLY,
+    )
+    assert _outcomes([
+        _group("IDEA_o1_v03", verdicts=[reported_only])
+    ]) == ()
 
 
 def test_sub_threshold_movement_is_weak_agreement_not_disagreement():

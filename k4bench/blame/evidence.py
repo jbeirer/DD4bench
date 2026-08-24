@@ -37,6 +37,8 @@ from k4bench.regression.models import (
     NightlyReport,
     ReleasePoint,
     Severity,
+    Unjudged,
+    unjudged_cause,
 )
 
 
@@ -340,10 +342,11 @@ class ScopeOutcome:
     evidence must never be rendered as evidence of absence.
 
     ``unjudged`` counts the metrics this configuration recorded but could not
-    judge — too little settled history behind them (``UNKNOWN``). They are not
-    flat, they are unread, so the prompt states them: a configuration whose every
-    metric is unjudged never becomes an outcome at all, and one with partial
-    coverage is offered as the partial evidence it is.
+    judge. Reported-only metrics are excluded because they duplicate another
+    measurement and are never intended to be judged. The remaining metrics are
+    not flat; they are unread, so the prompt states them. A configuration whose
+    every metric is unjudged never becomes an outcome at all, and one with
+    partial coverage is offered as the partial evidence it is.
     """
 
     detector: str
@@ -352,7 +355,7 @@ class ScopeOutcome:
     label: str
     status: str  # "watch" | "clean"
     watched: tuple[str, ...] = ()  # metric names, when status == "watch"
-    unjudged: int = 0  # metrics recorded with too little history to judge
+    unjudged: int = 0  # non-duplicate metrics recorded but not judged
 
 
 def steps_in_window(
@@ -404,9 +407,9 @@ def outcomes_for_window(
     else is silence from a run that did not happen or cannot be read, and silence
     must never be rendered as evidence of absence: ``reliable is None`` means *no
     evidence either way*, so it is treated like an unreliable run rather than like
-    a clean one, and a metric with too little history to judge (``UNKNOWN``) is
-    unread rather than flat — it never contributes to the clean verdict, and the
-    ones that remain are counted onto the outcome so the prompt can state the gap.
+    a clean one, and an unjudged metric (``UNKNOWN``) is unread rather than flat
+    — it never contributes to the clean verdict. Non-duplicate unjudged metrics
+    are counted onto the outcome so the prompt can state the coverage gap.
 
     *regressed_scopes* only orders the result: the like-for-like controls — same
     detector, same sample, same platform as something that did regress — come
@@ -434,13 +437,21 @@ def outcomes_for_window(
                 continue  # stepped in this very window — it is not a control
             if any(v.severity is Severity.FAILURE for v in verdicts):
                 continue  # a configuration that partly failed did not run clean
-            unjudged = sum(1 for v in verdicts if v.severity is Severity.UNKNOWN)
-            if unjudged == len(verdicts):
+            all_unjudged = sum(
+                1 for v in verdicts if v.severity is Severity.UNKNOWN
+            )
+            if all_unjudged == len(verdicts):
                 # Nothing here was judged at all — the configuration ran, but
-                # every metric is still warming up. "No evidence" rendered as
-                # "did not move" is the false control this whole function is
-                # written to avoid.
+                # every metric is unread. "No evidence" rendered as "did not
+                # move" is the false control this whole function is written to
+                # avoid.
                 continue
+            unjudged = sum(
+                1
+                for v in verdicts
+                if v.severity is Severity.UNKNOWN
+                and unjudged_cause(v) is not Unjudged.REPORTED_ONLY
+            )
             watched = tuple(sorted(
                 {v.metric for v in verdicts if v.severity is Severity.WATCH}
             ))[:MAX_WATCHED_METRICS]
