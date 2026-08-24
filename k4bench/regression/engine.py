@@ -114,21 +114,14 @@ Z_THRESHOLD = 3.5
 #: deviation under normality (1/Φ⁻¹(3/4)).
 MAD_NORMAL_CONSISTENCY = 1.4826
 
-#: Minimum practical effect per metric family, ANDed with the z-gate. Relative
-#: fractions of the baseline median, except ``cpu_efficiency_pp`` which is an
-#: absolute difference in efficiency (percentage points of a 0–1 ratio, where
-#: a relative change would be unintuitive). Region metrics get a wider floor —
+#: Minimum practical effect per metric family, ANDed with the z-gate. Values
+#: are fractions of the baseline median. Region metrics get a wider floor —
 #: smaller absolute numbers, noisier.
 EFFECT_FLOOR: dict[str, float] = {
-    "time":              0.05,
-    "memory":            0.05,
-    "cpu_efficiency_pp": 0.03,
-    "region_time":       0.08,
+    "time":        0.05,
+    "memory":      0.05,
+    "region_time": 0.08,
 }
-
-#: Families whose :data:`EFFECT_FLOOR` is an absolute difference, not a
-#: fraction of the baseline median.
-ABSOLUTE_FLOOR_FAMILIES = frozenset({"cpu_efficiency_pp"})
 
 #: Additional *absolute* change floor per family, ANDed with the relative
 #: floor. Motivated by the retrospective run over the real EOS history
@@ -294,7 +287,6 @@ def evaluate_series(
     """
     floor = EFFECT_FLOOR[series.metric_family]
     abs_delta_floor = ABS_DELTA_FLOOR.get(series.metric_family, 0.0)
-    absolute_floor = series.metric_family in ABSOLUTE_FLOOR_FAMILIES
 
     df = history.sort_values(["run_date", "run_id"], kind="stable")
     baseline: deque[float] = deque(maxlen=BASELINE_WINDOW_RUNS)
@@ -408,7 +400,7 @@ def evaluate_series(
             delta = x - med
             pct_change, z = robust_change(x, med, mad)
 
-            effect = abs(delta) if absolute_floor else (abs(pct_change) if pct_change is not None else 0.0)
+            effect = abs(pct_change) if pct_change is not None else 0.0
             tripped = abs(z) > Z_THRESHOLD and effect > floor and abs(delta) >= abs_delta_floor
 
             # Balance-of-evidence gate: both *retaining* an existing
@@ -430,9 +422,7 @@ def evaluate_series(
                 release_median = float(np.median(np.asarray(release_values + [x])))
                 median_delta = release_median - med
                 pct_m, z_m = robust_change(release_median, med, mad)
-                effect_m = abs(median_delta) if absolute_floor else (
-                    abs(pct_m) if pct_m is not None else 0.0
-                )
+                effect_m = abs(pct_m) if pct_m is not None else 0.0
                 median_trips = (
                     abs(z_m) > Z_THRESHOLD and effect_m > floor
                     and abs(median_delta) >= abs_delta_floor
@@ -461,7 +451,7 @@ def evaluate_series(
                     _, retained_first = next(iter(release_windows.values()))
                     m_chg = (
                         f"{(release_median - med) / med:+.1%}"
-                        if not absolute_floor and med != 0
+                        if med != 0
                         else f"{release_median - med:+.3f} (abs)"
                     )
                     reason += (f" — but this release's median is still {m_chg} vs "
@@ -514,8 +504,8 @@ def evaluate_series(
                     severity = Severity.WATCH
                     pending, pending_run = direction, _identity(row)
                 change = (
-                    f"{delta:+.3f} (abs)" if absolute_floor or pct_change is None
-                    else f"{pct_change:+.1%}"
+                    f"{pct_change:+.1%}" if pct_change is not None
+                    else f"{delta:+.3f} (abs)"
                 )
                 z_txt = "inf" if math.isinf(z) else f"{z:.1f}"
                 reason = f"{change} vs baseline median {med:.4g} (robust z={z_txt})"

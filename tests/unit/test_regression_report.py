@@ -15,6 +15,7 @@ from k4bench.regression.models import Direction, Severity
 from k4bench.regression.report_builder import (
     EVENT_METRICS,
     RUN_METRICS,
+    RUN_VALUE_METRICS,
     _failed_config_verdicts,
     build_nightly_report_local,
     group_report_from_run_dirs,
@@ -25,7 +26,8 @@ from k4bench.regression.report_builder import (
 def test_unjudged_value_verdicts_fills_only_missing_metrics():
     results = pd.DataFrame({
         "run_id": ["2026-01-12"], "label": ["baseline"],
-        "wall_time_s": [100.2], "user_cpu_s": [90.0], "peak_rss_mb": [1500.0],
+        "wall_time_s": [100.2], "user_cpu_s": [90.0], "sys_cpu_s": [5.0],
+        "peak_rss_mb": [1500.0],
     })
     out = unjudged_value_verdicts(
         detector="DET", platform=_PLAT, sample="single_e",
@@ -35,6 +37,7 @@ def test_unjudged_value_verdicts_fills_only_missing_metrics():
     by_metric = {v.metric: v for v in out}
     assert "wall_time_s" not in by_metric
     assert {"user_cpu_s", "peak_rss_mb"} <= set(by_metric)
+    assert "cpu_efficiency" not in by_metric
     assert all(v.severity is Severity.UNKNOWN and v.value is not None for v in out)
     assert by_metric["user_cpu_s"].value == pytest.approx(90.0)
 
@@ -48,6 +51,12 @@ def test_run_and_event_metrics_are_disjoint():
         "a metric appears in both RUN_METRICS and EVENT_METRICS: "
         f"{sorted(set(RUN_METRICS) & set(EVENT_METRICS))}"
     )
+
+
+def test_cpu_efficiency_is_not_a_report_metric():
+    assert "cpu_efficiency" not in RUN_METRICS
+    assert "cpu_efficiency" not in RUN_VALUE_METRICS
+
 
 _PLAT = "x86_64-almalinux9-gcc14.2.0-opt"
 _STACK = "key4hep-2026-01-01"
@@ -163,6 +172,7 @@ def test_persisting_step_confirms_in_group_report(tmp_path):
     user_cpu = [v for v in group.verdicts if v.metric == "user_cpu_s"]
     assert user_cpu and all(v.severity is Severity.UNKNOWN for v in user_cpu)
     assert not any(v.metric == "user_cpu_s" for v in group.regressions)
+    assert not any(v.metric == "cpu_efficiency" for v in group.verdicts)
 
 
 def test_group_report_carries_tonights_github_run_url(tmp_path):

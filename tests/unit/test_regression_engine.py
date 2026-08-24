@@ -166,21 +166,6 @@ def test_unreliable_runs_excluded_from_baseline():
     assert verdicts[-1].baseline_median == pytest.approx(100.0, abs=0.5)
 
 
-def test_cpu_efficiency_uses_absolute_floor():
-    eff = SeriesId(
-        detector="DET", platform="PLAT", sample="single_e",
-        label="baseline", metric_family="cpu_efficiency_pp", metric="cpu_efficiency",
-    )
-    base = [0.98] * 10
-    # −2 pp is under the 3 pp absolute floor even though z is infinite …
-    ok = evaluate_series(_history(base + [0.96]), series=eff)
-    assert ok[-1].severity is Severity.OK
-    # … while −8 pp trips it.
-    watch = evaluate_series(_history(base + [0.90]), series=eff)
-    assert watch[-1].severity is Severity.WATCH
-    assert watch[-1].direction is Direction.DOWN
-
-
 def test_tiny_region_wobble_blocked_by_absolute_delta_floor():
     # A 50 µs region jumping +50% is timer noise (Δ ≪ 10 ms), even though both
     # the z-gate and the relative floor trip …
