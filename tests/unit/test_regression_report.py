@@ -11,7 +11,7 @@ import pytest
 
 import pandas as pd
 
-from k4bench.regression.models import Direction, Severity
+from k4bench.regression.models import Direction, Severity, Unjudged
 from k4bench.regression.report_builder import (
     EVENT_METRICS,
     RUN_METRICS,
@@ -40,6 +40,8 @@ def test_unjudged_value_verdicts_fills_only_missing_metrics():
     assert "cpu_efficiency" not in by_metric
     assert all(v.severity is Severity.UNKNOWN and v.value is not None for v in out)
     assert by_metric["user_cpu_s"].value == pytest.approx(90.0)
+    assert by_metric["user_cpu_s"].unjudged is Unjudged.REPORTED_ONLY
+    assert by_metric["peak_rss_mb"].unjudged is Unjudged.UNRELIABLE_HOST
 
 
 def test_run_and_event_metrics_are_disjoint():
@@ -233,6 +235,9 @@ def test_unreliable_tonight_yields_note_and_unjudged_values(tmp_path):
     wall = next(v for v in group.verdicts if v.metric == "wall_time_s")
     assert wall.value == pytest.approx(100.2)
     assert wall.baseline_median is None and wall.z_score is None
+    assert wall.unjudged is Unjudged.UNRELIABLE_HOST
+    user_cpu = next(v for v in group.verdicts if v.metric == "user_cpu_s")
+    assert user_cpu.unjudged is Unjudged.REPORTED_ONLY
     assert "not judged" in wall.reason
 
 

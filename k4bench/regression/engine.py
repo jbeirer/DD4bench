@@ -91,7 +91,13 @@ from itertools import groupby
 import numpy as np
 import pandas as pd
 
-from k4bench.regression.models import Direction, MetricVerdict, SeriesId, Severity
+from k4bench.regression.models import (
+    Direction,
+    MetricVerdict,
+    SeriesId,
+    Severity,
+    Unjudged,
+)
 
 #: Trailing window of reliable runs forming the baseline. Two weeks of
 #: nightlies: long enough for a stable median/MAD, short enough that a
@@ -371,6 +377,7 @@ def evaluate_series(
                     value=x, baseline_median=None, baseline_mad=None,
                     pct_change=None, z_score=None,
                     severity=Severity.UNKNOWN, direction=Direction.NONE,
+                    unjudged=Unjudged.INSUFFICIENT_HISTORY,
                     reason=(
                         f"only {len(baseline)} reliable baseline runs "
                         f"(<{MIN_BASELINE_RUNS}) — not judged"

@@ -31,8 +31,7 @@ class Severity(str, Enum):
     ``CONFIRMED`` — crossed both gates on two consecutive reliable nights.
     ``FAILURE``   — hard job failure (non-zero returncode / missing run);
                     bypasses confirmation and always alerts immediately.
-    ``UNKNOWN``   — not enough reliable history to judge; never a flag,
-                    mirroring ``reliability.py``'s "no evidence ⇒ no verdict".
+    ``UNKNOWN``   — not judged; never a flag. See :class:`Unjudged` for why.
     """
 
     OK = "OK"
@@ -55,6 +54,32 @@ class Direction(str, Enum):
     NONE = "NONE"
     UP = "UP"
     DOWN = "DOWN"
+
+
+class Unjudged(str, Enum):
+    """Why a metric carries no verdict.
+
+    ``Severity.UNKNOWN`` says only that nothing was judged; it does not say why,
+    and the three causes call for different words in the report.
+    ``REPORTED_ONLY`` is a property of the metric and is the same number every
+    night, while the other two are properties of the night — a summary that
+    adds them together describes neither.
+    """
+
+    INSUFFICIENT_HISTORY = "insufficient_history"
+    UNRELIABLE_HOST = "unreliable_host"
+    REPORTED_ONLY = "reported_only"
+
+
+#: Reason text stored by the two report-builder paths. Reports without the
+#: machine-readable cause still carry these strings, which
+#: :func:`unjudged_cause` uses as a compatibility fallback.
+UNRELIABLE_HOST_REASON = "unreliable host — value recorded but not judged"
+REPORTED_ONLY_REASON = (
+    "recorded but not judged — reports the same measurement as an "
+    "already-judged metric"
+)
+_INSUFFICIENT_HISTORY_FRAGMENT = "reliable baseline runs"
 
 
 @dataclass(frozen=True)
@@ -228,6 +253,11 @@ class MetricVerdict:
     #: region data is per-event time, so it explains a time step and says nothing
     #: about a memory one — and empty when the run recorded no region timing.
     region_deltas: tuple[RegionDelta, ...] = ()
+    #: Why this verdict is ``UNKNOWN`` — ``None`` on every judged severity, and
+    #: on reports that predate the field. Read it through
+    #: :func:`unjudged_cause`, never directly: the reader has to cope with
+    #: reports written without it.
+    unjudged: Unjudged | None = None
 
     @property
     def flagged(self) -> bool:
@@ -257,6 +287,28 @@ class MetricVerdict:
         being measured — a confirmed verdict that is not a same-release
         reconfirmation (see :attr:`is_reconfirmed`)."""
         return self.severity is Severity.CONFIRMED and not self.is_reconfirmed
+
+
+def unjudged_cause(verdict: MetricVerdict) -> Unjudged | None:
+    """Why *verdict* is ``UNKNOWN``, or ``None`` if judged or unplaceable.
+
+    Reports can predate the machine-readable field, so a stored cause is
+    preferred and the reason text is read only when there is none. An
+    unplaceable ``UNKNOWN`` is reported as plainly not judged rather than
+    guessed at.
+    """
+    if verdict.severity is not Severity.UNKNOWN:
+        return None
+    if verdict.unjudged is not None:
+        return verdict.unjudged
+    reason = verdict.reason or ""
+    if reason == UNRELIABLE_HOST_REASON:
+        return Unjudged.UNRELIABLE_HOST
+    if reason == REPORTED_ONLY_REASON:
+        return Unjudged.REPORTED_ONLY
+    if _INSUFFICIENT_HISTORY_FRAGMENT in reason:
+        return Unjudged.INSUFFICIENT_HISTORY
+    return None
 
 
 @dataclass

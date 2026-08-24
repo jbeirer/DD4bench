@@ -13,7 +13,7 @@ from k4bench.regression.engine import (
     evaluate_series,
     robust_baseline,
 )
-from k4bench.regression.models import Direction, SeriesId, Severity
+from k4bench.regression.models import Direction, SeriesId, Severity, Unjudged
 
 _TIME = SeriesId(
     detector="DET", platform="PLAT", sample="single_e",
@@ -91,6 +91,7 @@ def test_step_reverting_after_one_night_never_confirms():
 def test_insufficient_history_is_unknown():
     verdicts = evaluate_series(_history(_STEADY[:MIN_BASELINE_RUNS - 2]), series=_TIME)
     assert all(v.severity is Severity.UNKNOWN for v in verdicts)
+    assert all(v.unjudged is Unjudged.INSUFFICIENT_HISTORY for v in verdicts)
 
 
 def test_downward_step_confirms_same_as_upward():
