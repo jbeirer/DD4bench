@@ -703,9 +703,9 @@ def _histogram_display_controls(
 
 
 # ── Metric metadata ────────────────────────────────────────────────────────────
-# Shared by the report-based tabs (Regressions, Detectors Overview), covering
-# exactly the run/event metrics the regression engine evaluates (see
-# ``k4bench.regression.report_builder.RUN_METRICS`` / ``EVENT_METRICS``).
+# Shared by metric plots across the dashboard. This covers the report's
+# run/event metrics plus derived host evidence such as ``cpu_efficiency``, which
+# Machine Info and Trends display but the regression report does not judge.
 
 #: Human-readable metric names for row labels and panel titles; the raw column
 #: name (e.g. ``wall_time_s``) is preserved in hover tooltips.

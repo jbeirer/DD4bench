@@ -1056,16 +1056,15 @@ def test_baseline_label_matches_benchmark():
     assert ov._BASELINE_LABEL == BASELINE_LABEL == "baseline_all"
 
 
-def test_metric_labels_cover_engine_metrics():
-    # The lifted ui_utils dicts must track the regression engine's metric set —
-    # the tab's panels and the Regressions ledger both label from them, and the
-    # tab can only compare metrics the engine actually records.
-    # Every metric the report *records*, judged or not: the tab plots values,
-    # and a reported-only metric still needs a label and a unit.
-    engine_metrics = set(RUN_VALUE_METRICS) | set(EVENT_METRICS)
-    assert set(ov._METRIC_LABELS) == engine_metrics
-    assert set(ov._METRIC_UNITS) == engine_metrics
-    assert set(ov._METRIC_ORDER) <= engine_metrics
+def test_metric_labels_cover_report_and_dashboard_metrics():
+    # Every metric the report records needs a label and unit. CPU efficiency is
+    # also covered because host-oriented dashboard views plot that derived
+    # evidence even though the regression report deliberately omits it.
+    report_metrics = set(RUN_VALUE_METRICS) | set(EVENT_METRICS)
+    dashboard_metrics = report_metrics | {"cpu_efficiency"}
+    assert set(ov._METRIC_LABELS) == dashboard_metrics
+    assert set(ov._METRIC_UNITS) == dashboard_metrics
+    assert set(ov._METRIC_ORDER) <= report_metrics
 
 
 def test_report_roundtrip_preserves_reliable_flag():

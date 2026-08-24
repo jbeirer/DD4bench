@@ -25,7 +25,6 @@ from k4bench.analysis.loader import (
     failed_config_mask,
     judgeable_config_keys,
     judgeable_config_rows,
-    with_cpu_efficiency,
 )
 from k4bench.analysis.trend import (
     build_event_timing_trend,
@@ -90,11 +89,12 @@ MISSING_RUN_GRACE_DAYS = 7
 #: narrow: ``events_per_sec`` is dropped as it is exactly
 #: ``n_events / wall_time_s`` (see ``k4bench/runner/executor.py``) — tracking
 #: it alongside ``wall_time_s`` would flag the same measurement twice with
-#: the sign flipped.
+#: the sign flipped. ``cpu_efficiency`` is host-reliability evidence (see
+#: :mod:`k4bench.results.reliability`) rather than a benchmark regression
+#: metric, so it is neither judged nor recorded in the nightly report.
 RUN_METRICS: dict[str, str] = {
     "wall_time_s":     "time",
     "peak_rss_mb":     "memory",
-    "cpu_efficiency":  "cpu_efficiency_pp",
 }
 
 #: Per-event summary metrics evaluated per config. ``p95_time_s``,
@@ -203,8 +203,7 @@ def unjudged_value_verdicts(
                     ),
                 ))
 
-    results = with_cpu_efficiency(results_df) if results_df is not None else None
-    _emit(results, RUN_VALUE_METRICS)
+    _emit(results_df, RUN_VALUE_METRICS)
     _emit(event_df, EVENT_METRICS)
     return out
 
@@ -288,7 +287,7 @@ def evaluate_group_series(
                     out[sid] = _with_history(history, verdicts, hosts or {})
 
     if results_df is not None and not results_df.empty:
-        _walk(with_cpu_efficiency(results_df), RUN_METRICS)
+        _walk(results_df, RUN_METRICS)
 
     if event_df is not None and not event_df.empty:
         _walk(event_df, EVENT_METRICS)
