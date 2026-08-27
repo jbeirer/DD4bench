@@ -119,6 +119,7 @@ jobs:
           docker run --rm --init \
             --device /dev/fuse \
             --cap-add SYS_ADMIN \
+            --security-opt label=disable \
             --volume /cvmfs:/cvmfs:shared \
             --volume "${{ github.workspace }}":/workspace:Z \
             --volume "$RUNNER_TEMP/eos-auth":/tmp/eos-auth:ro,Z \
