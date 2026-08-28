@@ -115,7 +115,9 @@ def test_confirmed_change_reanchors_baseline():
     # … and every following night at the new level is OK — judged against the
     # re-anchored (post-change) median, not the pre-change one.
     assert _severities(post[2:]) == [Severity.OK] * 7
-    assert all("re-anchoring" in v.reason for v in post[2:7])
+    assert all("re-anchoring" in v.reason for v in post[2:8])
+    assert all(v.reanchor_run_date == post[1].run_date for v in post[2:8])
+    assert all(v.reanchor_run_date is None for v in post[:2] + post[8:])
     assert post[2].baseline_median == pytest.approx(120.15, abs=0.3)
 
 

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import math
+import statistics
 import textwrap
 
 from k4bench.blame.evidence import MetricHistory, ScopeOutcome
@@ -460,11 +461,18 @@ def outcome_lines(
     a model given only the regressions has no way to tell "every detector moved"
     from "one detector moved and four others did not", and those two windows call
     for opposite conclusions. Configurations that did not run, failed, ran
-    unreliably, or stepped in this window themselves never reach this list — the
-    caller drops them (:func:`k4bench.blame.evidence.outcomes_for_window`),
-    because silence from a run that never happened is not a clean result. A
-    configuration that could judge only some of its metrics says so on its own
-    line: the unjudged ones are unread, not flat."""
+    unreliably, stepped in this window themselves, or have not settled since a
+    step of their own never reach this list — the caller drops them
+    (:func:`k4bench.blame.evidence.outcomes_for_window`), because silence from a
+    run that never happened is not a clean result. A configuration that could
+    judge only some of its metrics says so on its own line: the unjudged ones are
+    unread, not flat.
+
+    Every line carries how far its configuration moved when a finite relative
+    shift is available, listed or summarised in the tail. Not confirming is a
+    statement about the detection and persistence rules, so without the number
+    these read as a flat cohort — wrong exactly when everything drifts together
+    just under the floor."""
     if not outcomes:
         return []
     lines = [
@@ -484,20 +492,52 @@ def outcome_lines(
             f"; {outcome.unjudged} further metric(s) were recorded but not "
             "judged" if outcome.unjudged else ""
         )
+        # "Did not confirm" is not a claim of flatness: the engine only flags a
+        # move after its detection and persistence rules pass, so a configuration
+        # that moved 4.7% can land here. State the number so it does not read as
+        # flat.
+        moved = (
+            f", largest move {outcome.max_shift:+.1%}"
+            if outcome.max_shift is not None and math.isfinite(outcome.max_shift)
+            else ""
+        )
         if outcome.status == "watch":
             watched = ", ".join(outcome.watched[:6]) or "some metrics"
             lines.append(
-                f"{indent}- {where}: moved but stayed under the confirmation "
-                f"threshold ({watched}){gap}"
+                f"{indent}- {where}: moved but did not confirm "
+                f"({watched}){moved}{gap}"
             )
         else:
             lines.append(
-                f"{indent}- {where}: no metric stepped in this window{gap}"
+                f"{indent}- {where}: no metric stepped in this window{moved}{gap}"
             )
-    omitted = len(outcomes) - len(outcomes[:limit])
-    if omitted > 0:
+    omitted = outcomes[limit:]
+    if omitted:
+        # On a wide night most configurations land in this tail, so a bare count
+        # of them "not confirming" is what becomes "hundreds of others stayed
+        # flat". State the tail's drift: if the omitted configurations all moved
+        # the same way under the floor, this is the only line that can say so.
+        shifts = [
+            o.max_shift for o in omitted
+            if o.max_shift is not None and math.isfinite(o.max_shift)
+        ]
+        drift = ""
+        if shifts:
+            magnitude = statistics.median(abs(shift) for shift in shifts)
+            directions = {1 if shift > 0 else -1 for shift in shifts if shift != 0}
+            if len(directions) <= 1:
+                signed = -magnitude if directions == {-1} else magnitude
+                drift = f", median largest move {signed:+.1%}"
+            else:
+                # A signed median can cancel a split cohort to zero and recreate
+                # the false appearance of flatness this summary exists to avoid.
+                drift = (
+                    f", median largest-move magnitude {magnitude:.1%} "
+                    "(mixed directions)"
+                )
         lines.append(
-            f"{indent}- … and {omitted} more configuration(s) that did not confirm"
+            f"{indent}- … and {len(omitted)} more configuration(s) that did not "
+            f"confirm{drift}"
         )
     return lines
 

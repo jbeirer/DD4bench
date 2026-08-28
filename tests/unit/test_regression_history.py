@@ -151,11 +151,39 @@ def test_hosts_are_recorded_per_release():
     assert points[1].hosts == (HostFact("bench02", 128),)
 
 
+def test_a_container_id_is_not_a_host_name():
+    # A container's nodename is its own id, new on every `docker run`, so two
+    # nights on the same machine record different ids. Kept as host identities
+    # they report a host change at every boundary; blanked, they compare equal.
+    machine = pd.DataFrame({
+        "run_id": ["2026-07-01", "2026-07-04"],
+        "hostname": ["de6b89cdaf2a", "2034eae0e208"],
+        "cpu_logical_cores": [64, 64],
+    })
+    hosts = host_facts(machine)
+    assert hosts["2026-07-01"] == hosts["2026-07-04"] == HostFact("", 64)
+
+
+def test_a_real_host_name_is_left_alone():
+    machine = pd.DataFrame({
+        "run_id": ["2026-07-01", "2026-07-04"],
+        # Neither is a bare 12/64-char hex id: one is dotted, one is too short.
+        "hostname": ["bench01.cern.ch", "abcdef123456789"],
+        "cpu_logical_cores": [64, 64],
+    })
+    hosts = host_facts(machine)
+    assert hosts["2026-07-01"].name == "bench01.cern.ch"
+    assert hosts["2026-07-04"].name == "abcdef123456789"
+
+
 def test_a_run_with_no_machine_info_simply_has_no_host():
     # "We do not know which machine ran this" and "the host never changed" are
     # different claims, and only the first one is true here.
-    machine = pd.DataFrame({"run_id": ["2026-07-01"], "hostname": [None],
-                            "cpu_logical_cores": [None]})
+    machine = pd.DataFrame({
+        "run_id": ["2026-07-01", "2026-07-02"],
+        "hostname": [None, pd.NA],
+        "cpu_logical_cores": [None, None],
+    })
     assert host_facts(machine) == {}
     assert host_facts(None) == {}
 

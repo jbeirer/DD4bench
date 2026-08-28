@@ -1414,15 +1414,20 @@ def _alert(
     A window nothing was scored against says nothing in the second sentence
     rather than reaching for a number — the rows are still real, and the table
     is where their states are spelled out."""
+    # `scopes` counts (detector, platform, sample) run groups, the breadth worth
+    # stating. Not called "configuration": everywhere else that word means the
+    # sweep label, which is what the table's Config column holds, so the two
+    # counts would look like they should match and do not.
     n_scopes = len(plan.scopes)
     what = (
-        "a regression in"
+        "a regression in this PR's change window"
         if n_scopes == 1
-        else f"regressions in {_count(n_scopes, 'configuration')} of"
+        else (
+            f"regressions across {_count(n_scopes, 'detector/platform/sample scope')} "
+            "in this PR's change window"
+        )
     )
-    measured = (
-        f"k4Bench's nightly benchmarks confirmed {what} this PR's change window."
-    )
+    measured = f"k4Bench's nightly benchmarks confirmed {what}."
     reviewed, carried = _scored(rows, attribution)
     if not reviewed and not carried:
         return f"> [!WARNING]\n> {measured}"

@@ -195,6 +195,7 @@ def _outcome(detector, status="clean", **kw) -> ScopeOutcome:
         detector=detector, platform="x86_64-almalinux9-gcc14.2.0-opt",
         sample="single_e", label=kw.get("label", "baseline"), status=status,
         watched=kw.get("watched", ()), unjudged=kw.get("unjudged", 0),
+        max_shift=kw.get("max_shift"),
     )
 
 
@@ -204,11 +205,11 @@ def test_controls_render_as_labelled_evidence_about_reach():
     assert "no metric stepped in this window" in lines[2]
 
 
-def test_sub_threshold_movement_reads_as_movement_not_as_flatness():
+def test_unconfirmed_movement_reads_as_movement_not_as_flatness():
     lines = outcome_lines(
         (_outcome("IDEA_o1_v03", "watch", watched=("wall_time_s",)),), 10
     )
-    assert "stayed under the confirmation threshold" in lines[2]
+    assert "moved but did not confirm" in lines[2]
 
 
 def test_a_thinly_covered_control_says_how_much_it_could_not_read():
@@ -220,6 +221,40 @@ def test_controls_past_the_cap_are_counted_rather_than_dropped_silently():
     outcomes = tuple(_outcome(f"DET_{i}") for i in range(5))
     lines = outcome_lines(outcomes, 2)
     assert "… and 3 more configuration(s) that did not confirm" in lines[-1]
+
+
+def test_a_control_states_how_far_it_moved_so_it_cannot_read_as_flat():
+    # Not confirming is not a claim of flatness. A configuration sitting 4.7%
+    # below its baseline must not render as having held still.
+    lines = outcome_lines((_outcome("IDEA_o1_v03", max_shift=-0.047),), 10)
+    assert "largest move -4.7%" in lines[2]
+
+
+def test_the_omitted_tail_reports_its_own_drift():
+    # On a wide night this line stands for most of the cohort, so a bare count
+    # is what turns into "hundreds of others stayed flat".
+    outcomes = tuple(
+        _outcome(f"DET_{i}", max_shift=-0.04 - i / 1000) for i in range(5)
+    )
+    lines = outcome_lines(outcomes, 2)
+    assert "… and 3 more configuration(s) that did not confirm" in lines[-1]
+    assert "median largest move -4.3%" in lines[-1]
+
+
+def test_opposite_tail_directions_do_not_cancel_to_false_flatness():
+    outcomes = tuple(
+        _outcome(f"DET_{i}", max_shift=shift)
+        for i, shift in enumerate((-0.04, 0.04))
+    )
+    lines = outcome_lines(outcomes, 0)
+    assert "median largest-move magnitude 4.0% (mixed directions)" in lines[-1]
+    assert "+0.0%" not in lines[-1]
+
+
+def test_the_omitted_tail_says_nothing_when_nothing_was_measurable():
+    outcomes = tuple(_outcome(f"DET_{i}") for i in range(5))
+    lines = outcome_lines(outcomes, 2)
+    assert "median largest move" not in lines[-1]
 
 
 # ── Budget observability ──────────────────────────────────────────────────────

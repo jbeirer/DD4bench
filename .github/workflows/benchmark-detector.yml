@@ -123,6 +123,7 @@ jobs:
             -e XML_PATH -e N_EVENTS -e DDSIM_ARGS -e INPUT_FILES -e STEERING_FILE \
             -e SWEEP -e SWEEP_DETECTORS -e VERBOSE -e INCLUDE_ONLY -e EXCLUDE_ONLY \
             -e RUNNER_CPU_SET \
+            -e K4BENCH_HOST_NODE="$(hostname -f 2>/dev/null || hostname)" \
             -e GITHUB_RUN_ID="${{ github.run_id }}" \
             -e GITHUB_SHA="${{ github.sha }}" \
             -e GITHUB_REPOSITORY="${{ github.repository }}" \

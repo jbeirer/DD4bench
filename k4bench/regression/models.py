@@ -9,6 +9,7 @@ be an optimization, a deliberate change, or a bug.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -120,6 +121,29 @@ class HostFact:
 
     name: str
     cpu_cores: int | None = None
+
+
+#: A bare container id: 12 or 64 lowercase hex characters, the short and long
+#: forms Docker and Podman use. Anchored and hex-only so real hostnames, which
+#: are names rather than hex, cannot match.
+_CONTAINER_ID = re.compile(r"^[0-9a-f]{12}$|^[0-9a-f]{64}$")
+
+
+def host_name(raw: str) -> str:
+    """*raw* if it names a machine, else ``""`` (host unknown).
+
+    A container's nodename is its own id, new on every ``docker run``, so runs
+    sharing a machine record different names. Read as a host identity that
+    reports a host change at every boundary, which
+    :meth:`k4bench.blame.evidence.MetricHistory.host_change_at_onset` then
+    offers the ranker as an alternative to the diff.
+
+    Blanking it makes two such nights compare equal. Applied at both readers —
+    the machine-info trend and :func:`k4bench.regression.render.from_json` — so
+    the runs already on EOS, all recorded before the collector was fixed in
+    ``.github/scripts/machine_info.py``, read back the same way.
+    """
+    return "" if _CONTAINER_ID.match(raw) else raw
 
 
 @dataclass(frozen=True)
@@ -258,6 +282,19 @@ class MetricVerdict:
     #: :func:`unjudged_cause`, never directly: the reader has to cope with
     #: reports written without it.
     unjudged: Unjudged | None = None
+    #: The release whose confirmed change this series' baseline is re-anchoring
+    #: onto, or ``None`` when the baseline is settled.
+    #:
+    #: After a confirmed change the engine re-seats the baseline on the new
+    #: level, and for the ~week that takes the series is judged against a
+    #: provisional baseline. Such a night reads ``OK`` — it has not moved again —
+    #: which is not the same as "did not move". Only the ``reason`` text carried
+    #: that difference before, so consumers reading fields saw a settled series;
+    #: :func:`k4bench.blame.evidence.disqualified_as_control` needs it to decide
+    #: which configurations are offered to the ranker as controls.
+    #:
+    #: ``None`` on reports written before this field existed.
+    reanchor_run_date: str | None = None
 
     @property
     def flagged(self) -> bool:

@@ -193,7 +193,7 @@ def test_prompt_states_what_measured_the_window_and_did_not_confirm():
     assert "did NOT confirm" in prompt
     assert "IDEA_o1_v03" in prompt and "no metric stepped" in prompt
     assert "IDEA_o2_v01" in prompt
-    assert "under the confirmation threshold (wall_time_s)" in prompt
+    assert "moved but did not confirm (wall_time_s)" in prompt
     # The configuration label is part of the identity: without it the prompt's
     # "baseline vs without_<X>" reasoning has nothing to attach to.
     assert "· baseline:" in prompt and "· without_HCAL:" in prompt

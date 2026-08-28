@@ -227,6 +227,51 @@ def test_a_configuration_that_stepped_in_this_window_is_not_a_control():
     assert _outcomes([_group("IDEA_o1_v03", verdicts=[stepped])]) == ()
 
 
+def test_a_configuration_still_re_anchoring_is_not_a_control():
+    # It stepped, the step was confirmed and accepted, and the baseline was
+    # re-seated on the new level. Tonight reads OK because it has not moved
+    # again — which is not evidence that it held still across the window.
+    settling = _flat(reanchor_run_date="2026-07-18")
+    assert _outcomes([_group("IDEA_o1_v03", verdicts=[settling])]) == ()
+    # One re-anchoring metric disqualifies the whole configuration.
+    assert _outcomes([_group("IDEA_o1_v03", verdicts=[_flat(), settling])]) == ()
+
+
+def test_a_control_carries_how_far_it_actually_moved():
+    # "Clean" only means no detection was flagged. A configuration sitting 4.7%
+    # below its baseline is clean and is not flat, so the shift is carried and
+    # the largest one wins.
+    outcomes = _outcomes([_group("IDEA_o1_v03", verdicts=[
+        _flat(pct_change=-0.047),
+        _flat(metric="mean_time_s", pct_change=0.008),
+    ])])
+    assert outcomes[0].status == "clean"
+    assert outcomes[0].max_shift == pytest.approx(-0.047)
+
+
+def test_a_later_step_is_still_stated_on_a_control_for_an_earlier_window():
+    # A step after the requested window does not disqualify the configuration
+    # as evidence about that window, but omitting its current movement would
+    # make that evidence read as though the configuration were flat.
+    later = _verdict(
+        severity=Severity.CONFIRMED,
+        pct_change=0.20,
+        onset_run_date="2026-07-19",
+        last_accepted_run_date="2026-07-18",
+    )
+    outcomes = _outcomes([_group("IDEA_o1_v03", verdicts=[later])])
+    assert outcomes[0].status == "clean"
+    assert outcomes[0].max_shift == pytest.approx(0.20)
+
+
+def test_a_control_with_nothing_measurable_carries_no_shift():
+    outcomes = _outcomes([_group("IDEA_o1_v03", verdicts=[
+        _flat(pct_change=None),
+        _flat(metric="mean_time_s", pct_change=float("nan")),
+    ])])
+    assert outcomes[0].max_shift is None
+
+
 def test_an_unreliable_or_failed_run_is_silence_not_a_clean_result():
     assert _outcomes([_group("IDEA_o1_v03", reliable=False, verdicts=[_flat()])]) == ()
     assert _outcomes([_group("IDEA_o1_v03", reliable=None, verdicts=[_flat()])]) == ()

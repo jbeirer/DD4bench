@@ -104,6 +104,32 @@ def _kib_to_gib(kib: int) -> float:
     return round(kib / 1024**2, 2)
 
 
+#: Container marker files. Docker writes /.dockerenv, Podman writes
+#: /run/.containerenv and not /.dockerenv. The runners use Podman, so testing
+#: only for /.dockerenv reported every containerised run as bare metal.
+_CONTAINER_MARKERS = ("/.dockerenv", "/run/.containerenv")
+
+
+def _in_container() -> bool:
+    return any(os.path.exists(marker) for marker in _CONTAINER_MARKERS)
+
+
+def _hostname() -> str:
+    """The machine this ran on, not the container it ran in.
+
+    A container's nodename is its own id, new on every `docker run`, so
+    `uname -n` inside one never repeats across nights. The runner passes the
+    real node in K4BENCH_HOST_NODE (see benchmark-detector.yml); `uname -n` is
+    the fallback for an uncontainerised run.
+    """
+    host = os.environ.get("K4BENCH_HOST_NODE", "").strip()
+    if host:
+        return host
+    # Without an explicit host identity, the container's nodename is actively
+    # misleading: it is a new container id on every run, not a machine name.
+    return "" if _in_container() else os.uname().nodename
+
+
 def collect_start() -> dict:
     cpuinfo = _read("/proc/cpuinfo")
     cpu_model = next(
@@ -168,8 +194,8 @@ def collect_start() -> dict:
         "thermal_throttle_count_start": _sum_throttle(_throttle_paths()),
         "kernel":                       platform.release(),
         "os":                           os_name,
-        "hostname":                     os.uname().nodename,
-        "in_container":                 os.path.exists("/.dockerenv"),
+        "hostname":                     _hostname(),
+        "in_container":                 _in_container(),
     }
 
 

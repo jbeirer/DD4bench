@@ -539,6 +539,10 @@ def evaluate_series(
                 first_confirmed_run_id=(
                     first_confirmed[0] if first_confirmed is not None else None
                 ),
+                # Provisional baseline, as a field rather than only in `reason`.
+                # Set on every severity judged against it: a series settling onto
+                # a new level is not a control whatever tonight's verdict says.
+                reanchor_run_date=anchor_date if reanchoring else None,
             ))
             release_values.append(x)
             release_last_reliable = _identity(row)
