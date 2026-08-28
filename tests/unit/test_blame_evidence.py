@@ -149,6 +149,29 @@ def test_a_host_change_is_reported_only_when_it_lands_on_the_onset():
     assert earlier.host_change_at_onset is None
 
 
+def test_rotating_container_ids_do_not_claim_the_host_changed():
+    old = HostFact("de6b89cdaf2a", 64)
+    new = HostFact("2034eae0e208", 64)
+    history = _history([
+        _point("2026-07-14", 12.0, hosts=(old,)),
+        _point("2026-07-18", 14.5, severity="CONFIRMED", hosts=(new,)),
+    ])
+    assert history.host_change_at_onset is None
+
+    # A changed core count is concrete host evidence even when both names have
+    # container-id shape, so that transition must remain visible.
+    changed_hardware = _history([
+        _point("2026-07-14", 12.0, hosts=(old,)),
+        _point(
+            "2026-07-18", 14.5, severity="CONFIRMED",
+            hosts=(HostFact("2034eae0e208", 128),),
+        ),
+    ])
+    assert changed_hardware.host_change_at_onset == (
+        old, HostFact("2034eae0e208", 128),
+    )
+
+
 # ── Building the view from a verdict ──────────────────────────────────────────
 
 def _verdict(**kw) -> MetricVerdict:
@@ -225,6 +248,60 @@ def test_a_flat_configuration_is_a_control():
 def test_a_configuration_that_stepped_in_this_window_is_not_a_control():
     stepped = _verdict(onset_run_date="2026-07-18", last_accepted_run_date="2026-07-14")
     assert _outcomes([_group("IDEA_o1_v03", verdicts=[stepped])]) == ()
+
+
+def test_a_configuration_still_re_anchoring_is_not_a_control():
+    # It stepped, the step was confirmed and accepted, and the baseline was
+    # re-seated on the new level. Tonight reads OK because it has not moved
+    # again — which is not evidence that it held still across the window.
+    settling = _flat(reanchor_run_date="2026-07-18")
+    assert _outcomes([_group("IDEA_o1_v03", verdicts=[settling])]) == ()
+    # One re-anchoring metric disqualifies the whole configuration.
+    assert _outcomes([_group("IDEA_o1_v03", verdicts=[_flat(), settling])]) == ()
+
+
+def test_a_control_carries_how_far_it_actually_moved():
+    # "Clean" only means no detection was flagged. A configuration sitting 4.7%
+    # below its baseline is clean and is not flat, so the shift is carried and
+    # the largest one wins.
+    outcomes = _outcomes([_group("IDEA_o1_v03", verdicts=[
+        _flat(pct_change=-0.047),
+        _flat(metric="mean_time_s", pct_change=0.008),
+    ])])
+    assert outcomes[0].status == "clean"
+    assert outcomes[0].max_shift == pytest.approx(-0.047)
+
+
+def test_a_later_step_is_not_folded_into_an_earlier_window_drift():
+    # A step after the requested window does not disqualify the configuration
+    # as evidence about that window, but its percentage describes the later
+    # window and must not look like contemporaneous common-mode drift.
+    later = _verdict(
+        severity=Severity.CONFIRMED,
+        pct_change=0.20,
+        onset_run_date="2026-07-19",
+        last_accepted_run_date="2026-07-18",
+    )
+    outcomes = _outcomes([_group("IDEA_o1_v03", verdicts=[later])])
+    assert outcomes[0].status == "clean"
+    assert outcomes[0].max_shift is None
+
+    # If the configuration also has a current WATCH, the displayed shift comes
+    # from that non-confirming metric, never from the unrelated confirmation.
+    watching = _flat(
+        metric="mean_time_s", severity=Severity.WATCH, pct_change=-0.04,
+    )
+    outcomes = _outcomes([_group("IDEA_o1_v03", verdicts=[later, watching])])
+    assert outcomes[0].status == "watch"
+    assert outcomes[0].max_shift == pytest.approx(-0.04)
+
+
+def test_a_control_with_nothing_measurable_carries_no_shift():
+    outcomes = _outcomes([_group("IDEA_o1_v03", verdicts=[
+        _flat(pct_change=None),
+        _flat(metric="mean_time_s", pct_change=float("nan")),
+    ])])
+    assert outcomes[0].max_shift is None
 
 
 def test_an_unreliable_or_failed_run_is_silence_not_a_clean_result():

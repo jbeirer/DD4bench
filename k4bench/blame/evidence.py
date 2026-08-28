@@ -38,6 +38,7 @@ from k4bench.regression.models import (
     ReleasePoint,
     Severity,
     Unjudged,
+    looks_like_container_id,
     unjudged_cause,
 )
 
@@ -50,6 +51,23 @@ from k4bench.regression.models import (
 #: *held*, not whether it held to a percent, and a release drifting a third of
 #: the way back is still much closer to the step than to the baseline.
 _PERSISTENCE_TOLERANCE = 0.5
+
+
+def _legacy_container_cores(hosts: tuple[HostFact, ...]) -> int | None:
+    """The shared known core count when *hosts* look like rotating legacy
+    container identities, else ``None``.
+
+    A hexadecimal hostname is valid and is therefore preserved everywhere.
+    Only a whole release whose names all have the legacy container-id shape and
+    whose host facts agree on a concrete core count supplies enough context to
+    suppress a spurious host-change claim.
+    """
+    if not hosts or any(not looks_like_container_id(host.name) for host in hosts):
+        return None
+    cores = {host.cpu_cores for host in hosts}
+    if len(cores) != 1 or None in cores:
+        return None
+    return next(iter(cores))
 
 
 @dataclass(frozen=True)
@@ -271,6 +289,18 @@ class MetricHistory:
         previous = self.points[at - 1]
         if not previous.hosts or set(previous.hosts) == set(onset.hosts):
             return None
+        # Old containerised runs recorded a new container id as the hostname on
+        # every night. Two adjacent groups of such ids with the same known core
+        # count are evidence of one unchanged machine, not a host swap. Keeping
+        # the names until this comparison avoids erasing a legitimate bare-hex
+        # hostname merely because it has the same shape.
+        previous_container_cores = _legacy_container_cores(previous.hosts)
+        onset_container_cores = _legacy_container_cores(onset.hosts)
+        if (
+            previous_container_cores is not None
+            and previous_container_cores == onset_container_cores
+        ):
+            return None
         return previous.hosts[0], onset.hosts[0]
 
 
@@ -334,12 +364,13 @@ class ScopeOutcome:
     Stopping at the group would delete exactly that comparison, since the group
     also holds the regression it is the control for.
 
-    ``status`` is ``"watch"`` when the configuration has sub-threshold movement
-    and ``"clean"`` when it is flat — a distinction worth keeping, because "IDEA
-    moved but not enough to confirm" and "IDEA did not move" point at different
-    mechanisms. A configuration that did not run, failed, ran unreliably, or
-    stepped in this very window is *not* represented here at all: absence of
-    evidence must never be rendered as evidence of absence.
+    ``status`` is ``"watch"`` when the configuration has movement that has not
+    confirmed and ``"clean"`` when nothing it measured was flagged — a
+    distinction worth keeping, because "IDEA moved but did not confirm" and
+    "IDEA did not move" point at different mechanisms. A configuration that did
+    not run, failed, ran unreliably, stepped in this very window, or has not
+    settled since a step of its own is *not* represented here at all: absence
+    of evidence must never be rendered as evidence of absence.
 
     ``unjudged`` counts the metrics this configuration recorded but could not
     judge. Reported-only metrics are excluded because they duplicate another
@@ -347,6 +378,18 @@ class ScopeOutcome:
     not flat; they are unread, so the prompt states them. A configuration whose
     every metric is unjudged never becomes an outcome at all, and one with
     partial coverage is offered as the partial evidence it is.
+
+    ``max_shift`` is how far this configuration's worst-displaced
+    **non-confirming** judged metric sits from its own baseline, signed. A
+    confirmed move outside the window does not disqualify the configuration as
+    evidence about this window, but its percentage belongs to that other window
+    and is deliberately excluded here. ``clean`` means nothing was flagged, and
+    the engine only flags a move past
+    :data:`~k4bench.regression.engine.EFFECT_FLOOR` (5% for a timing metric), so
+    a configuration that moved 4.7% is ``clean`` and not flat. Without the number
+    a page of them reads as a suite that held still — worst exactly when
+    everything drifts together under the floor, which is when this evidence is
+    weighed most. ``None`` when no judged metric has a finite relative shift.
     """
 
     detector: str
@@ -356,6 +399,8 @@ class ScopeOutcome:
     status: str  # "watch" | "clean"
     watched: tuple[str, ...] = ()  # metric names, when status == "watch"
     unjudged: int = 0  # non-duplicate metrics recorded but not judged
+    #: Signed ``pct_change`` of the judged metric furthest from its baseline.
+    max_shift: float | None = None
 
 
 def steps_in_window(
@@ -380,6 +425,27 @@ def steps_in_window(
     return at <= onset and (base is None or at > base)
 
 
+def disqualified_as_control(verdict: MetricVerdict, window: tuple[str | None, str]) -> bool:
+    """True when *verdict* cannot testify that its configuration held still
+    across *window*.
+
+    Only ever removes a configuration from the negative evidence, so it can be
+    broad where :func:`steps_in_window` — which also picks pull-request comment
+    rows — has to be exact.
+
+    Two ways to fail: a confirmed step inside the window, or a baseline still
+    re-anchoring after a step of the series' own
+    (:attr:`~k4bench.regression.models.MetricVerdict.reanchor_run_date`). The
+    second reads ``OK`` because it has not moved *again*, which offered as "did
+    not move" argues the step was confined when the evidence says nothing of the
+    kind.
+
+    No date check on the re-anchor: a series that stepped last week is not a
+    clean control for a window this week either.
+    """
+    return steps_in_window(verdict, window) or verdict.reanchor_run_date is not None
+
+
 def outcomes_for_window(
     report: NightlyReport,
     *,
@@ -402,9 +468,11 @@ def outcomes_for_window(
     A configuration counts only when it genuinely produced a clean measurement to
     compare against — it ran one of *stacks* (the releases the regressed rows were
     measured on), its host was judged reliable, its group had no job failure, it
-    recorded no metric failure of its own, it confirmed no step inside this
-    window, and at least one of its metrics could actually be judged. Everything
-    else is silence from a run that did not happen or cannot be read, and silence
+    recorded no metric failure of its own, it neither confirmed a step inside this
+    window nor is still settling onto a step of its own
+    (:func:`disqualified_as_control`), and at least one of its metrics could
+    actually be judged. Everything else is silence from a run that did not
+    happen or cannot be read, and silence
     must never be rendered as evidence of absence: ``reliable is None`` means *no
     evidence either way*, so it is treated like an unreliable run rather than like
     a clean one, and an unjudged metric (``UNKNOWN``) is unread rather than flat
@@ -433,8 +501,8 @@ def outcomes_for_window(
         for verdict in group.verdicts:
             by_label.setdefault(verdict.label, []).append(verdict)
         for label, verdicts in by_label.items():
-            if any(steps_in_window(v, window) for v in verdicts):
-                continue  # stepped in this very window — it is not a control
+            if any(disqualified_as_control(v, window) for v in verdicts):
+                continue  # stepped in this window, or has not settled since its own step
             if any(v.severity is Severity.FAILURE for v in verdicts):
                 continue  # a configuration that partly failed did not run clean
             all_unjudged = sum(
@@ -455,11 +523,18 @@ def outcomes_for_window(
             watched = tuple(sorted(
                 {v.metric for v in verdicts if v.severity is Severity.WATCH}
             ))[:MAX_WATCHED_METRICS]
+            shifts = [
+                v.pct_change for v in verdicts
+                if v.severity in (Severity.OK, Severity.WATCH)
+                and v.pct_change is not None
+                and math.isfinite(v.pct_change)
+            ]
             outcomes.append(ScopeOutcome(
                 detector=group.detector, platform=group.platform,
                 sample=group.sample, label=label,
                 status="watch" if watched else "clean", watched=watched,
                 unjudged=unjudged,
+                max_shift=max(shifts, key=abs) if shifts else None,
             ))
     return tuple(sorted(
         outcomes,

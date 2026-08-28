@@ -1099,6 +1099,20 @@ def test_the_alert_carries_the_strongest_likelihood_and_names_the_model():
     assert "it scored the one regression at 91%" in alert
 
 
+def test_the_alert_counts_all_three_run_group_axes_and_reads_grammatically():
+    # Two platforms are two independently judged scopes even when detector and
+    # sample match, so calling them detector/sample combinations undercounts
+    # what the number represents.
+    opt = _verdict(metric="opt_metric")
+    dbg = _verdict(metric="dbg_metric", platform="x86_64-almalinux9-gcc14.2.0-dbg")
+    body = _comments(_report(opt, dbg), _blame([opt, dbg], [_candidate()]))[0].body
+    alert = _row(body, "nightly benchmarks confirmed")
+    assert (
+        "confirmed 2 regressions across 2 detector/platform/sample scopes in "
+        "this PR's change window."
+    ) in alert
+
+
 def test_the_alert_counts_the_rows_over_the_configured_threshold():
     # Reach, not just the peak: one row at 95% out of four reads very
     # differently from all four, and the alert is where that is decided.
@@ -1110,6 +1124,10 @@ def test_the_alert_counts_the_rows_over_the_configured_threshold():
         attributor=_FakeAttributor(scores),
     )[0].body
     alert = _row(body, "nightly benchmarks confirmed")
+    assert (
+        "confirmed 4 regressions within one detector/platform/sample scope in "
+        "this PR's change window."
+    ) in alert
     assert "2 of the 4 regressions it scored are attributed to it at 80% or above" in alert
     assert "the highest at 95%" in alert
 

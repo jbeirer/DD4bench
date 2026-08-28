@@ -304,7 +304,11 @@ def _hosts(raw: object) -> tuple[HostFact, ...]:
     parsed is a field that does not exist in production — which is exactly what
     happened to this one. A host that cannot be read is dropped; the release
     then carries no host, which is the same "we do not know" the writer means by
-    an empty tuple, and never a claim that the machine stayed the same."""
+    an empty tuple, and never a claim that the machine stayed the same.
+
+    A hexadecimal name is preserved because it may be a legitimate hostname.
+    The evidence reader has the adjacent releases and core counts needed to
+    distinguish a likely pair of rotating legacy container IDs."""
     if not isinstance(raw, list):
         return ()
     hosts = []
@@ -314,7 +318,7 @@ def _hosts(raw: object) -> tuple[HostFact, ...]:
         cores = item.get("cpu_cores")
         try:
             hosts.append(HostFact(
-                name=str(item.get("name", "")),
+                name=str(item.get("name") or ""),
                 cpu_cores=None if cores is None else int(cores),
             ))
         except (TypeError, ValueError):

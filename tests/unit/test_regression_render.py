@@ -263,6 +263,9 @@ _REPEAT_FIELDS = {"first_confirmed_run_id"}
 _HISTORY_FIELDS = {"history", "region_deltas"}
 #: Machine-readable reason an UNKNOWN verdict was not judged.
 _UNJUDGED_FIELDS = {"unjudged"}
+#: The release a still-provisional baseline is re-anchoring onto, so a reader
+#: can tell "has not moved again" from "did not move" without parsing `reason`.
+_REANCHOR_FIELDS = {"reanchor_run_date"}
 #: The verdict schema a reader deployed before these features knew about. The
 #: compatibility contract is that the new fields are *purely additive* to this
 #: set — anything else (a renamed or dropped field) breaks an old reader in a
@@ -285,7 +288,7 @@ def test_new_report_is_additive_over_the_pre_window_schema():
         for v in g["verdicts"]:
             assert v.keys() == (
                 _PRE_WINDOW_FIELDS | _WINDOW_FIELDS | _REPEAT_FIELDS
-                | _HISTORY_FIELDS | _UNJUDGED_FIELDS
+                | _HISTORY_FIELDS | _UNJUDGED_FIELDS | _REANCHOR_FIELDS
             )
             old_view = {k: val for k, val in v.items() if k in _PRE_WINDOW_FIELDS}
             MetricVerdict(**{
@@ -312,6 +315,15 @@ def test_unjudged_cause_survives_json_roundtrip():
     restored = from_json(json.loads(json.dumps(data))).groups[0].verdicts[0]
     assert restored.unjudged is Unjudged.REPORTED_ONLY
     assert unjudged_cause(restored) is Unjudged.REPORTED_ONLY
+
+
+def test_reanchor_release_survives_json_roundtrip():
+    restored = _round_trip(_verdict(
+        severity=Severity.OK,
+        direction=Direction.NONE,
+        reanchor_run_date="2026-01-10",
+    ))
+    assert restored.reanchor_run_date == "2026-01-10"
 
 
 def test_from_json_tolerates_missing_and_unknown_unjudged_cause():
@@ -390,6 +402,36 @@ def test_the_benchmark_host_survives_the_round_trip():
     restored = _round_trip(_confirmed_with_evidence())
     assert restored.history[0].hosts == (HostFact("bench01", 64),)
     assert restored.history[1].hosts == (HostFact("bench02", 128),)
+
+
+def test_a_null_benchmark_hostname_stays_unknown_after_the_round_trip():
+    data = to_json(NightlyReport(
+        generated_at="x",
+        groups=[RunGroupReport(
+            detector="D", platform="P", sample="S", k4h_release="k",
+            run_date="2026-07-22", run_id="2026-07-22",
+            verdicts=[_confirmed_with_evidence()],
+        )],
+    ))
+    data["groups"][0]["verdicts"][0]["history"][0]["hosts"][0]["name"] = None
+    restored = from_json(data).groups[0].verdicts[0]
+    assert restored.history[0].hosts == (HostFact("", 64),)
+
+
+def test_a_hex_benchmark_hostname_survives_the_round_trip():
+    data = to_json(NightlyReport(
+        generated_at="x",
+        groups=[RunGroupReport(
+            detector="D", platform="P", sample="S", k4h_release="k",
+            run_date="2026-07-22", run_id="2026-07-22",
+            verdicts=[_confirmed_with_evidence()],
+        )],
+    ))
+    data["groups"][0]["verdicts"][0]["history"][0]["hosts"][0]["name"] = (
+        "deadbeefcafe"
+    )
+    restored = from_json(data).groups[0].verdicts[0]
+    assert restored.history[0].hosts == (HostFact("deadbeefcafe", 64),)
 
 
 def test_the_region_breakdown_survives_the_round_trip():

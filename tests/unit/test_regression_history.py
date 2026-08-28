@@ -151,11 +151,43 @@ def test_hosts_are_recorded_per_release():
     assert points[1].hosts == (HostFact("bench02", 128),)
 
 
+def test_hex_shaped_names_are_preserved_for_context_aware_comparison():
+    # A container's nodename is its own id, new on every `docker run`, so two
+    # nights on the same machine can record different ids. Shape alone cannot
+    # distinguish those from valid hex hostnames, so the reader preserves them;
+    # the blame evidence compares adjacent ids together with their core counts.
+    machine = pd.DataFrame({
+        "run_id": ["2026-07-01", "2026-07-04"],
+        "hostname": ["de6b89cdaf2a", "2034eae0e208"],
+        "cpu_logical_cores": [64, 64],
+    })
+    hosts = host_facts(machine)
+    assert hosts["2026-07-01"] == HostFact("de6b89cdaf2a", 64)
+    assert hosts["2026-07-04"] == HostFact("2034eae0e208", 64)
+
+
+def test_a_real_host_name_is_left_alone():
+    machine = pd.DataFrame({
+        "run_id": ["2026-07-01", "2026-07-04", "2026-07-08"],
+        # Shape alone is never enough to erase a hostname: the middle value is
+        # exactly container-id shaped but remains a real machine identity here.
+        "hostname": ["bench01.cern.ch", "deadbeefcafe", "abcdef123456789"],
+        "cpu_logical_cores": [64, 64, 64],
+    })
+    hosts = host_facts(machine)
+    assert hosts["2026-07-01"].name == "bench01.cern.ch"
+    assert hosts["2026-07-04"].name == "deadbeefcafe"
+    assert hosts["2026-07-08"].name == "abcdef123456789"
+
+
 def test_a_run_with_no_machine_info_simply_has_no_host():
     # "We do not know which machine ran this" and "the host never changed" are
     # different claims, and only the first one is true here.
-    machine = pd.DataFrame({"run_id": ["2026-07-01"], "hostname": [None],
-                            "cpu_logical_cores": [None]})
+    machine = pd.DataFrame({
+        "run_id": ["2026-07-01", "2026-07-02"],
+        "hostname": [None, pd.NA],
+        "cpu_logical_cores": [None, None],
+    })
     assert host_facts(machine) == {}
     assert host_facts(None) == {}
 

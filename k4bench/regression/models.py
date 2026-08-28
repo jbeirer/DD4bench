@@ -9,6 +9,7 @@ be an optimization, a deliberate change, or a bug.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -120,6 +121,24 @@ class HostFact:
 
     name: str
     cpu_cores: int | None = None
+
+
+#: The shape of the container nodenames written into legacy reports: 12 or 64
+#: lowercase hexadecimal characters, the short and long forms Docker and Podman
+#: use. Shape alone cannot identify a container — these are also valid, if very
+#: unusual, hostnames — so callers must combine it with contextual evidence.
+_LEGACY_CONTAINER_ID = re.compile(r"^[0-9a-f]{12}$|^[0-9a-f]{64}$")
+
+
+def looks_like_container_id(raw: str) -> bool:
+    """Whether *raw* has the nodename shape of a Docker/Podman container.
+
+    This is a shape test, not an identity test. A bare hexadecimal string is a
+    valid hostname too, so it must never be discarded on this evidence alone.
+    The blame evidence combines two such changing names with an unchanged known
+    core count before treating them as legacy container IDs.
+    """
+    return _LEGACY_CONTAINER_ID.fullmatch(raw) is not None
 
 
 @dataclass(frozen=True)
@@ -258,6 +277,19 @@ class MetricVerdict:
     #: :func:`unjudged_cause`, never directly: the reader has to cope with
     #: reports written without it.
     unjudged: Unjudged | None = None
+    #: The release whose confirmed change this series' baseline is re-anchoring
+    #: onto, or ``None`` when the baseline is settled.
+    #:
+    #: After a confirmed change the engine re-seats the baseline on the new
+    #: level, and for the ~week that takes the series is judged against a
+    #: provisional baseline. Such a night reads ``OK`` — it has not moved again —
+    #: which is not the same as "did not move". Only the ``reason`` text carried
+    #: that difference before, so consumers reading fields saw a settled series;
+    #: :func:`k4bench.blame.evidence.disqualified_as_control` needs it to decide
+    #: which configurations are offered to the ranker as controls.
+    #:
+    #: ``None`` on reports written before this field existed.
+    reanchor_run_date: str | None = None
 
     @property
     def flagged(self) -> bool:
