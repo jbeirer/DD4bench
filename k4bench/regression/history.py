@@ -33,7 +33,6 @@ from k4bench.regression.models import (
     MetricVerdict,
     ReleasePoint,
     Severity,
-    host_name,
 )
 
 #: Releases of trailing history carried on a confirmed verdict. The engine's
@@ -82,7 +81,7 @@ def host_facts(machine_df: pd.DataFrame | None) -> dict[str, HostFact]:
     hosts: dict[str, HostFact] = {}
     for row in machine_df.itertuples(index=False):
         raw_name = getattr(row, "hostname", None) if has_hostname else None
-        name = "" if pd.isna(raw_name) else host_name(str(raw_name))
+        name = "" if pd.isna(raw_name) else str(raw_name)
         cores = _finite(getattr(row, "cpu_logical_cores", None)) if has_cores else None
         if not name and cores is None:
             continue

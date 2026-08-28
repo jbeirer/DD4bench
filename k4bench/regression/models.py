@@ -123,27 +123,22 @@ class HostFact:
     cpu_cores: int | None = None
 
 
-#: A bare container id: 12 or 64 lowercase hex characters, the short and long
-#: forms Docker and Podman use. Anchored and hex-only so real hostnames, which
-#: are names rather than hex, cannot match.
-_CONTAINER_ID = re.compile(r"^[0-9a-f]{12}$|^[0-9a-f]{64}$")
+#: The shape of the container nodenames written into legacy reports: 12 or 64
+#: lowercase hexadecimal characters, the short and long forms Docker and Podman
+#: use. Shape alone cannot identify a container — these are also valid, if very
+#: unusual, hostnames — so callers must combine it with contextual evidence.
+_LEGACY_CONTAINER_ID = re.compile(r"^[0-9a-f]{12}$|^[0-9a-f]{64}$")
 
 
-def host_name(raw: str) -> str:
-    """*raw* if it names a machine, else ``""`` (host unknown).
+def looks_like_container_id(raw: str) -> bool:
+    """Whether *raw* has the nodename shape of a Docker/Podman container.
 
-    A container's nodename is its own id, new on every ``docker run``, so runs
-    sharing a machine record different names. Read as a host identity that
-    reports a host change at every boundary, which
-    :meth:`k4bench.blame.evidence.MetricHistory.host_change_at_onset` then
-    offers the ranker as an alternative to the diff.
-
-    Blanking it makes two such nights compare equal. Applied at both readers —
-    the machine-info trend and :func:`k4bench.regression.render.from_json` — so
-    the runs already on EOS, all recorded before the collector was fixed in
-    ``.github/scripts/machine_info.py``, read back the same way.
+    This is a shape test, not an identity test. A bare hexadecimal string is a
+    valid hostname too, so it must never be discarded on this evidence alone.
+    The blame evidence combines two such changing names with an unchanged known
+    core count before treating them as legacy container IDs.
     """
-    return "" if _CONTAINER_ID.match(raw) else raw
+    return _LEGACY_CONTAINER_ID.fullmatch(raw) is not None
 
 
 @dataclass(frozen=True)

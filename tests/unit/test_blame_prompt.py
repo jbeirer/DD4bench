@@ -227,7 +227,7 @@ def test_a_control_states_how_far_it_moved_so_it_cannot_read_as_flat():
     # Not confirming is not a claim of flatness. A configuration sitting 4.7%
     # below its baseline must not render as having held still.
     lines = outcome_lines((_outcome("IDEA_o1_v03", max_shift=-0.047),), 10)
-    assert "largest move -4.7%" in lines[2]
+    assert "largest non-confirming move -4.7%" in lines[2]
 
 
 def test_the_omitted_tail_reports_its_own_drift():
@@ -238,7 +238,7 @@ def test_the_omitted_tail_reports_its_own_drift():
     )
     lines = outcome_lines(outcomes, 2)
     assert "… and 3 more configuration(s) that did not confirm" in lines[-1]
-    assert "median largest move -4.3%" in lines[-1]
+    assert "median largest non-confirming move -4.3%" in lines[-1]
 
 
 def test_opposite_tail_directions_do_not_cancel_to_false_flatness():
@@ -247,14 +247,17 @@ def test_opposite_tail_directions_do_not_cancel_to_false_flatness():
         for i, shift in enumerate((-0.04, 0.04))
     )
     lines = outcome_lines(outcomes, 0)
-    assert "median largest-move magnitude 4.0% (mixed directions)" in lines[-1]
+    assert (
+        "median largest non-confirming-move magnitude 4.0% (mixed directions)"
+        in lines[-1]
+    )
     assert "+0.0%" not in lines[-1]
 
 
 def test_the_omitted_tail_says_nothing_when_nothing_was_measurable():
     outcomes = tuple(_outcome(f"DET_{i}") for i in range(5))
     lines = outcome_lines(outcomes, 2)
-    assert "median largest move" not in lines[-1]
+    assert "median largest non-confirming move" not in lines[-1]
 
 
 # ── Budget observability ──────────────────────────────────────────────────────

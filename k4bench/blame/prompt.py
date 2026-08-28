@@ -468,11 +468,12 @@ def outcome_lines(
     judge only some of its metrics says so on its own line: the unjudged ones are
     unread, not flat.
 
-    Every line carries how far its configuration moved when a finite relative
-    shift is available, listed or summarised in the tail. Not confirming is a
-    statement about the detection and persistence rules, so without the number
-    these read as a flat cohort — wrong exactly when everything drifts together
-    just under the floor."""
+    Every line carries its largest current non-confirming shift when a finite
+    relative shift is available, listed or summarised in the tail. A confirmed
+    step from another window is excluded: its percentage is not evidence about
+    this one. Not confirming is a statement about the detection and persistence
+    rules, so without the number these read as a flat cohort — wrong exactly
+    when everything drifts together just under the floor."""
     if not outcomes:
         return []
     lines = [
@@ -497,7 +498,7 @@ def outcome_lines(
         # that moved 4.7% can land here. State the number so it does not read as
         # flat.
         moved = (
-            f", largest move {outcome.max_shift:+.1%}"
+            f", largest non-confirming move {outcome.max_shift:+.1%}"
             if outcome.max_shift is not None and math.isfinite(outcome.max_shift)
             else ""
         )
@@ -527,12 +528,12 @@ def outcome_lines(
             directions = {1 if shift > 0 else -1 for shift in shifts if shift != 0}
             if len(directions) <= 1:
                 signed = -magnitude if directions == {-1} else magnitude
-                drift = f", median largest move {signed:+.1%}"
+                drift = f", median largest non-confirming move {signed:+.1%}"
             else:
                 # A signed median can cancel a split cohort to zero and recreate
                 # the false appearance of flatness this summary exists to avoid.
                 drift = (
-                    f", median largest-move magnitude {magnitude:.1%} "
+                    f", median largest non-confirming-move magnitude {magnitude:.1%} "
                     "(mixed directions)"
                 )
         lines.append(

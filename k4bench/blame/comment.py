@@ -1414,19 +1414,26 @@ def _alert(
     A window nothing was scored against says nothing in the second sentence
     rather than reaching for a number — the rows are still real, and the table
     is where their states are spelled out."""
-    # `scopes` counts (detector, platform, sample) run groups, the breadth worth
-    # stating. Not called "configuration": everywhere else that word means the
-    # sweep label, which is what the table's Config column holds, so the two
-    # counts would look like they should match and do not.
+    # Rows count regressions; `scopes` counts (detector, platform, sample) run
+    # groups. Keep both axes in the sentence: several metrics can regress in one
+    # scope, while the scope count states how broadly those regressions reached.
+    # Not called "configuration": everywhere else that word means the sweep
+    # label, which is what the table's Config column holds.
+    n_regressions = len(rows)
     n_scopes = len(plan.scopes)
-    what = (
-        "a regression in this PR's change window"
-        if n_scopes == 1
-        else (
-            f"regressions across {_count(n_scopes, 'detector/platform/sample scope')} "
-            "in this PR's change window"
+    if n_regressions == 1:
+        what = "a regression in this PR's change window"
+    elif n_scopes == 1:
+        what = (
+            f"{_count(n_regressions, 'regression')} within one "
+            "detector/platform/sample scope in this PR's change window"
         )
-    )
+    else:
+        what = (
+            f"{_count(n_regressions, 'regression')} across "
+            f"{_count(n_scopes, 'detector/platform/sample scope')} in this PR's "
+            "change window"
+        )
     measured = f"k4Bench's nightly benchmarks confirmed {what}."
     reviewed, carried = _scored(rows, attribution)
     if not reviewed and not carried:

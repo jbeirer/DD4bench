@@ -418,6 +418,22 @@ def test_a_null_benchmark_hostname_stays_unknown_after_the_round_trip():
     assert restored.history[0].hosts == (HostFact("", 64),)
 
 
+def test_a_hex_benchmark_hostname_survives_the_round_trip():
+    data = to_json(NightlyReport(
+        generated_at="x",
+        groups=[RunGroupReport(
+            detector="D", platform="P", sample="S", k4h_release="k",
+            run_date="2026-07-22", run_id="2026-07-22",
+            verdicts=[_confirmed_with_evidence()],
+        )],
+    ))
+    data["groups"][0]["verdicts"][0]["history"][0]["hosts"][0]["name"] = (
+        "deadbeefcafe"
+    )
+    restored = from_json(data).groups[0].verdicts[0]
+    assert restored.history[0].hosts == (HostFact("deadbeefcafe", 64),)
+
+
 def test_the_region_breakdown_survives_the_round_trip():
     restored = _round_trip(_confirmed_with_evidence())
     assert restored.region_deltas == (RegionDelta("HCAL_barrel", 0.31, 4.52, 4.21),)

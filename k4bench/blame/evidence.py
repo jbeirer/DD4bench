@@ -38,6 +38,7 @@ from k4bench.regression.models import (
     ReleasePoint,
     Severity,
     Unjudged,
+    looks_like_container_id,
     unjudged_cause,
 )
 
@@ -50,6 +51,23 @@ from k4bench.regression.models import (
 #: *held*, not whether it held to a percent, and a release drifting a third of
 #: the way back is still much closer to the step than to the baseline.
 _PERSISTENCE_TOLERANCE = 0.5
+
+
+def _legacy_container_cores(hosts: tuple[HostFact, ...]) -> int | None:
+    """The shared known core count when *hosts* look like rotating legacy
+    container identities, else ``None``.
+
+    A hexadecimal hostname is valid and is therefore preserved everywhere.
+    Only a whole release whose names all have the legacy container-id shape and
+    whose host facts agree on a concrete core count supplies enough context to
+    suppress a spurious host-change claim.
+    """
+    if not hosts or any(not looks_like_container_id(host.name) for host in hosts):
+        return None
+    cores = {host.cpu_cores for host in hosts}
+    if len(cores) != 1 or None in cores:
+        return None
+    return next(iter(cores))
 
 
 @dataclass(frozen=True)
@@ -271,6 +289,18 @@ class MetricHistory:
         previous = self.points[at - 1]
         if not previous.hosts or set(previous.hosts) == set(onset.hosts):
             return None
+        # Old containerised runs recorded a new container id as the hostname on
+        # every night. Two adjacent groups of such ids with the same known core
+        # count are evidence of one unchanged machine, not a host swap. Keeping
+        # the names until this comparison avoids erasing a legitimate bare-hex
+        # hostname merely because it has the same shape.
+        previous_container_cores = _legacy_container_cores(previous.hosts)
+        onset_container_cores = _legacy_container_cores(onset.hosts)
+        if (
+            previous_container_cores is not None
+            and previous_container_cores == onset_container_cores
+        ):
+            return None
         return previous.hosts[0], onset.hosts[0]
 
 
@@ -349,11 +379,12 @@ class ScopeOutcome:
     every metric is unjudged never becomes an outcome at all, and one with
     partial coverage is offered as the partial evidence it is.
 
-    ``max_shift`` is how far this configuration's worst-displaced judged metric
-    sits from its own baseline, signed. This includes a confirmed move outside
-    the window: that configuration is still evidence about the requested window,
-    but it must not be made to look flat. ``clean`` means nothing was flagged,
-    and the engine only flags a move past
+    ``max_shift`` is how far this configuration's worst-displaced
+    **non-confirming** judged metric sits from its own baseline, signed. A
+    confirmed move outside the window does not disqualify the configuration as
+    evidence about this window, but its percentage belongs to that other window
+    and is deliberately excluded here. ``clean`` means nothing was flagged, and
+    the engine only flags a move past
     :data:`~k4bench.regression.engine.EFFECT_FLOOR` (5% for a timing metric), so
     a configuration that moved 4.7% is ``clean`` and not flat. Without the number
     a page of them reads as a suite that held still — worst exactly when
@@ -494,7 +525,7 @@ def outcomes_for_window(
             ))[:MAX_WATCHED_METRICS]
             shifts = [
                 v.pct_change for v in verdicts
-                if v.severity in (Severity.OK, Severity.WATCH, Severity.CONFIRMED)
+                if v.severity in (Severity.OK, Severity.WATCH)
                 and v.pct_change is not None
                 and math.isfinite(v.pct_change)
             ]

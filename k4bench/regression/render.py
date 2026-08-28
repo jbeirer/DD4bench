@@ -37,7 +37,6 @@ from k4bench.regression.models import (
     RunGroupReport,
     Severity,
     Unjudged,
-    host_name,
 )
 
 #: Badge vocabulary, matching the dashboard's (✅/🔴/⚠️/➖/❔). A confirmed
@@ -307,9 +306,9 @@ def _hosts(raw: object) -> tuple[HostFact, ...]:
     then carries no host, which is the same "we do not know" the writer means by
     an empty tuple, and never a claim that the machine stayed the same.
 
-    Names go through :func:`~k4bench.regression.models.host_name`, so reports
-    written while the collector recorded container ids read back as host
-    unknown rather than as a machine that changed every night."""
+    A hexadecimal name is preserved because it may be a legitimate hostname.
+    The evidence reader has the adjacent releases and core counts needed to
+    distinguish a likely pair of rotating legacy container IDs."""
     if not isinstance(raw, list):
         return ()
     hosts = []
@@ -319,7 +318,7 @@ def _hosts(raw: object) -> tuple[HostFact, ...]:
         cores = item.get("cpu_cores")
         try:
             hosts.append(HostFact(
-                name=host_name(str(item.get("name") or "")),
+                name=str(item.get("name") or ""),
                 cpu_cores=None if cores is None else int(cores),
             ))
         except (TypeError, ValueError):

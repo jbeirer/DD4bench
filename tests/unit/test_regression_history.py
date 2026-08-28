@@ -151,29 +151,33 @@ def test_hosts_are_recorded_per_release():
     assert points[1].hosts == (HostFact("bench02", 128),)
 
 
-def test_a_container_id_is_not_a_host_name():
+def test_hex_shaped_names_are_preserved_for_context_aware_comparison():
     # A container's nodename is its own id, new on every `docker run`, so two
-    # nights on the same machine record different ids. Kept as host identities
-    # they report a host change at every boundary; blanked, they compare equal.
+    # nights on the same machine can record different ids. Shape alone cannot
+    # distinguish those from valid hex hostnames, so the reader preserves them;
+    # the blame evidence compares adjacent ids together with their core counts.
     machine = pd.DataFrame({
         "run_id": ["2026-07-01", "2026-07-04"],
         "hostname": ["de6b89cdaf2a", "2034eae0e208"],
         "cpu_logical_cores": [64, 64],
     })
     hosts = host_facts(machine)
-    assert hosts["2026-07-01"] == hosts["2026-07-04"] == HostFact("", 64)
+    assert hosts["2026-07-01"] == HostFact("de6b89cdaf2a", 64)
+    assert hosts["2026-07-04"] == HostFact("2034eae0e208", 64)
 
 
 def test_a_real_host_name_is_left_alone():
     machine = pd.DataFrame({
-        "run_id": ["2026-07-01", "2026-07-04"],
-        # Neither is a bare 12/64-char hex id: one is dotted, one is too short.
-        "hostname": ["bench01.cern.ch", "abcdef123456789"],
-        "cpu_logical_cores": [64, 64],
+        "run_id": ["2026-07-01", "2026-07-04", "2026-07-08"],
+        # Shape alone is never enough to erase a hostname: the middle value is
+        # exactly container-id shaped but remains a real machine identity here.
+        "hostname": ["bench01.cern.ch", "deadbeefcafe", "abcdef123456789"],
+        "cpu_logical_cores": [64, 64, 64],
     })
     hosts = host_facts(machine)
     assert hosts["2026-07-01"].name == "bench01.cern.ch"
-    assert hosts["2026-07-04"].name == "abcdef123456789"
+    assert hosts["2026-07-04"].name == "deadbeefcafe"
+    assert hosts["2026-07-08"].name == "abcdef123456789"
 
 
 def test_a_run_with_no_machine_info_simply_has_no_host():
