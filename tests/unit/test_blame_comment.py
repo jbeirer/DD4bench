@@ -675,7 +675,7 @@ def test_a_containing_window_shows_every_onset_in_summary_and_table():
     comment = _comments(report, blame, policy=_policy(min_score=70))[0]
     body = comment.body
 
-    assert "**Steps represented inside this window**" in body
+    assert "**Current steps represented inside this window**" in body
     assert "| `2026-07-03` | 6 | 1 | 6 UP · 0 DOWN |" in body
     assert "| `2026-07-04` | 1 | 1 | 0 UP · 1 DOWN |" in body
     assert "| Onset |" in body
@@ -692,7 +692,7 @@ def test_a_single_onset_needs_no_redundant_breakdown_or_onset_column():
     verdict = _verdict()
     comment = _comments(_report(verdict), _blame([verdict], [_candidate()]))[0]
 
-    assert "Steps represented inside this window" not in comment.body
+    assert "steps represented inside this window" not in comment.body.lower()
     assert "| Onset |" not in comment.body
 
 
@@ -715,7 +715,7 @@ def test_an_open_window_bounds_onset_summary_and_representative_rows():
         policy=_policy(min_score=70),
     )[0].body
 
-    breakdown = body.split("**Steps represented inside this window**", 1)[1]
+    breakdown = body.split("**Current steps represented inside this window**", 1)[1]
     breakdown = breakdown.split("> 🤖", 1)[0]
     assert "3 additional onsets also included in the total" in breakdown
     assert "`2026-07-01`" not in breakdown
@@ -753,7 +753,7 @@ def test_undated_onset_is_consistent_between_summary_and_detail_table():
         policy=_policy(min_score=70),
     )[0].body
 
-    breakdown = body.split("**Steps represented inside this window**", 1)[1]
+    breakdown = body.split("**Current steps represented inside this window**", 1)[1]
     breakdown = breakdown.split("> 🤖", 1)[0]
     detail = body.split("📊 **Regressions in this window", 1)[1]
     detail = detail.split("<details>", 1)[0]
@@ -2886,9 +2886,10 @@ def _snapshot_payload(**overrides) -> dict:
         "onset": "2026-08-28",
         "onset_run": "2026-08-28",
         "base_release": "2026-08-27",
+        "base_run": "2026-08-27",
         "onset_release": "2026-08-28",
         "stack": "key4hep-2026-07-04",
-        "last_confirmed": "2026-08-28",
+        "last_reported": "2026-08-28",
         "likelihood": 88.0,
         "source": "reviewer",
         "state": "ranked",
@@ -2938,7 +2939,7 @@ def test_a_row_confirmed_in_an_earlier_version_survives_losing_confirmation():
 
 def test_a_retained_rows_link_is_rebuilt_from_its_structured_fields():
     # No URL is ever stored in the state marker; the link is reconstructed from
-    # the validated identity, window, stack and last-confirmed report through
+    # the validated identity, window, run ids, stack and last-reported night through
     # the shared dashboard helper.
     row_a, night_one = _dd4hep_night_one()
     watching = replace(row_a, severity=Severity.WATCH)
@@ -2958,6 +2959,31 @@ def test_a_retained_rows_link_is_rebuilt_from_its_structured_fields():
     assert "https://" not in _retained_marker_of(body)
 
 
+def test_a_same_release_retained_link_is_qualified_by_its_run_ids():
+    # One release can hold several change windows, and their releases alone do
+    # not tell them apart. A retained link that dropped the run ids would land
+    # the reader on whichever window the view happened to order first, so the
+    # snapshot keeps both and passes them through.
+    tonight = _comments(
+        _report(_verdict()), _blame([_verdict()], [_candidate()]),
+    )[0]
+    same_release = _snapshot_payload(
+        metric="median_time_s",
+        onset="2026-08-28",
+        base_release="2026-08-28",
+        base_run="2026-08-28",
+        onset_run="2026-08-29",
+        onset_release="2026-08-28",
+    )
+    previous = f"{tonight.marker}\n{_forged_marker([same_release])}"
+
+    body = materialize(tonight, [previous]).body
+
+    assert "median_time_s" in body
+    definition = _row(body, "[h1]: ")
+    assert "window=2026-08-28..2026-08-28%402026-08-28..2026-08-29" in definition
+
+
 def test_a_retained_row_confirmed_again_tonight_uses_tonights_evidence():
     # Current evidence supersedes the snapshot: same identity, new movement and
     # new likelihood, and none of the historical columns.
@@ -2974,7 +3000,7 @@ def test_a_retained_row_confirmed_again_tonight_uses_tonights_evidence():
     assert len(rows) == 1
     assert "+10.0%" in rows[0] and "85%" in rows[0]
     assert "+36.7%" not in body and "88%" not in body
-    assert "Last confirmed" not in body
+    assert "Last reported" not in body
 
 
 def test_a_retained_row_the_pr_is_no_longer_a_candidate_for_loses_its_score():
@@ -3086,13 +3112,14 @@ def test_retained_state_survives_a_run_of_material_versions_within_the_limit():
         {"state": "made_up"},                        # not a known scope state
         {"direction": "SIDEWAYS"},                   # not a known direction
         {"source": "oracle"},                        # not a known producer
-        {"last_confirmed": "not-a-date"},            # not an ISO date
-        {"last_confirmed": "2026-8-28"},             # not canonical ISO
+        {"last_reported": "not-a-date"},            # not an ISO date
+        {"last_reported": "2026-8-28"},             # not canonical ISO
         {"onset_release": None},                     # required window end
         {"pct": float("nan")},                       # not a finite percentage
         {"detector": "x" * 400},                     # past the field bound
         {"metric": ""},                              # an identity field is empty
         {"onset_run": "two words"},                  # not a run identity
+        {"base_run": "two words"},                   # nor is the window's base
     ],
 )
 def test_a_malformed_retained_snapshot_is_ignored_whole(overrides):
@@ -3106,7 +3133,7 @@ def test_a_malformed_retained_snapshot_is_ignored_whole(overrides):
     body = materialize(tonight, [previous]).body
 
     assert "mean_time_s" not in body
-    assert "Last confirmed" not in body
+    assert "Last reported" not in body
     assert len(_table_rows(body)) == 1
 
 
@@ -3174,7 +3201,7 @@ def test_converging_lineages_merge_their_retained_rows_by_newest_confirmation():
     # Two comments the survivor absorbs can hold the same identity at different
     # nights; the newer confirmation is the truer record of what was claimed.
     older = _forged_marker([_snapshot_payload(
-        last_confirmed="2026-08-26", pct=0.20, likelihood=70.0,
+        last_reported="2026-08-26", pct=0.20, likelihood=70.0,
     )])
     newer = _forged_marker([_snapshot_payload()])
     tonight = _comments(
@@ -3325,7 +3352,7 @@ def test_the_globally_strongest_row_survives_more_onsets_than_the_table_shows():
         _report(*verdicts, night="2026-07-08"), blame, policy=_policy(min_score=70),
     )[0].body
     rows = _detail_rows(body)
-    breakdown = body.split("**Steps represented inside this window**", 1)[1]
+    breakdown = body.split("**Current steps represented inside this window**", 1)[1]
     breakdown = breakdown.split("📊", 1)[0]
 
     assert len(rows) == 5
@@ -3366,7 +3393,7 @@ def test_an_undated_onset_never_costs_the_strongest_row_its_place():
         policy=_policy(min_score=70),
     )[0].body
     rows = _detail_rows(body)
-    breakdown = body.split("**Steps represented inside this window**", 1)[1]
+    breakdown = body.split("**Current steps represented inside this window**", 1)[1]
     breakdown = breakdown.split("📊", 1)[0]
 
     assert len(rows) == 5

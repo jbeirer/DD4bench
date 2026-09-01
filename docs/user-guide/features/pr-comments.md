@@ -252,21 +252,24 @@ of a comment carries a bounded, structured snapshot of its strongest rows, and
 the next version's table can resurface the ones that still outrank tonight's
 evidence. This is the AIDASoft/DD4hep#1617 case, and it reads:
 
-| Metric | Detector | Sample | Config | Onset | Change | Last confirmed | Current state | Attribution |
+| Metric | Detector | Sample | Config | Onset | Change | Last reported | Current state | Attribution |
 |:---|:---|:---|:---|:---|---:|:---|:---|---:|
 | `mean_time_s` | ALLEGRO_o1_v03 | Single e⁻ · 10GeV | `without_InnerTrackers` | `2026-08-28` | 🔺 **+36.7%** | `2026-08-28` | `WATCH` | 88% |
 | `wall_time_s` | ALLEGRO_o1_v03 | Single e⁻ · 10GeV | `baseline` | `2026-08-29` | 🔺 **+12.0%** | **current** | `CONFIRMED` | 82% |
 
 Two extra columns, present only when a retained row renders, keep the two kinds
-apart without a footnote: **Last confirmed** is `current` for a row confirmed
-tonight and the dated report night for a retained one, and **Current state** is
-that row's standing in the report behind this version.
+apart without a footnote: **Last reported** is `current` for a row confirmed
+tonight and, for a retained one, the night it was last *published* as confirmed,
+and **Current state** is that row's standing in the report behind this version.
+Published, not confirmed: a night that reconfirms a row on unchanged evidence
+writes nothing at all, so the date names the last version a reader was shown,
+which is the only confirmation this comment can honestly vouch for.
 
 The rules that keep this honest:
 
 - **A historical score is never a fresh review.** The change and the likelihood
-  on a retained row are what the review recorded on its last-confirmed report,
-  and are not rescored after the row stops being confirmed. A note under the
+  on a retained row are what the review recorded on its last published
+  version, and are not rescored after the row stops being confirmed. A note under the
   table says so, so an 88% row above current 82% rows cannot be read as
   contradicting the alert — which summarises **tonight's report and tonight's
   review**, and nothing else.
@@ -317,9 +320,10 @@ dashboard is where the complete set lives — and because those
 URLs are ~400 characters each, they are written as Markdown *reference* links
 collected at the end of the body, one per rendered row and none for a row that
 did not survive the caps. A retained row's link is rebuilt from its stored
-identity, window, stack and last-confirmed report through the same link helpers
-— no URL is ever stored in the snapshot — and lands on the archived dashboard
-view for the night it was confirmed.
+identity, window, run ids, stack and last-reported night through the same link
+helpers — no URL is ever stored in the snapshot — and lands on the archived
+dashboard view for that night. The run ids matter for a same-release window,
+which its releases alone cannot tell apart from the others in that release.
 
 Two rules run through the rendering:
 
@@ -381,8 +385,8 @@ successor:
 
     Left out: the narrative and every model score, which drift between nights
     without anything having happened. A retained row's likelihood is not an
-    exception to that: it is frozen at its last confirmation and never
-    rescored, so it can only change when the row itself is confirmed again.
+    exception to that: it is frozen at its last published version and never
+    rescored, so it can only change when that row is published again.
     Also left out, less obviously — the
     absolute value, baseline median and z-score. Those are deterministic and do
     reach the review's prompt, but they are re-derived from the *latest run*

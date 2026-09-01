@@ -360,16 +360,27 @@ class RetainedRow:
     carries a bounded list of these snapshots in one versioned marker, and the
     next version's table can resurface the ones no longer confirmed.
 
-    Every field is frozen at the row's **last confirmation**: the movement and
-    likelihood are what that night's review recorded — never rescored after the
-    row stopped being confirmed — and ``source`` says which model produced the
-    number. ``state`` is the pull request's scope standing on that night
+    Every field is frozen at the row's **last published version**, which is the
+    last night it was confirmed *and* the comment was materially edited. The
+    two differ: :func:`k4bench.blame.publish._upsert` writes nothing when the
+    facts digest is unchanged, and neither the report night nor a model score
+    is hashed into that digest, so a night that reconfirms a row on identical
+    evidence leaves this snapshot untouched. ``last_reported`` is therefore the
+    newest night this row was *published* as confirmed, never the newest night
+    it was confirmed — hence the name, and hence the column heading the table
+    renders. ``likelihood`` and ``source`` carry the same caveat: they are what
+    the review recorded on that published night, never rescored afterwards.
+
+    ``state`` is the pull request's scope standing on that night
     (:data:`~k4bench.blame.attribute.ScopeCandidateState`), kept so a
     ``not_candidate`` row can never be resurrected wearing a percentage. The
-    window, ``stack``, ``onset`` and ``last_confirmed`` are exactly the fields a
-    dashboard deep link needs, so no URL is ever stored. Decoded state is
-    validated as strictly as the observation markers; a marker that fails any
-    check is ignored whole and the current rows render on their own.
+    window, ``stack``, ``onset`` and the two run ids are exactly the fields a
+    dashboard deep link needs, so no URL is ever stored — ``base_run`` and
+    ``onset_run`` qualify a same-release window, which its releases alone
+    cannot identify (see :func:`~k4bench.regression.render.window_token`).
+    Decoded state is validated as strictly as the observation markers; a marker
+    that fails any check is ignored whole and the current rows render on their
+    own.
     """
 
     detector: str
@@ -383,9 +394,10 @@ class RetainedRow:
     onset: str
     onset_run: str
     base_release: str | None
+    base_run: str
     onset_release: str
     stack: str
-    last_confirmed: str
+    last_reported: str
     likelihood: float | None
     source: str
     state: str
@@ -765,7 +777,7 @@ def _retained_state(
     current row at tonight's evidence, then the still-unconfirmed history,
     strongest first and cut at the cap. A report with no night to date the
     snapshots by contributes none — an undatable confirmation could never be
-    honestly labelled "last confirmed"."""
+    honestly labelled "last reported"."""
     state = list(historical)
     if plan.report_night:
         state += [_snapshot(row, attribution, plan) for row in plan.rows]
@@ -801,9 +813,10 @@ def _snapshot(
         onset=v.onset_run_date or "",
         onset_run=v.onset_run_id or "",
         base_release=plan.base_release,
+        base_run=v.last_accepted_run_id or "",
         onset_release=plan.onset_release,
         stack=row.stack,
-        last_confirmed=plan.report_night,
+        last_reported=plan.report_night,
         likelihood=likelihood,
         source=source,
         state=row.scope_state,
@@ -832,7 +845,7 @@ def _merged_retained(bodies: Sequence[str]) -> list[RetainedRow]:
         for row in _decoded_retained(body):
             key = _retained_identity(row)
             kept = merged.get(key)
-            if kept is None or row.last_confirmed > kept.last_confirmed:
+            if kept is None or row.last_reported > kept.last_reported:
                 merged[key] = row
     return list(merged.values())
 
@@ -918,7 +931,9 @@ def _valid_retained(row: RetainedRow) -> bool:
         and _bounded_name(row.stack, required=False)
         and _bounded_name(row.onset_run, required=False)
         and not any(char.isspace() for char in row.onset_run)
-        and _iso_date(row.last_confirmed)
+        and _bounded_name(row.base_run, required=False)
+        and not any(char.isspace() for char in row.base_run)
+        and _iso_date(row.last_reported)
         and _iso_date(row.onset_release)
         and (row.base_release is None or _iso_date(row.base_release))
         and (row.onset == "" or _iso_date(row.onset))
@@ -984,10 +999,11 @@ def _retained_fact(row: RetainedRow, plan: CommentPlan) -> dict[str, Any]:
         "id": list(_retained_identity(row)),
         "moved": _canonical_pct(row.pct),
         "direction": row.direction,
-        "onset": [row.onset, row.onset_run],
+        "onset": row.onset,
         "window": [row.base_release or "", row.onset_release],
+        "runs": [row.base_run, row.onset_run],
         "stack": row.stack,
-        "night": row.last_confirmed,
+        "night": row.last_reported,
         "likelihood": None if row.likelihood is None else _pct(row.likelihood),
         "source": row.source,
         "state": row.state,
@@ -2398,11 +2414,16 @@ def _onset_breakdown(
     """Summarise the distinct steps the table represents inside a containing
     comment window.
 
-    *visible_onsets* is the exact onset set the selected rows cover
-    (:func:`_selected_rows`), so summary and table can never disagree. Because
-    the globally strongest row's onset is always kept, the omitted groups are
-    not necessarily a contiguous older tail — they are counted as "additional",
-    never as "earlier"."""
+    Both sides read the *currently confirmed* rows only: the groups come from
+    ``plan.rows`` and *visible_onsets* is the onset set the selected **current**
+    rows cover (:func:`_selected_rows`), so the counts here and the table's
+    current rows can never disagree. Retained rows are deliberately outside it —
+    they are no longer confirmed, so they are not steps this window still holds,
+    and the heading says "current" rather than let a reader match a historical
+    row's onset against a table it was never counted in. Because the globally
+    strongest row's onset is always kept, the omitted groups are not necessarily
+    a contiguous older tail — they are counted as "additional", never as
+    "earlier"."""
     groups: dict[str, list[RegressionRow]] = {}
     for row in plan.rows:
         groups.setdefault(_onset_label(row), []).append(row)
@@ -2416,7 +2437,7 @@ def _onset_breakdown(
 
     lines = [
         "",
-        "**Steps represented inside this window**",
+        "**Current steps represented inside this window**",
         "",
         "| Step onset | Regressions | Scopes | Directions |",
         "|:---|---:|---:|:---|",
@@ -2639,7 +2660,7 @@ def _link_definitions(links: dict[str, str]) -> str | None:
 def _table_head(*, show_onset: bool, show_history: bool) -> list[str]:
     """The header and alignment rows both tables share. The **Platform** column
     follows :data:`_SHOW_PLATFORM_COLUMN`, which is a rendering choice only;
-    the **Last confirmed**/**Current state** pair appears only when a retained
+    the **Last reported**/**Current state** pair appears only when a retained
     historical row renders, so an all-current table keeps its familiar shape."""
     header = ["Metric", "Detector"]
     align = [":---", ":---"]
@@ -2654,7 +2675,7 @@ def _table_head(*, show_onset: bool, show_history: bool) -> list[str]:
     header.append("Change")
     align.append("---:")
     if show_history:
-        header += ["Last confirmed", "Current state"]
+        header += ["Last reported", "Current state"]
         align += [":---", ":---"]
     header.append("Attribution")
     align.append("---:")
@@ -2711,8 +2732,8 @@ def _past_row_line(
     past_links: dict[tuple, tuple[str, str]],
 ) -> str:
     """One retained historical row — its identity, the movement and likelihood
-    recorded when it was last confirmed, that report's date, and its standing in
-    the report behind this version. Only rendered in a table whose onset and
+    recorded on the night it was last published as confirmed, that night's date,
+    and its standing in the report behind this version. Only rendered in a table whose onset and
     history columns are on, so the cell count always matches the header."""
     metric = (
         f"`{_cell(row.metric)}`"
@@ -2730,7 +2751,7 @@ def _past_row_line(
         f"`{_cell(row.label)}`",
         f"`{_cell(row.onset or _UNKNOWN_ONSET)}`",
         _change_cell(row.pct),
-        f"`{row.last_confirmed}`",
+        f"`{row.last_reported}`",
         _current_state_cell(row, plan),
         _past_likelihood_cell(row),
     ]
@@ -2747,9 +2768,11 @@ def _current_state_cell(row: RetainedRow, plan: CommentPlan) -> str:
 
 
 def _past_likelihood_cell(row: RetainedRow) -> str:
-    """The likelihood recorded at the row's last confirmation — the same three
-    shapes a current cell has, so an unscored or not-a-candidate snapshot can
-    never resurface wearing a number."""
+    """The likelihood recorded on the row's last published version — the same
+    three shapes a current cell has, so an unscored or not-a-candidate snapshot
+    can never resurface wearing a number. A score that drifted on a night the
+    digest held unchanged was never written, so this is the last *published*
+    number rather than the last one the ranker produced."""
     if row.state == "not_candidate":
         return _NOT_A_CANDIDATE
     if row.likelihood is None:
@@ -2764,10 +2787,13 @@ def _past_links(
 
     Reconstructed from the snapshot's validated structured fields through the
     shared link helper — never from a stored URL. The link pins the archived
-    Regressions view for the row's own window, stack and last-confirmed report,
+    Regressions view for the row's own window, stack and last-reported night,
     which is where a regression that tonight's report no longer confirms can
-    still be read. Labels are ``h1``, ``h2``, … in identity order, disjoint from
-    the current rows' fact ids."""
+    still be read. Both run ids are passed: they are what qualifies a
+    same-release window, whose releases alone name several different windows
+    and would land the reader on whichever the view ordered first
+    (:func:`~k4bench.regression.render.window_token`). Labels are ``h1``,
+    ``h2``, … in identity order, disjoint from the current rows' fact ids."""
     if not dashboard_url:
         return {}
     links: dict[tuple, tuple[str, str]] = {}
@@ -2780,8 +2806,10 @@ def _past_links(
             sample=row.sample,
             base_release=row.base_release,
             onset_release=row.onset_release,
+            base_run=row.base_run or None,
+            onset_run=row.onset_run or None,
             stack=row.stack or None,
-            report_night=row.last_confirmed,
+            report_night=row.last_reported,
         )
         if href:
             links[_retained_identity(row)] = (f"h{index}", href)
@@ -2851,7 +2879,7 @@ def _table(
     if show_history:
         lines += [
             "",
-            "_Rows with a dated **Last confirmed** entry are retained from an "
+            "_Rows with a dated **Last reported** entry are retained from an "
             "earlier version of this comment: their change and likelihood are "
             "what that report's review recorded and were not rescored after "
             "the row stopped being confirmed. **Current state** is their "

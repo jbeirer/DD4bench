@@ -957,7 +957,7 @@ def test_a_converging_lineage_hands_its_retained_rows_to_the_survivor():
 
 
 def test_a_standing_comment_is_left_alone_though_its_retained_state_is_redated():
-    # The retained snapshots record the night they were last confirmed, so the
+    # The retained snapshots record the night they were last published, so the
     # state marker's bytes move every night even when nothing else does. The
     # digest is what decides, and it does not hash that heartbeat — otherwise a
     # standing regression would re-notify everyone watching the PR nightly.
@@ -977,3 +977,45 @@ def test_a_standing_comment_is_left_alone_though_its_retained_state_is_redated()
 
     assert result.unchanged == ["key4hep/k4geo#7"]
     assert not gh.updated and not gh.created
+
+
+def test_a_retained_rows_date_is_the_night_it_was_last_published():
+    # The consequence of the test above, and why the column says "reported"
+    # rather than "confirmed": a night that reconfirms on unchanged evidence
+    # writes nothing, so its snapshot never reaches the comment. When the row
+    # later stops being confirmed, the date resurfaced is the last *published*
+    # one. Hashing the report night to keep it current would re-notify everyone
+    # watching the pull request every night, which is the worse trade.
+    wall = _verdict(metric="wall_time_s", onset="2026-07-05", pct=0.20)
+    mean = _verdict(metric="mean_time_s", onset="2026-07-05", pct=0.14)
+    scores = {"wall_time_s": 91.0, "mean_time_s": 85.0}
+
+    first = _FakeGitHub({7: []})
+    assert publish(first, [_rendered([wall, mean], scores, night="2026-07-05")]).created
+    standing = first.created[0][1]
+
+    # 2026-07-06 reconfirms both on identical evidence and writes nothing.
+    quiet = _FakeGitHub({7: [_mine(42, standing)]})
+    assert publish(
+        quiet, [_rendered([wall, mean], scores, night="2026-07-06")]
+    ).unchanged
+    assert not quiet.updated
+
+    # 2026-07-07 drops mean_time_s to WATCH and moves the other row, so this
+    # version is material and the retained snapshot renders.
+    watching = dataclasses.replace(mean, severity=Severity.WATCH)
+    moved = dataclasses.replace(wall, pct_change=0.31)
+    gh = _FakeGitHub({7: [_mine(42, standing)]})
+
+    assert publish(
+        gh, [_rendered([moved, watching], scores, night="2026-07-07")]
+    ).updated
+    body = gh.updated[0][1]
+    lines = body.splitlines()
+    header = next(line for line in lines if "Last reported" in line)
+    column = [cell.strip() for cell in header.split("|")].index("Last reported")
+    retained = next(line for line in lines if "mean_time_s" in line)
+    cells = [cell.strip() for cell in retained.split("|")]
+
+    assert cells[column] == "`2026-07-05`"     # the night it was last published
+    assert "2026-07-06" not in retained        # not the night it last confirmed
