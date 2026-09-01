@@ -1748,7 +1748,7 @@ def test_model_score_drift_does_not_change_the_published_recipes():
     ]
     report = _report(*rows)
 
-    def digest_for(scores):
+    def built(scores):
         publish, published = _publish_reproducer()
         comment = _comments(
             report,
@@ -1758,16 +1758,44 @@ def test_model_score_drift_does_not_change_the_published_recipes():
             )),
             run_info_for=_run_info_for()[0], reproducer_url_for=publish,
         )[0]
-        return comment.facts_digest, {facts.label for facts in published}
+        return comment, {facts.label for facts in published}
 
     ranked = [95.0 - n for n in range(12)]
-    first_digest, first_set = digest_for(ranked)
+    first, first_published = built(ranked)
     # Same benchmark facts, the model's ordering turned upside down.
-    second_digest, second_set = digest_for(list(reversed(ranked)))
+    second, second_published = built(list(reversed(ranked)))
 
-    assert first_set == second_set
-    assert len(first_set) == comment_mod._MAX_RECIPES
-    assert first_digest == second_digest
+    # The rendered table follows the ranking, so which rows got a recipe moves…
+    assert first_published != second_published
+    # …but the hashed subset, and therefore the digest, does not.
+    assert first.reproduce.hashed == second.reproduce.hashed
+    assert len(first.reproduce.hashed) == comment_mod._MAX_RECIPES
+    assert first.facts_digest == second.facts_digest
+
+
+def test_every_shown_row_has_a_recipe_even_outside_the_hashed_set():
+    # The hashed set ranks on movement and the table ranks on likelihood, so
+    # the two diverge. The union is published, so no shown row is left without
+    # its commands just because the models liked a small mover.
+    rows = [
+        _verdict(metric=f"m{n}", label=f"without_cfg{n}", pct=0.5 - n / 100)
+        for n in range(12)
+    ]
+    # The models rank the *smallest* movers highest — the worst case for
+    # overlap with a movement-ranked hashed set.
+    publish, _ = _publish_reproducer()
+    body = _comments(
+        _report(*rows),
+        _blame_of(*(
+            (row, [_candidate(score=70.0 + n)])
+            for n, row in enumerate(rows)
+        )),
+        run_info_for=_run_info_for()[0], reproducer_url_for=publish,
+    )[0].body
+
+    shown = _detail_rows(body)
+    assert len(shown) == 5
+    assert all("recipe ↗" in row for row in shown)
 
 
 def test_a_retained_row_keeps_the_recipe_published_when_it_was_confirmed():

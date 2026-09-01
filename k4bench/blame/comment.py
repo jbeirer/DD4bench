@@ -1937,7 +1937,7 @@ def build_comments(
             )
             continue
         reproduce = _publish_reproducers(
-            plan,
+            plan, attribution=attribution,
             run_info_for=run_info_for, reproducer_url_for=reproducer_url_for,
         )
         comments.append(
@@ -1954,12 +1954,26 @@ def build_comments(
 class Reproducers:
     """The recipes published for one comment, keyed by row identity.
 
-    Every row the table shows gets its own recipe: a reader following a line
-    wants the commands for *that* configuration, and a single recipe under the
-    comment answers only one of them. ``facts`` keeps the published commands
-    for the digest, which must change when they do."""
+    Two sets, because rendering and hashing want different things.
+
+    ``urls`` is every recipe published, and it covers **both** the rows the
+    table shows — a reader following a line wants the commands for *that*
+    configuration — and the deterministic set below. ``hashed`` names the
+    deterministic subset alone (:func:`_recipe_rows`), and ``facts`` holds
+    those recipes' commands; only those two reach the facts digest.
+
+    The split is what lets both properties hold at once. The table is ranked by
+    model likelihood, so hashing every published recipe would let two scores
+    swapping places edit a standing comment and re-notify the pull request on
+    model drift — the one thing the digest exists to prevent. Hashing only the
+    deterministic subset keeps the digest a statement about benchmark facts,
+    while the rendered table still links a recipe on every row it shows. A link
+    that appears because the ranking moved therefore shows up on the next edit
+    some real change earns, exactly as a row that entered the table the same
+    way already does."""
 
     urls: dict[tuple, str]
+    hashed: tuple[tuple, ...]
     facts: tuple[ReproducerFacts, ...]
 
 
@@ -1971,20 +1985,12 @@ _MAX_RECIPES = 2 * _TARGET_TABLE_ROWS
 
 
 def _recipe_rows(plan: CommentPlan) -> list[RegressionRow]:
-    """Which rows get a published recipe — **decided without any model score**.
+    """The rows whose recipes are **hashed** — chosen without any model score.
 
-    The table is ranked by attribution likelihood, but the recipes must not be:
-    the published set and its URLs are hashed into the facts digest, and a
-    digest that moved when two model scores swapped places would edit standing
-    comments — re-notifying everyone subscribed to the pull request — on
-    nothing but model drift. That is the one thing the digest exists to
-    prevent, so this ranks on benchmark facts alone: one row reserved per step
-    onset, then the largest movements, ties broken by identity.
-
-    The cost of the split is that a row the table shows may fall outside this
-    set and render an empty cell. That is the safe direction to fail: a missing
-    link is a smaller harm than a nightly edit storm, and at twice the table's
-    height the overlap is near-total in practice."""
+    Ranked on benchmark facts alone: one row reserved per step onset, then the
+    largest movements, ties broken by identity. See :class:`Reproducers` for
+    why the hashed set has to be model-independent while the rendered one does
+    not."""
     ordered = sorted(
         plan.rows,
         key=lambda row: (
@@ -2012,10 +2018,17 @@ def _recipe_rows(plan: CommentPlan) -> list[RegressionRow]:
 def _publish_reproducers(
     plan: CommentPlan,
     *,
+    attribution: Attribution | None,
     run_info_for: RunInfoFor | None,
     reproducer_url_for: ReproducerUrlFor | None,
 ) -> Reproducers | None:
-    """Build and publish the recipes for one comment (:func:`_recipe_rows`).
+    """Build and publish this comment's recipes.
+
+    Two sets are published: the rows the table will show, so every rendered row
+    can link its own commands, and the deterministic :func:`_recipe_rows`, which
+    is what the digest hashes. They overlap heavily; the union is what gets
+    uploaded, and both are bounded, so a detector-removal sweep of three
+    hundred near-identical rows still uploads a handful of small files.
 
     Everything happens *before* the comment is rendered, so a comment either
     carries links that already resolve or carries none. Each row fails on its
@@ -2023,9 +2036,23 @@ def _publish_reproducers(
     that row's link and leaves the rest of the table alone."""
     if run_info_for is None or reproducer_url_for is None or not plan.rows:
         return None
+    hashed = _recipe_rows(plan)
+    hashed_ids = {_row_identity(row) for row in hashed}
+    by_likelihood = sorted(
+        plan.rows, key=lambda row: _row_sort_key(row, attribution)
+    )
+    rendered = [
+        entry.current
+        for entry in _selected_rows(by_likelihood, [], attribution)
+        if entry.current is not None
+    ]
+    ordered: dict[tuple, RegressionRow] = {}
+    for row in [*hashed, *rendered]:
+        ordered.setdefault(_row_identity(row), row)
+
     urls: dict[tuple, str] = {}
     facts: list[ReproducerFacts] = []
-    for row in _recipe_rows(plan):
+    for identity, row in ordered.items():
         recipe = _reproducer_for(plan, row, run_info_for=run_info_for)
         if recipe is None:
             continue
@@ -2041,11 +2068,16 @@ def _publish_reproducers(
                 "to give", plan.target, row.verdict.label,
             )
             continue
-        urls[_row_identity(row)] = url
-        facts.append(recipe)
+        urls[identity] = url
+        if identity in hashed_ids:
+            facts.append(recipe)
     if not urls:
         return None
-    return Reproducers(urls=urls, facts=tuple(facts))
+    return Reproducers(
+        urls=urls,
+        hashed=tuple(sorted(hashed_ids & urls.keys())),
+        facts=tuple(facts),
+    )
 
 
 def _reproducer_for(
@@ -3574,14 +3606,15 @@ def _facts_payload(
         # Both halves of every recipe: the commands, so a changed workload
         # edits the comment, and the URL, so a link that appeared (or moved)
         # does too. A run of the same night that failed to publish renders no
-        # link, and must not share a digest with one that did. In identity
-        # order, so the set is what is hashed and not the order it was
-        # published in.
+        # link, and must not share a digest with one that did. Restricted to
+        # the model-independent subset (:class:`Reproducers`) and taken in
+        # identity order, so neither the ranking nor the publish order can move
+        # this.
         "reproduce": None if reproduce is None else {
             "recipes": [facts.payload() for facts in reproduce.facts],
             "urls": [
-                [list(identity), url]
-                for identity, url in sorted(reproduce.urls.items())
+                [list(identity), reproduce.urls[identity]]
+                for identity in reproduce.hashed
             ],
         },
     }
