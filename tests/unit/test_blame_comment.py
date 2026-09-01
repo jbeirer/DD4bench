@@ -702,7 +702,10 @@ def test_the_visible_table_shows_its_top_rows_and_links_the_rest():
     body = _comments(_report(*verdicts), _blame(verdicts, [_candidate()]))[0].body
     # Five rows, and one line pointing at the complete set.
     assert len(_table_rows(body)) == 5
-    assert f"View all 8 regressions in the [dashboard ↗]({_DASH}" in body
+    assert (
+        f"View all 8 regressions from the 2026-07-05 report in the "
+        f"[dashboard ↗]({_DASH}"
+    ) in body
 
 
 def test_a_containing_window_represents_each_onset_in_the_table():
@@ -771,6 +774,35 @@ def test_each_row_carries_its_own_tightest_change_window():
     assert "`2026-07-01` → `2026-07-03`" in _row_of(rows, "mean_time_s")
     assert "`2026-07-01` → `2026-07-04`" in _row_of(rows, "wall_time_s")
     assert "`2026-07-03` → `2026-07-04`" in _row_of(rows, "max_rss_kb")
+
+
+def test_a_window_column_is_decided_by_the_rows_that_actually_render():
+    # A narrower window carried only by a row the cap cut is not on the page,
+    # so it cannot justify a column that then repeats the header's window on
+    # every line that *is* on the page.
+    wide = [
+        _verdict(
+            metric=f"m{index}", label=f"wide_{index}",
+            base="2026-07-01", onset="2026-07-04",
+        )
+        for index in range(6)
+    ]
+    narrow = _verdict(
+        metric="max_rss_kb", label="narrow",
+        base="2026-07-03", onset="2026-07-04",
+    )
+    body = _comments(
+        _report(*wide, narrow), _blame_of(
+            *((row, [_candidate(score=95.0)]) for row in wide),
+            (narrow, [_candidate(score=10.0)]),
+        ),
+        policy=_policy(min_score=70),
+    )[0].body
+
+    assert "**Change window** (Key4hep releases): `2026-07-01` → `2026-07-04`" in body
+    assert len(_table_rows(body)) == 5
+    assert "narrow" not in body
+    assert "| Change window |" not in body
 
 
 def test_a_rows_own_base_moving_can_edit_a_standing_comment():
@@ -883,7 +915,10 @@ def test_a_row_below_the_cut_is_reachable_even_when_it_moved_furthest():
     body = _comments(_report(*small, big), _blame([*small, big], [_candidate()]),
                      attributor=_FakeAttributor(scores))[0].body
     assert "huge_but_unlikely" not in body        # not in the visible five
-    assert "View all 7 regressions in the [dashboard ↗](" in body
+    assert (
+        "View all 7 regressions from the 2026-07-05 report in the "
+        "[dashboard ↗]("
+    ) in body
 
 
 def test_no_overflow_line_when_every_regression_is_already_shown():
@@ -907,7 +942,10 @@ def test_a_detector_sweeps_worth_of_rows_still_fits_in_a_github_comment():
     assert len(comment.body) < 65_536
     # Five rows in the table, and all 318 one click away.
     assert len(_table_rows(comment.body)) == 5
-    assert f"View all 318 regressions in the [dashboard ↗]({_DASH}" in comment.body
+    assert (
+        f"View all 318 regressions from the 2026-07-05 report in the "
+        f"[dashboard ↗]({_DASH}"
+    ) in comment.body
 
 
 def test_the_urls_live_in_reference_definitions_not_in_the_rows():
@@ -3417,6 +3455,42 @@ def test_retained_state_is_one_marker_bounded_well_under_githubs_limit():
     assert len(body.encode()) < 65_536
 
 
+def test_a_first_comment_records_its_observation_without_a_history_section():
+    # One entry has nothing to compare against: the row would repeat the window
+    # and the counts the comment already states above it. The hidden marker is
+    # still written, because it is the lineage's observation state.
+    verdict = _verdict()
+    body = materialize(
+        _comments(_report(verdict), _blame([verdict], [_candidate()]))[0], []
+    ).body
+
+    assert body.count(comment_mod._OBSERVATION_PREFIX) == 1
+    assert "🕘 Observation history" not in body
+    assert "material update" not in body
+
+
+def test_the_second_night_rebuilds_the_history_from_the_first_bodys_marker():
+    # The guard above must suppress only the visible table. Dropping the marker
+    # with it would restart the history at one entry every night, permanently.
+    verdict = _verdict()
+    first = materialize(
+        _comments(_report(verdict), _blame([verdict], [_candidate()]))[0], []
+    ).body
+    later = _verdict(metric="max_rss_kb", onset="2026-07-06", base="2026-07-04")
+    body = materialize(
+        _comments(
+            _report(verdict, later, night="2026-07-06"),
+            _blame([verdict, later], [_candidate()]),
+        )[0],
+        [first],
+    ).body
+
+    assert "Observation history</b> — 2 material updates" in body
+    assert body.count(comment_mod._OBSERVATION_PREFIX) == 2
+    for night in ("2026-07-05", "2026-07-06"):
+        assert f"| {night}" in body or f"[{night}](" in body
+
+
 def test_retained_state_survives_a_run_of_material_versions_within_the_limit():
     # The worst realistic case for the marker: every night replaces the whole
     # visible set, so the state is re-filled from scratch and re-serialized on
@@ -3662,6 +3736,34 @@ def test_headline_counts_the_unique_cumulative_union_not_snapshot_sums():
     assert "confirmed 3 regressions across 3 detector/platform/sample scopes" in alert
     assert "3 of 3 regressions are attributed to it at 80% or above" in alert
     assert len(comment_mod._cumulative_identities(second.body)) == 3
+
+
+def test_the_alert_and_the_overflow_line_each_name_the_population_they_count():
+    # Two counts in one comment: the alert's union over the lineage's reports,
+    # and the overflow line's single report. Neither is wrong, and neither may
+    # read as the other's number restated.
+    first = [_verdict(metric=f"a{i}", pct=(20 - i) / 100) for i in range(6)]
+    second = [_verdict(metric=f"b{i}", pct=(20 - i) / 100) for i in range(6)]
+    previous = materialize(
+        _comments(_report(*first), _blame(first, [_candidate()]))[0], []
+    ).body
+    body = materialize(
+        _comments(
+            _report(*second, night="2026-07-06"),
+            _blame(second, [_candidate()]),
+        )[0],
+        [previous],
+    ).body
+
+    alert = _row(body, "nightly benchmarks confirmed")
+    assert (
+        "confirmed 12 regressions within one detector/platform/sample scope "
+        "in the reports covering this PR's change window."
+    ) in alert
+    assert (
+        "View all 6 regressions from the 2026-07-06 report in the "
+        "[dashboard ↗]("
+    ) in body
 
 
 def test_converging_comments_union_every_parent_identity_once():

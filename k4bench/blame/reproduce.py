@@ -300,6 +300,19 @@ def _xml_arg(path: str) -> str:
     return f'"$K4GEO"/{_safe(path)}'
 
 
+def _local_input(source: str) -> str:
+    """Where a fetched input lands. Derived from the source's own basename,
+    because the recorded ``--ddsim-args`` reads it under exactly that name."""
+    return "/tmp/" + source.rsplit("/", 1)[-1]
+
+
+def _fetch(input_files: tuple[str, ...]) -> list[str]:
+    return [
+        f"xrdcp --force {_safe(source)} {_safe(_local_input(source))}"
+        for source in input_files
+    ]
+
+
 def _command(
     facts: ReproducerFacts,
     *,
@@ -307,20 +320,23 @@ def _command(
     commit: str,
     n_events: int,
     ddsim_args: str,
-    input_files: tuple[str, ...],
     xml_path: str,
     resolved_steering_file: str,
     output: str,
-    checkout: str,
+    fetch: list[str],
 ) -> str:
-    # Each side clones into its own directory. The two blocks are run from one
-    # working directory — a fresh *shell* is not a fresh *directory* — so a
-    # second `git clone` into the same `k4Bench` would abort with "destination
-    # path already exists", and the two sides need different commits checked
-    # out anyway.
+    """One half of the recipe, as a subshell.
+
+    A subshell is a separate process holding a copy of the environment, so each
+    half sources its own Key4hep release from a clean start: the release the
+    other half sourced cannot leak into it, and neither reaches the shell the
+    reader pasted into. That is what lets the two halves — which the Key4hep
+    setup script forbids sourcing into one environment — run one after the other
+    in a single paste. The harness is cloned once outside; the halves are
+    sequential, so one checkout directory serves both and each opens by
+    checking out the commit its nightly ran.
+    """
     lines = [
-        f"git clone https://github.com/key4hep/k4Bench {_safe(checkout)}"
-        f" && cd {_safe(checkout)}",
         f"git checkout {_safe(commit)}",
         f"source {_safe(_NIGHTLY_REPO + '/key4hep/setup.sh')} -r {_safe(release)}",
         "source setup.sh",
@@ -329,8 +345,7 @@ def _command(
     if resolved_steering_file:
         directory = resolved_steering_file.rpartition("/")[0] or "."
         lines.append(f"export PYTHONPATH={_safe(directory)}:\"${{PYTHONPATH:-}}\"")
-    for source in input_files:
-        lines.append(f"xrdcp --force {_safe(source)} {_safe('/tmp/' + source.rsplit('/', 1)[-1])}")
+    lines.extend(fetch)
     continuation = " " + chr(92)
     command = [
         f"k4bench --xml {_xml_arg(xml_path)} \\",
@@ -343,7 +358,10 @@ def _command(
     command.append(f"        --output-dir {_safe(output)} \\")
     command.append(f"        --ddsim-args={_safe(ddsim_args)}")
     lines.extend(command)
-    return "\n".join(lines)
+    # Indented per *logical* line: a quoted argument can carry a newline of its
+    # own, and indenting inside it would change the value that reaches ddsim.
+    body = "\n".join(f"  {line}" for line in lines)
+    return f"(\n{body}\n)"
 
 
 def artifact_name(facts: ReproducerFacts) -> str:
@@ -383,16 +401,21 @@ def render_text(facts: ReproducerFacts) -> str:
 
     Plain text on purpose: it is read in a browser tab and pasted into a shell,
     so it carries no markup to strip and nothing that renders differently from
-    what runs. It opens by naming the measurement — a link out of a table is
-    read with none of the surrounding comment's context — and closes with the
-    two nightly runs it was derived from.
+    what runs. Every word of it is a ``#`` comment, so the whole file is one
+    paste rather than a page of prose the reader has to pick commands out of —
+    it opens by naming the measurement, since a link out of a table is read with
+    none of the surrounding comment's context, and closes with the two nightly
+    runs it was derived from.
+
+    The harness is cloned once, and each half runs in a subshell that sources
+    its own Key4hep release (:func:`_command`).
     """
     heading = "k4Bench — reproduce this measurement"
     scope = " / ".join(
         (facts.detector, pretty_sample(facts.sample), facts.label)
     )
     if facts.parity_diffs:
-        parity = _wrap(
+        parity = _note(
             "WARNING: these runs did NOT measure the same workload; the "
             "recorded values differed for: "
             + ", ".join(facts.parity_diffs)
@@ -400,28 +423,36 @@ def render_text(facts: ReproducerFacts) -> str:
             "difference is reproduced too."
         )
     elif facts.base_seed is None:
-        parity = _wrap(
+        parity = _note(
             "WARNING: neither run recorded a fixed random seed, so their exact "
             "generated workloads cannot be reproduced or shown to be identical."
         )
     else:
-        parity = _wrap(
+        parity = _note(
             f"Both nightly runs used k4Bench {facts.base_commit[:12]} and the "
             f"same workload: {facts.base_n_events} events, seed "
             f"{facts.base_seed}."
         )
 
+    # One fetch when both runs read the same sources, one per half when they do
+    # not: differing inputs are a real workload difference (recorded in
+    # ``parity_diffs``), and each half has to run against the sources its own
+    # nightly used. Each lands under the basename its recorded ``--ddsim-args``
+    # reads, so a shared name is re-fetched rather than renamed — the halves are
+    # sequential, and the second run's copy replaces one the first has already
+    # consumed.
+    shared_input = facts.base_input_files == facts.onset_input_files
+    shared_fetch = _fetch(facts.base_input_files) if shared_input else []
     before = _command(
         facts,
         release=facts.base_release,
         commit=facts.base_commit,
         n_events=facts.base_n_events,
         ddsim_args=facts.base_ddsim_args,
-        input_files=facts.base_input_files,
         xml_path=facts.base_xml_path,
         resolved_steering_file=facts.base_resolved_steering_file,
         output=f"logs/{facts.base_release}",
-        checkout=f"k4Bench-before-{_slug(facts.base_release)}",
+        fetch=[] if shared_input else _fetch(facts.base_input_files),
     )
     after = _command(
         facts,
@@ -429,72 +460,83 @@ def render_text(facts: ReproducerFacts) -> str:
         commit=facts.onset_commit,
         n_events=facts.onset_n_events,
         ddsim_args=facts.onset_ddsim_args,
-        input_files=facts.onset_input_files,
         xml_path=facts.onset_xml_path,
         resolved_steering_file=facts.onset_resolved_steering_file,
         output=f"logs/{facts.onset_release}",
-        checkout=f"k4Bench-after-{_slug(facts.onset_release)}",
+        fetch=[] if shared_input else _fetch(facts.onset_input_files),
     )
     check = max(1, min(100, facts.onset_n_events // 10))
     metric = facts.metric + (
         f" ({facts.sub_detector})" if facts.sub_detector else ""
     )
     text = "\n".join((
-        heading,
-        "=" * len(heading),
-        "",
-        scope,
-        f"Metric:            {metric}",
-        f"Platform:          {facts.platform}",
-        f"Change window:     {facts.base_release} -> {facts.onset_release} "
+        f"# {heading}",
+        "# " + "=" * len(heading),
+        "#",
+        f"# {scope}",
+        f"# Metric:            {metric}",
+        f"# Platform:          {facts.platform}",
+        f"# Change window:     {facts.base_release} -> {facts.onset_release} "
         "(Key4hep releases)",
-        f"Nightly measured:  {facts.pct_change}",
-        "",
+        f"# Nightly measured:  {facts.pct_change}",
+        "#",
         parity,
-        "",
-        _wrap(
-            "Run each block in a fresh shell — the Key4hep setup script "
-            "cannot be sourced twice. Both blocks can be run from the same "
-            "working directory: each clones into its own checkout."
+        "#",
+        _note(
+            "Paste this whole file into one shell. Each half runs in a "
+            "subshell, so the two Key4hep releases never share an environment "
+            "and neither reaches your own."
         ),
         "",
-        _rule(f"Before — Key4hep {facts.base_release}"),
+        _rule("harness (cloned once)"),
+        "git clone https://github.com/key4hep/k4Bench",
+        "cd k4Bench",
+        *([
+            "",
+            _rule("input (fetched once; both runs read the same sources)"),
+            *shared_fetch,
+        ] if shared_fetch else []),
         "",
+        _rule(f"BEFORE — Key4hep {facts.base_release}"),
         before,
         "",
-        _rule(f"After — Key4hep {facts.onset_release}"),
-        "",
+        _rule(f"AFTER — Key4hep {facts.onset_release}"),
         after,
-        f"# quick directional check: --events {check} reproduces the "
-        "direction, not the percentage",
         "",
-        _wrap(
-            f"Then compare {facts.metric} for {facts.label} between the two "
-            f"runs: the nightly measured {facts.pct_change}."
+        _note(
+            f"Then compare {facts.metric} for {facts.label} between "
+            f"logs/{facts.base_release} and logs/{facts.onset_release}: the "
+            f"nightly measured {facts.pct_change}."
         ),
-        "",
-        _wrap(
+        _note(
+            f"Quick directional check: re-run with --events {check}. It "
+            "reproduces the direction, not the percentage."
+        ),
+        "#",
+        _note(
             "Key4hep nightlies are kept on CVMFS for about three weeks; past "
             "that this window cannot be re-run."
         ),
-        "",
-        "Nightly runs this recipe was derived from:",
-        f"  {facts.base_run_id}  {facts.base_actions_url}",
-        f"  {facts.onset_run_id}  {facts.onset_actions_url}",
+        "#",
+        "# Nightly runs this recipe was derived from:",
+        f"#   {facts.base_run_id}  {facts.base_actions_url}",
+        f"#   {facts.onset_run_id}  {facts.onset_actions_url}",
         "",
     ))
     return text if len(text.encode("utf-8")) <= _MAX_BYTES else ""
 
 
 def _rule(title: str, width: int = 78) -> str:
-    """A titled section rule of a fixed width, so the two commands are equally
-    easy to find when scrolling."""
-    prefix = f"--- {title} "
+    """A titled section rule, as a comment of a fixed width, so the halves are
+    equally easy to find when scrolling a pasted file."""
+    prefix = f"# --- {title} "
     return prefix + "-" * max(3, width - len(prefix))
 
 
-def _wrap(text: str, width: int = 78) -> str:
-    """Soft-wrap prose so the file reads in a terminal as well as a browser.
-    Commands are never passed through here: a wrapped command is a broken one.
+def _note(text: str, width: int = 78) -> str:
+    """Soft-wrapped prose as shell comments, so it reads in a terminal as well
+    as a browser and the file stays paste-safe end to end. Commands are never
+    passed through here: a wrapped command is a broken one.
     """
-    return "\n".join(textwrap.wrap(text, width=width)) or text
+    lines = textwrap.wrap(text, width=width - 2) or [text]
+    return "\n".join(f"# {line}" for line in lines)

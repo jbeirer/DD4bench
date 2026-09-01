@@ -737,7 +737,16 @@ def _with_history(comment: PRComment, previous_body: str = "") -> PRComment:
     if len(ordered) > _MAX_OBSERVATIONS:
         omitted += len(ordered) - _MAX_OBSERVATIONS
         ordered = ordered[:_MAX_OBSERVATIONS]
-    history = _observation_history(ordered, omitted=omitted)
+    # A history of one repeats the window and counts the comment already
+    # states above it, and has nothing to compare them against; it earns its
+    # place from the second material update on. The hidden markers are still
+    # emitted — they are the lineage's observation state, and dropping them
+    # would restart the history at one entry every night, permanently.
+    history = (
+        "\n".join(_observation_marker(item) for item in ordered)
+        if len(ordered) < 2 and not omitted
+        else _observation_history(ordered, omitted=omitted)
+    )
     return replace(
         comment,
         body=comment.body.replace(_HISTORY_PLACEHOLDER, history, 1),
@@ -2660,20 +2669,30 @@ def _alert(
     # scope, while the scope count states how broadly those regressions reached.
     # Not called "configuration": everywhere else that word means the sweep
     # label, which is what the table's Config column holds.
+    # A count is only readable next to the population it counts, and this
+    # comment states two: the union over every report the lineage has covered,
+    # which only :func:`_with_cumulative` passes in, and tonight's report,
+    # which is what the fallback below counts and what the overflow line under
+    # the table counts (:func:`_overflow_line`). Each names its own, so the two
+    # can be read side by side without guessing which is which.
+    cumulative = n_regressions is not None
     n_regressions = len(rows) if n_regressions is None else n_regressions
     n_scopes = len(plan.scopes) if n_scopes is None else n_scopes
+    where = (
+        "in the reports covering this PR's change window" if cumulative
+        else "in this PR's change window"
+    )
     if n_regressions == 1:
-        what = "a regression in this PR's change window"
+        what = f"a regression {where}"
     elif n_scopes == 1:
         what = (
             f"{_count(n_regressions, 'regression')} within one "
-            "detector/platform/sample scope in this PR's change window"
+            f"detector/platform/sample scope {where}"
         )
     else:
         what = (
             f"{_count(n_regressions, 'regression')} across "
-            f"{_count(n_scopes, 'detector/platform/sample scope')} in this PR's "
-            "change window"
+            f"{_count(n_scopes, 'detector/platform/sample scope')} {where}"
         )
     measured = f"k4Bench's nightly benchmarks confirmed {what}."
     reviewed, carried = scores or _scored(rows, attribution)
@@ -3236,7 +3255,6 @@ def _table(
     A retained historical row keeps the movement, likelihood and recipe last
     published for it; the cumulative alert uses the same newest-published
     rule."""
-    has_retained = any(entry.past is not None for entry in shown)
     urls = reproduce.urls if reproduce is not None else {}
     recipes = {
         id(entry): (
@@ -3249,13 +3267,17 @@ def _table(
     # The column exists only when at least one shown row has somewhere to send
     # the reader; an all-empty column is a header and nothing else.
     show_recipe = any(recipes.values())
-    # Shown whenever a row's own window is not simply the comment's — a
-    # narrower base, a newer onset, or a retained row carrying a window of its
-    # own. When every row measured exactly the window the header states, the
-    # column would repeat it once per line.
-    show_window = has_retained or {_row_window(row) for row in rows} != {
-        (plan.base_release or "", plan.onset_release)
-    }
+    # Shown whenever a *rendered* row's own window is not simply the comment's
+    # — a narrower base, a newer onset, or a retained row carrying a window of
+    # its own. Decided over the rows that render rather than the whole plan: a
+    # narrower window carried only by a row the cap cut is not on the page, and
+    # a column repeating the header's window once per line is a column of
+    # nothing.
+    show_window = {
+        _row_window(entry.current) if entry.current is not None
+        else _retained_window(entry.past)
+        for entry in shown
+    } != {(plan.base_release or "", plan.onset_release)}
     lines = [
         "",
         # A bold caption, not a Markdown heading: it reads at the same size as the
@@ -3307,7 +3329,13 @@ def _overflow_line(
         return None
     href = _window_href(plan, rows, dashboard_url)
     where = f"[dashboard ↗]({href})" if href else "dashboard"
-    return f"View all {_count(len(rows), 'regression')} in the {where}"
+    # Named for the report it counts, because the alert above counts the
+    # lineage's cumulative union and the two numbers otherwise read as one
+    # population stated twice (:func:`_alert`).
+    report = (
+        f" from the {_cell(plan.report_night)} report" if plan.report_night else ""
+    )
+    return f"View all {_count(len(rows), 'regression')}{report} in the {where}"
 
 
 def _others_section(plan: CommentPlan) -> str:
