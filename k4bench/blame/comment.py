@@ -65,6 +65,7 @@ import hashlib
 import json
 import logging
 import math
+import zlib
 from base64 import b64decode, urlsafe_b64encode
 from binascii import Error as BinasciiError
 from collections import Counter
@@ -140,6 +141,18 @@ _HISTORY_PLACEHOLDER = "<!-- k4bench-blame-history -->"
 _OBSERVATION_PREFIX = "<!-- k4bench-blame-observation:v1 "
 _OBSERVATION_SUFFIX = " -->"
 _OMITTED_OBSERVATIONS_PREFIX = "<!-- k4bench-blame-observations-omitted:v1 "
+
+# Exact cumulative regression identities for this comment lineage. Report
+# snapshots overlap heavily, so adding their row counts would over-count; the
+# marker carries the union itself and lets a converging lineage merge all of
+# its parents without scraping presentation Markdown.
+_CUMULATIVE_PLACEHOLDER = "<!-- k4bench-blame-cumulative -->"
+_CUMULATIVE_PREFIX = "<!-- k4bench-blame-cumulative:v1 "
+_CUMULATIVE_SUFFIX = " -->"
+_MAX_CUMULATIVE_IDENTITIES = 10_000
+_MAX_CUMULATIVE_BYTES = 256_000
+_ALERT_START = "<!-- k4bench-blame-alert:start -->"
+_ALERT_END = "<!-- k4bench-blame-alert:end -->"
 
 #: Retained-row snapshots carried in one comment's single hidden state marker —
 #: the strongest candidates for the table, current and historical alike. The cap
@@ -435,6 +448,7 @@ class PRComment:
     attribution: Attribution | None = None
     dashboard_url: str | None = None
     facts_payload: dict[str, Any] | None = None
+    min_score: float = _DEFAULT_MIN_SCORE
 
     @property
     def target(self) -> str:
@@ -519,9 +533,11 @@ def materialize(
     comparable bodies it found — the survivor of this comment's lineage first,
     then any other comparable lineage comments a converging window is absorbing.
 
-    Three things are materialized, all from structured hidden state rather than
+    Four things are materialized, all from structured hidden state rather than
     from any presentation Markdown:
 
+    * the **headline regression and scope counts** become the exact identity
+      union across the current report and every comparable lineage body;
     * the **regression table region** between the details sentinels is
       re-rendered so rows retained from earlier material versions
       (:class:`RetainedRow`) can rejoin the selection pool beside tonight's
@@ -539,10 +555,107 @@ def materialize(
     carries no sentinels, keeps its region and digest untouched — only the
     history slot is filled.
     """
+    comment = _with_cumulative(comment, previous_bodies)
     comment = _with_details(comment, previous_bodies)
     return _with_history(
         comment, previous_bodies[0] if previous_bodies else ""
     )
+
+
+def _with_cumulative(
+    comment: PRComment, previous_bodies: Sequence[str]
+) -> PRComment:
+    """Merge exact regression identities across this comment's lineage.
+
+    Nightly reports are overlapping snapshots, not disjoint batches. Keeping
+    the identities themselves makes the headline an exact set union and also
+    makes convergence of two prior window comments deterministic.
+    """
+    plan = comment.plan
+    if (
+        plan is None
+        or comment.facts_payload is None
+        or _CUMULATIVE_PLACEHOLDER not in comment.body
+        or _ALERT_START not in comment.body
+        or _ALERT_END not in comment.body
+    ):
+        return comment
+    identities = {_row_identity(row) for row in plan.rows}
+    for body in previous_bodies:
+        identities.update(_cumulative_identities(body))
+    ordered = sorted(identities)
+    marker = _cumulative_marker(ordered)
+    if not marker:
+        return comment
+
+    scopes = len({identity[:3] for identity in ordered})
+    rows = sorted(plan.rows, key=lambda row: _row_sort_key(row, comment.attribution))
+    alert = _alert(
+        plan,
+        rows,
+        comment.attribution,
+        min_score=comment.min_score,
+        n_regressions=len(ordered),
+        n_scopes=scopes,
+    )
+    head, _, rest = comment.body.partition(_ALERT_START)
+    _, _, tail = rest.partition(_ALERT_END)
+    body = f"{head}{_ALERT_START}\n{alert}\n{_ALERT_END}{tail}"
+    body = body.replace(_CUMULATIVE_PLACEHOLDER, marker, 1)
+
+    payload = dict(comment.facts_payload)
+    canonical = json.dumps(ordered, separators=(",", ":"))
+    payload["cumulative"] = {
+        "digest": hashlib.sha256(canonical.encode()).hexdigest()[:16],
+        "regressions": len(ordered),
+        "scopes": scopes,
+    }
+    return replace(comment, body=body, facts_payload=payload)
+
+
+def _cumulative_marker(identities: Sequence[tuple]) -> str:
+    if len(identities) > _MAX_CUMULATIVE_IDENTITIES:
+        return ""
+    raw = json.dumps(identities, separators=(",", ":")).encode()
+    if len(raw) > _MAX_CUMULATIVE_BYTES:
+        return ""
+    encoded = urlsafe_b64encode(zlib.compress(raw, level=9)).decode()
+    return f"{_CUMULATIVE_PREFIX}{encoded}{_CUMULATIVE_SUFFIX}"
+
+
+def _cumulative_identities(body: str) -> set[tuple]:
+    for line in body.splitlines():
+        if not line.startswith(_CUMULATIVE_PREFIX) or not line.endswith(
+            _CUMULATIVE_SUFFIX
+        ):
+            continue
+        encoded = line[len(_CUMULATIVE_PREFIX):-len(_CUMULATIVE_SUFFIX)]
+        try:
+            compressed = b64decode(encoded, altchars=b"-_", validate=True)
+            decoder = zlib.decompressobj()
+            raw = decoder.decompress(compressed, _MAX_CUMULATIVE_BYTES + 1)
+            if (
+                len(raw) > _MAX_CUMULATIVE_BYTES
+                or decoder.unconsumed_tail
+                or not decoder.eof
+            ):
+                return set()
+            values = json.loads(raw)
+        except (BinasciiError, UnicodeDecodeError, ValueError, zlib.error):
+            return set()
+        if not isinstance(values, list) or len(values) > _MAX_CUMULATIVE_IDENTITIES:
+            return set()
+        identities = set()
+        for value in values:
+            if (
+                not isinstance(value, list)
+                or len(value) != 6
+                or not all(isinstance(part, str) and len(part) <= 2048 for part in value)
+            ):
+                return set()
+            identities.add(tuple(value))
+        return identities
+    return set()
 
 
 def _with_history(comment: PRComment, previous_body: str = "") -> PRComment:
@@ -2062,9 +2175,12 @@ def _render(
         part for part in (
             marker,
             f"{_FACTS_MARKER_PREFIX}{digest} -->",
+            _CUMULATIVE_PLACEHOLDER,
             "### 📉 Possible performance regression traced to this pull request",
             "",
+            _ALERT_START,
             _alert(plan, by_likelihood, attribution, min_score=min_score),
+            _ALERT_END,
             "",
             _window_line(plan),
             _DETAILS_START,
@@ -2100,6 +2216,7 @@ def _render(
         attribution=attribution,
         dashboard_url=dashboard_url,
         facts_payload=payload,
+        min_score=min_score,
     )
 
 
@@ -2287,6 +2404,8 @@ def _alert(
     attribution: Attribution | None,
     *,
     min_score: float,
+    n_regressions: int | None = None,
+    n_scopes: int | None = None,
 ) -> str:
     """The headline claim as a GitHub warning alert: what the benchmarks
     measured, and how strongly a model ties it to this pull request.
@@ -2297,6 +2416,10 @@ def _alert(
     alert stops at percentages rather than at an unqualified accusation — and the
     model behind it is said out loud, matching what the assessment below calls
     itself.
+
+    Once materialized, the measured regression and scope totals are the exact
+    identity union over the comment lineage; the score clauses remain about the
+    current rows and current review.
 
     A peak alone is misleading, so each clause pairs it with *reach*: one row at
     95% out of forty reads very differently from thirty-eight of them, and the
@@ -2322,8 +2445,8 @@ def _alert(
     # scope, while the scope count states how broadly those regressions reached.
     # Not called "configuration": everywhere else that word means the sweep
     # label, which is what the table's Config column holds.
-    n_regressions = len(rows)
-    n_scopes = len(plan.scopes)
+    n_regressions = len(rows) if n_regressions is None else n_regressions
+    n_scopes = len(plan.scopes) if n_scopes is None else n_scopes
     if n_regressions == 1:
         what = "a regression in this PR's change window"
     elif n_scopes == 1:

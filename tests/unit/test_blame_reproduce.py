@@ -83,6 +83,73 @@ def test_parity_differences_are_named_instead_of_suppressing_recipe():
     assert "same workload: 1000 events" not in body
 
 
+def test_input_sources_are_part_of_workload_parity_even_with_same_tmp_name():
+    before = _info(
+        "2026-08-27", "1",
+        input_files=["root://old.example/events.hepmc"],
+        ddsim_args="--inputFiles /tmp/events.hepmc --random.seed 42",
+    )
+    after = _info(
+        "2026-08-28", "2",
+        input_files=["root://new.example/events.hepmc"],
+        ddsim_args="--inputFiles /tmp/events.hepmc --random.seed 42",
+    )
+    facts = facts_from(_row(), before, after)
+    assert facts is not None
+    assert facts.parity_diffs == ("input_files",)
+
+
+def test_release_specific_steering_paths_are_compared_logically():
+    before = _info(
+        "2026-08-27", "1",
+        steering_file="$CLDCONFIG/share/CLDConfig/cld_arc_steer.py",
+        resolved_steering_file="/cvmfs/nightly-27/CLDConfig/cld_arc_steer.py",
+        ddsim_args="--steeringFile /cvmfs/nightly-27/CLDConfig/cld_arc_steer.py --random.seed 42",
+    )
+    after = _info(
+        "2026-08-28", "2",
+        steering_file="$CLDCONFIG/share/CLDConfig/cld_arc_steer.py",
+        resolved_steering_file="/cvmfs/nightly-28/CLDConfig/cld_arc_steer.py",
+        ddsim_args="--steeringFile /cvmfs/nightly-28/CLDConfig/cld_arc_steer.py --random.seed 42",
+    )
+    facts = facts_from(_row(), before, after)
+    assert facts is not None
+    assert facts.parity_diffs == ()
+    body = render(facts)
+    assert body.count("export PYTHONPATH=") == 2
+    assert "/cvmfs/nightly-27/CLDConfig" in body
+    assert "/cvmfs/nightly-28/CLDConfig" in body
+
+
+def test_different_logical_steering_or_real_ddsim_option_breaks_parity():
+    facts = _facts(
+        steering_file="$FCCCONFIG/other.py",
+        ddsim_args="--random.seed 42 --enableGun --gun.particle mu-",
+    )
+    assert facts is not None
+    assert facts.parity_diffs == ("ddsim_args", "steering_file")
+
+
+def test_release_specific_sid_xml_paths_are_kept_for_each_command():
+    configured = "$DD4hepINSTALL/DDDetectors/compact/SiD.xml"
+    before = _info(
+        "2026-08-27", "1", detector="SiD",
+        xml_path="/cvmfs/nightly-27/DDDetectors/compact/SiD.xml",
+        configured_xml_path=configured,
+    )
+    after = _info(
+        "2026-08-28", "2", detector="SiD",
+        xml_path="/cvmfs/nightly-28/DDDetectors/compact/SiD.xml",
+        configured_xml_path=configured,
+    )
+    facts = facts_from(_row(detector="SiD"), before, after)
+    assert facts is not None
+    assert "xml_path" not in facts.parity_diffs
+    body = render(facts)
+    assert "/cvmfs/nightly-27/DDDetectors/compact/SiD.xml" in body
+    assert "/cvmfs/nightly-28/DDDetectors/compact/SiD.xml" in body
+
+
 def test_missing_fixed_seed_never_claims_the_workloads_were_identical():
     facts = _facts(random_seed=None)
     assert facts is not None
@@ -110,3 +177,15 @@ def test_render_contains_two_full_commands_and_only_display_precision_pct():
     assert "--sweep-detectors TPC" in body
     assert "the nightly measured **+36.1%**" in body
     assert "0.3614" not in body
+
+
+def test_command_checks_out_recorded_harness_before_setup_without_duplicate_build():
+    facts = _facts()
+    assert facts is not None
+    body = render(facts)
+    checkout = body.index("git checkout")
+    nightly = body.index("source /cvmfs/sw-nightlies.hsf.org/key4hep/setup.sh")
+    historical_setup = body.index("source setup.sh")
+    assert checkout < nightly < historical_setup
+    assert "KEY4HEP_REPO=" not in body
+    assert "bash plugin/build.sh" not in body

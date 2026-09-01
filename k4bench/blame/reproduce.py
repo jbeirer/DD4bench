@@ -29,7 +29,10 @@ class ReproducerFacts:
     label: str
     metric: str
     sub_detector: str | None
-    xml_path: str
+    base_xml_path: str
+    onset_xml_path: str
+    base_configured_xml_path: str
+    onset_configured_xml_path: str
     sweep_option: str
     sweep_value: str | None
     pct_change: str
@@ -51,6 +54,8 @@ class ReproducerFacts:
     onset_input_files: tuple[str, ...]
     base_steering_file: str
     onset_steering_file: str
+    base_resolved_steering_file: str
+    onset_resolved_steering_file: str
     parity_diffs: tuple[str, ...]
 
     def payload(self) -> dict[str, Any]:
@@ -108,6 +113,40 @@ def _pct(value: object) -> str:
     return f"{value:+.1%}"
 
 
+def _tokens(args: str) -> tuple[str, ...] | None:
+    try:
+        return tuple(shlex.split(args))
+    except ValueError:
+        return None
+
+
+def _option_value(tokens: tuple[str, ...], option: str) -> str:
+    value = ""
+    for index, token in enumerate(tokens):
+        if token.startswith(f"{option}="):
+            value = token.partition("=")[2]
+        elif token == option and index + 1 < len(tokens):
+            value = tokens[index + 1]
+    return value
+
+
+def _workload_args(tokens: tuple[str, ...]) -> tuple[str, ...]:
+    """Drop transport paths that are compared from their source metadata."""
+    result = []
+    skip = False
+    for token in tokens:
+        if skip:
+            skip = False
+            continue
+        if token in ("--inputFiles", "--steeringFile"):
+            skip = True
+            continue
+        if token.startswith("--inputFiles=") or token.startswith("--steeringFile="):
+            continue
+        result.append(token)
+    return tuple(result)
+
+
 def facts_from(
     row: Any,
     base_info: dict[str, Any] | None,
@@ -145,8 +184,9 @@ def facts_from(
     if base_release != wanted_base or onset_release != wanted_onset:
         return None
 
-    xmls = {str(base_info.get("xml_path") or ""), str(onset_info.get("xml_path") or "")}
-    if len(xmls) != 1 or not next(iter(xmls)):
+    base_xml = str(base_info.get("xml_path") or "")
+    onset_xml = str(onset_info.get("xml_path") or "")
+    if not base_xml or not onset_xml:
         return None
     base_events = _integer(base_info.get("n_events"))
     onset_events = _integer(onset_info.get("n_events"))
@@ -163,20 +203,43 @@ def facts_from(
 
     base_args = str(base_info.get("ddsim_args") or "")
     onset_args = str(onset_info.get("ddsim_args") or "")
+    base_tokens = _tokens(base_args)
+    onset_tokens = _tokens(onset_args)
+    if base_tokens is None or onset_tokens is None:
+        return None
     base_seed = _integer(base_info.get("random_seed"))
     onset_seed = _integer(onset_info.get("random_seed"))
     fallback_files = _files(input_files)
     base_files = _files(base_info.get("input_files")) or fallback_files
     onset_files = _files(onset_info.get("input_files")) or fallback_files
+    base_configured_xml = str(base_info.get("configured_xml_path") or "")
+    onset_configured_xml = str(onset_info.get("configured_xml_path") or "")
+    base_steering = str(base_info.get("steering_file") or "")
+    onset_steering = str(onset_info.get("steering_file") or "")
+    base_resolved_steering = str(
+        base_info.get("resolved_steering_file")
+        or _option_value(base_tokens, "--steeringFile")
+    )
+    onset_resolved_steering = str(
+        onset_info.get("resolved_steering_file")
+        or _option_value(onset_tokens, "--steeringFile")
+    )
     parity = []
     for name, before, after in (
         ("n_events", base_events, onset_events),
-        ("ddsim_args", base_args, onset_args),
+        ("ddsim_args", _workload_args(base_tokens), _workload_args(onset_tokens)),
         ("random_seed", base_seed, onset_seed),
         ("commit_sha", base_commit, onset_commit),
+        ("input_files", base_files, onset_files),
+        ("steering_file", base_steering, onset_steering),
     ):
         if before != after:
             parity.append(name)
+    if (
+        (base_configured_xml or onset_configured_xml)
+        and base_configured_xml != onset_configured_xml
+    ):
+        parity.append("xml_path")
 
     option, _, value = inversion.partition(" ")
     return ReproducerFacts(
@@ -186,7 +249,10 @@ def facts_from(
         label=str(verdict.label),
         metric=str(getattr(verdict, "metric", "")),
         sub_detector=getattr(verdict, "sub_detector", None),
-        xml_path=next(iter(xmls)),
+        base_xml_path=base_xml,
+        onset_xml_path=onset_xml,
+        base_configured_xml_path=base_configured_xml,
+        onset_configured_xml_path=onset_configured_xml,
         sweep_option=option,
         sweep_value=value or None,
         pct_change=_pct(getattr(verdict, "pct_change", None)),
@@ -206,8 +272,10 @@ def facts_from(
         onset_seed=onset_seed,
         base_input_files=base_files,
         onset_input_files=onset_files,
-        base_steering_file=str(base_info.get("steering_file") or ""),
-        onset_steering_file=str(onset_info.get("steering_file") or ""),
+        base_steering_file=base_steering,
+        onset_steering_file=onset_steering,
+        base_resolved_steering_file=base_resolved_steering,
+        onset_resolved_steering_file=onset_resolved_steering,
         parity_diffs=tuple(parity),
     )
 
@@ -231,20 +299,25 @@ def _command(
     n_events: int,
     ddsim_args: str,
     input_files: tuple[str, ...],
+    xml_path: str,
+    resolved_steering_file: str,
     output: str,
 ) -> str:
     lines = [
         "git clone https://github.com/key4hep/k4Bench && cd k4Bench",
-        f"KEY4HEP_REPO={_safe(_NIGHTLY_REPO)} KEY4HEP_VERSION={_safe(release)} source setup.sh",
         f"git checkout {_safe(commit)}",
+        f"source {_safe(_NIGHTLY_REPO + '/key4hep/setup.sh')} -r {_safe(release)}",
+        "source setup.sh",
         "pip install --no-build-isolation -e .",
-        "bash plugin/build.sh",
     ]
+    if resolved_steering_file:
+        directory = resolved_steering_file.rpartition("/")[0] or "."
+        lines.append(f"export PYTHONPATH={_safe(directory)}:\"${{PYTHONPATH:-}}\"")
     for source in input_files:
         lines.append(f"xrdcp --force {_safe(source)} {_safe('/tmp/' + source.rsplit('/', 1)[-1])}")
     continuation = " " + chr(92)
     command = [
-        f"k4bench --xml {_xml_arg(facts.xml_path)} \\",
+        f"k4bench --xml {_xml_arg(xml_path)} \\",
         f"        --events {_safe(n_events)}",
     ]
     if facts.sweep_option and facts.sweep_value:
@@ -293,6 +366,8 @@ def render(facts: ReproducerFacts) -> str:
         n_events=facts.base_n_events,
         ddsim_args=facts.base_ddsim_args,
         input_files=facts.base_input_files,
+        xml_path=facts.base_xml_path,
+        resolved_steering_file=facts.base_resolved_steering_file,
         output=f"logs/{facts.base_release}",
     )
     after = _command(
@@ -302,6 +377,8 @@ def render(facts: ReproducerFacts) -> str:
         n_events=facts.onset_n_events,
         ddsim_args=facts.onset_ddsim_args,
         input_files=facts.onset_input_files,
+        xml_path=facts.onset_xml_path,
+        resolved_steering_file=facts.onset_resolved_steering_file,
         output=f"logs/{facts.onset_release}",
     )
     block = "\n".join(

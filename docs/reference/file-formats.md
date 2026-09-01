@@ -71,7 +71,11 @@ Written by the nightly CI and read by the dashboard.
   list of run labels (`configs`), the ddsim flags the run was invoked with
   (`ddsim_args`) and the Monte-Carlo seed parsed out of them (`random_seed`,
   `null` when the run fixed none), the configured source `input_files` (before
-  HepMC files are copied to `/tmp`) and `steering_file`, and the stack's git provenance
+  HepMC files are copied to `/tmp`), and both configured and resolved paths for
+  geometry (`configured_xml_path`, `xml_path`) and steering
+  (`steering_file`, `resolved_steering_file`). Keeping both forms lets a
+  reproducer compare the logical workload while executing the exact path each
+  release used. The record also carries the stack's git provenance
   (`k4h_stack_root`, `k4h_packages`; see below).
 - **`machine_info.json`** — the benchmark host and its state *around* the run:
   CPU model/cores, RAM/swap totals, and `_start`/`_end` snapshots of load,

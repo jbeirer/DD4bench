@@ -23,10 +23,9 @@ Reading it top to bottom, it is idempotent and safe to re-source:
    build/install dirs to `LD_LIBRARY_PATH`, so DDG4 can find the timing
    libraries at run time.
 2. **Sources the Key4hep stack** at `KEY4HEP_VERSION` (default `2026-04-08`)
-   from `KEY4HEP_REPO` (default `/cvmfs/sw.hsf.org`) — unless `KEY4HEP_STACK`
-   is already set, in which case it's left alone. To reproduce a nightly in a
-   fresh shell, use `KEY4HEP_REPO=/cvmfs/sw-nightlies.hsf.org
-   KEY4HEP_VERSION=YYYY-MM-DD source setup.sh`.
+   from `/cvmfs/sw.hsf.org` — unless `KEY4HEP_STACK` is already set, in which
+   case it's left alone. A nightly reproducer sources the dated nightly stack
+   directly before calling the historical `setup.sh`.
 3. **Creates a `cvmfs-venv`** named `py-venv` (downloading the
    [`cvmfs-venv`](https://github.com/jbeirer/cvmfs-venv) helper to `~/.local/bin`
    if absent) and activates it. `cvmfs-venv` makes a venv that correctly inherits

@@ -1564,10 +1564,10 @@ def test_external_prose_cannot_carry_an_active_link():
     # The bot's *own* links — the dashboard views it renders itself — are
     # untouched: only quoted, externally-authored prose is defanged.
     assert f"]: {_DASH}" in body
-    # The only live HTML comments are the bot's own marker, digest, the two
-    # details sentinels and the history slot; the one smuggled into the reason
-    # is broken by the same zero-width space.
-    assert body.count("<!--") == 5 and body.startswith("<!--")
+    # The only live HTML comments are the bot's own marker, digest, cumulative
+    # slot, alert/details sentinels and history slot; the one smuggled into the
+    # reason is broken by the same zero-width space.
+    assert body.count("<!--") == 8 and body.startswith("<!--")
 
 
 # ── Runnable reproducer ───────────────────────────────────────────────────────
@@ -3427,6 +3427,88 @@ def test_a_retained_row_alone_does_not_re_notify_a_standing_comment():
     assert first.body == second.body
 
 
+def test_headline_counts_the_unique_cumulative_union_not_snapshot_sums():
+    a = _verdict(metric="a", detector="A", base="2026-08-27", onset="2026-08-28")
+    b = _verdict(metric="b", detector="B", base="2026-08-27", onset="2026-08-28")
+    c = _verdict(metric="c", detector="C", base="2026-08-27", onset="2026-08-29")
+    first = materialize(
+        _comments(_report(a, b), _blame([a, b], [_candidate()]))[0], []
+    )
+    second = materialize(
+        _comments(_report(b, c), _blame([b, c], [_candidate()]))[0],
+        [first.body],
+    )
+
+    alert = _row(second.body, "nightly benchmarks confirmed")
+    assert "confirmed 3 regressions across 3 detector/platform/sample scopes" in alert
+    assert len(comment_mod._cumulative_identities(second.body)) == 3
+
+
+def test_converging_comments_union_every_parent_identity_once():
+    rows = [
+        _verdict(metric=name, detector=name.upper(), base="2026-08-27", onset=onset)
+        for name, onset in (("a", "2026-08-28"), ("b", "2026-08-28"),
+                            ("c", "2026-08-29"), ("d", "2026-08-30"))
+    ]
+    a, b, c, d = rows
+    left = materialize(
+        _comments(_report(a, b), _blame([a, b], [_candidate()]))[0], []
+    )
+    right = materialize(
+        _comments(_report(b, c), _blame([b, c], [_candidate()]))[0], []
+    )
+    merged = materialize(
+        _comments(_report(c, d), _blame([c, d], [_candidate()]))[0],
+        [left.body, right.body],
+    )
+
+    assert len(comment_mod._cumulative_identities(merged.body)) == 4
+    assert "confirmed 4 regressions across 4 detector/platform/sample scopes" in _row(
+        merged.body, "nightly benchmarks confirmed"
+    )
+
+
+def test_malformed_cumulative_state_falls_back_to_current_rows():
+    old = _verdict(metric="old")
+    current = _verdict(metric="current")
+    previous = materialize(
+        _comments(_report(old), _blame([old], [_candidate()]))[0], []
+    ).body
+    previous = next(
+        line for line in previous.splitlines()
+        if line.startswith("<!-- k4bench-blame-cumulative:v1 ")
+    ).join(("prefix\n", "\nsuffix"))
+    previous = previous.replace(
+        next(line for line in previous.splitlines() if "cumulative:v1" in line),
+        "<!-- k4bench-blame-cumulative:v1 not@base64 -->",
+    )
+    result = materialize(
+        _comments(_report(current), _blame([current], [_candidate()]))[0],
+        [previous],
+    )
+
+    assert len(comment_mod._cumulative_identities(result.body)) == 1
+    assert "confirmed a regression" in _row(result.body, "nightly benchmarks confirmed")
+
+
+def test_cumulative_digest_is_stable_for_reconfirmation_and_changes_for_new_identity():
+    a = _verdict(metric="a")
+    first = materialize(
+        _comments(_report(a), _blame([a], [_candidate()]))[0], []
+    )
+    repeated = materialize(
+        _comments(_report(a), _blame([a], [_candidate()]))[0], [first.body]
+    )
+    b = _verdict(metric="b")
+    expanded = materialize(
+        _comments(_report(a, b), _blame([a, b], [_candidate()]))[0],
+        [first.body],
+    )
+
+    assert repeated.facts_digest == first.facts_digest
+    assert expanded.facts_digest != first.facts_digest
+
+
 # ── The strongest row is never selected away ──────────────────────────────────
 
 def test_the_globally_strongest_row_survives_more_onsets_than_the_table_shows():
@@ -3586,10 +3668,10 @@ def test_the_dd4hep_lifecycle_keeps_its_leading_finding_across_three_nights():
     assert "report=2026-08-28" in _row(body, "[h1]: ")
     assert "https://" not in _retained_marker_of(body)
 
-    # The alert is a summary of tonight's report and tonight's review only: two
-    # confirmed regressions, highest 82%.
+    # The measurement count is the three-identity cumulative union; the score
+    # clause still describes tonight's two confirmed rows, highest 82%.
     alert = _row(body, "k4Bench's nightly benchmarks confirmed")
-    assert "2 regressions" in alert and "82%" in alert
+    assert "confirmed 3 regressions" in alert and "82%" in alert
     assert "88%" not in alert
 
     # All three material versions are in the observation history, and both

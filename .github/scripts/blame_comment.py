@@ -76,6 +76,7 @@ def _benchmark_inputs(root: Path = _REPO_ROOT / ".github" / "benchmarks") -> dic
             inputs[(detector, str(sample["name"]))] = {
                 "input_files": sample.get("input_files", data.get("input_files")),
                 "steering_file": sample.get("steering_file", data.get("steering_file")),
+                "configured_xml_path": data.get("xml"),
             }
     return inputs
 
@@ -98,7 +99,9 @@ def _run_info_source(data_url: str | None):
             if info is not None:
                 info = dict(info)
                 legacy = fallback.get((detector, sample), {})
-                for name in ("input_files", "steering_file"):
+                for name in (
+                    "input_files", "steering_file", "configured_xml_path",
+                ):
                     if name not in info and legacy.get(name) is not None:
                         info[name] = legacy[name]
             cache[key] = info

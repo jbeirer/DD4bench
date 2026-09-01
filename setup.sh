@@ -6,11 +6,10 @@ export LD_LIBRARY_PATH="${K4BENCH_REPO}/plugin/install/lib:${K4BENCH_REPO}/plugi
 
 # Use environment variable if set, otherwise use default version
 KEY4HEP_VERSION=${KEY4HEP_VERSION:-"2026-04-08"}
-KEY4HEP_REPO=${KEY4HEP_REPO:-/cvmfs/sw.hsf.org}
 
 # Setup Key4HEP environment only if not already set
 if [ -z "$KEY4HEP_STACK" ]; then
-    source "${KEY4HEP_REPO}/key4hep/setup.sh" -r "${KEY4HEP_VERSION}"
+    source /cvmfs/sw.hsf.org/key4hep/setup.sh -r "${KEY4HEP_VERSION}"
 else
     echo "✅ KEY4HEP_STACK is already set. Skipping Key4HEP environment setup."
 fi

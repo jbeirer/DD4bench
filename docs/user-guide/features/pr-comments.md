@@ -214,9 +214,12 @@ is a newer view of that finding and updates it; non-containing windows remain
 separate findings.
 
 It opens with a warning alert giving both halves of the claim — what the
-benchmarks measured, and what a model estimated from it: how many of the
-window's regressions are attributed to this pull request at or above the
-configured `min_score`, and the strongest likelihood among them. Two numbers
+runs in this comment lineage have measured, and what a model estimated from
+tonight's rows. The regression and scope totals are exact cumulative unions of
+their identities across overlapping reports, not a sum of nightly counts; a
+regression reconfirmed on three nights is counted once. The attribution clause
+then says how many of tonight's regressions are attributed to this pull request
+at or above the configured `min_score`, and the strongest likelihood. Two numbers
 rather than one, because a single high score says nothing about reach: one row
 at 95% out of forty is a very different claim from thirty-eight of them. The
 threshold is named rather than called "certain" — it is the same configured
@@ -251,11 +254,17 @@ event count, ddsim arguments, seed, harness commit, Key4hep release and Actions
 run. HepMC recipes also download the source xrootd input recorded by the run;
 for older records, the checked-in benchmark YAML supplies that URL.
 
-The block compares event count, ddsim arguments, seed and harness commit. If
+The block compares event count, source input files, logical geometry and
+steering configuration, non-path ddsim arguments, seed and harness commit. If
 they differ it says so explicitly instead of describing the two measurements as
-the same workload. Each half starts in a fresh shell and asks `setup.sh` for the
-recorded nightly repository and release. Since nightlies expire from CVMFS after
-roughly three weeks, old recipes also say when they can no longer be executed.
+the same workload. Release-specific resolved geometry and steering prefixes do
+not create false differences. Each half starts in a fresh shell, checks out the
+recorded k4Bench commit, sources the dated nightly stack directly, and then runs
+that checkout's `setup.sh`; its plugin build is not repeated separately. For
+steering files, the recorded directory is restored in `PYTHONPATH`, including
+CLD configurations whose steering file imports a sibling module. Since
+nightlies expire from CVMFS after roughly three weeks, old recipes also say when
+they can no longer be executed.
 
 No absolute timing or memory value is quoted. Those values are remeasured and
 move nightly; the recipe names only the percentage at the same one-decimal
@@ -293,8 +302,8 @@ The rules that keep this honest:
   on a retained row are what the review recorded on its last published
   version, and are not rescored after the row stops being confirmed. A note under the
   table says so, so an 88% row above current 82% rows cannot be read as
-  contradicting the alert — which summarises **tonight's report and tonight's
-  review**, and nothing else.
+  contradicting the alert — whose measurement count is cumulative but whose
+  attribution clause summarises **tonight's report and tonight's review**.
 - **Current evidence always wins.** When a retained identity is confirmed again,
   its snapshot is discarded and tonight's movement, likelihood and state are
   what render — including a current *not a candidate* or unscored state, which
