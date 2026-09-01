@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import shlex
 from dataclasses import replace
 from types import SimpleNamespace
 
-from k4bench.blame.reproduce import facts_from, render, sweep_flag
+from k4bench.blame.reproduce import (
+    artifact_name,
+    facts_from,
+    render_text,
+    sweep_flag,
+)
 
 
 def _row(**overrides):
@@ -77,9 +83,9 @@ def test_parity_differences_are_named_instead_of_suppressing_recipe():
     facts = _facts(n_events=100, random_seed=7, commit_sha="d" * 40)
     assert facts is not None
     assert facts.parity_diffs == ("n_events", "random_seed", "commit_sha")
-    body = render(facts)
-    assert "did **not** measure the same workload" in body
-    assert "`n_events`" in body
+    body = render_text(facts)
+    assert "did NOT measure the same workload" in body
+    assert "n_events" in body
     assert "same workload: 1000 events" not in body
 
 
@@ -115,7 +121,7 @@ def test_release_specific_steering_paths_are_compared_logically():
     facts = facts_from(_row(), before, after)
     assert facts is not None
     assert facts.parity_diffs == ()
-    body = render(facts)
+    body = render_text(facts)
     assert body.count("export PYTHONPATH=") == 2
     assert "/cvmfs/nightly-27/CLDConfig" in body
     assert "/cvmfs/nightly-28/CLDConfig" in body
@@ -145,7 +151,7 @@ def test_release_specific_sid_xml_paths_are_kept_for_each_command():
     facts = facts_from(_row(detector="SiD"), before, after)
     assert facts is not None
     assert "xml_path" not in facts.parity_diffs
-    body = render(facts)
+    body = render_text(facts)
     assert "/cvmfs/nightly-27/DDDetectors/compact/SiD.xml" in body
     assert "/cvmfs/nightly-28/DDDetectors/compact/SiD.xml" in body
 
@@ -153,39 +159,76 @@ def test_release_specific_sid_xml_paths_are_kept_for_each_command():
 def test_missing_fixed_seed_never_claims_the_workloads_were_identical():
     facts = _facts(random_seed=None)
     assert facts is not None
-    body = render(replace(facts, base_seed=None, parity_diffs=()))
-    assert "Neither run recorded a fixed random seed" in body
+    body = render_text(replace(facts, base_seed=None, parity_diffs=()))
+    assert "neither run recorded a fixed random seed" in body
     assert "and the same workload" not in body
 
 
-def test_render_defuses_markdown_fence_and_shell_quotes_untrusted_arguments():
+def test_render_shell_quotes_untrusted_arguments_into_one_word():
     facts = _facts()
     assert facts is not None
-    hostile = "--foo 'two words'\n```\necho injected"
-    body = render(replace(facts, onset_ddsim_args=hostile))
-    # Only the renderer's four opening/closing fences remain literal.
-    assert body.count("```") == 4
-    assert "`​``" in body
-    assert "--ddsim-args='" in body
+    hostile = "--foo 'two words'\necho injected"
+    body = render_text(replace(facts, onset_ddsim_args=hostile))
+    # The whole hostile value reaches the shell as one quoted word, so the
+    # embedded newline cannot start a command of its own.
+    argument = body.rsplit("--ddsim-args=", 1)[1].split(
+        "\n# quick directional check", 1
+    )[0]
+    assert shlex.split(argument) == [hostile]
 
 
 def test_render_contains_two_full_commands_and_only_display_precision_pct():
     facts = _facts()
     assert facts is not None
-    body = render(facts)
+    body = render_text(facts)
     assert body.count("git clone https://github.com/key4hep/k4Bench") == 2
     assert "--sweep-detectors TPC" in body
-    assert "the nightly measured **+36.1%**" in body
+    assert "Nightly measured:  +36.1%" in body
     assert "0.3614" not in body
 
 
 def test_command_checks_out_recorded_harness_before_setup_without_duplicate_build():
     facts = _facts()
     assert facts is not None
-    body = render(facts)
+    body = render_text(facts)
     checkout = body.index("git checkout")
     nightly = body.index("source /cvmfs/sw-nightlies.hsf.org/key4hep/setup.sh")
     historical_setup = body.index("source setup.sh")
     assert checkout < nightly < historical_setup
     assert "KEY4HEP_REPO=" not in body
     assert "bash plugin/build.sh" not in body
+
+
+def test_the_recipe_names_the_measurement_it_reproduces():
+    facts = _facts()
+    assert facts is not None
+    body = render_text(facts)
+    assert body.startswith("k4Bench — reproduce this measurement")
+    assert "ILD_FCCee_v01" in body and "without_TPC" in body
+    assert "2026-08-27 -> 2026-08-28" in body
+    # Read on its own, it still says which runs it came from.
+    assert "https://github.test/actions/runs/1" in body
+    assert "https://github.test/actions/runs/2" in body
+
+
+def test_artifact_name_is_stable_per_measurement_and_window():
+    facts = _facts()
+    assert facts is not None
+    assert artifact_name(facts) == artifact_name(_facts())
+    assert artifact_name(facts).endswith(".txt")
+    assert artifact_name(facts).startswith(
+        "ILD_FCCee_v01-single_e-_10GeV-without_TPC-mean_time_s-"
+    )
+    # A different window is a different recipe, and so is a different platform
+    # even though the readable stem cannot show it.
+    assert artifact_name(replace(facts, onset_release="2026-08-29")) != \
+        artifact_name(facts)
+    assert artifact_name(replace(facts, platform="aarch64-el9-gcc14-opt")) != \
+        artifact_name(facts)
+
+
+def test_artifact_name_never_leaves_the_published_directory():
+    facts = _facts()
+    assert facts is not None
+    hostile = artifact_name(replace(facts, label="../../etc/passwd", detector="a b"))
+    assert "/" not in hostile and " " not in hostile

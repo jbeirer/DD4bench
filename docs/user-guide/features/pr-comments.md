@@ -215,19 +215,18 @@ separate findings.
 
 It opens with a warning alert giving both halves of the claim — what the
 runs in this comment lineage have measured, and what a model estimated from
-tonight's rows. The regression and scope totals are exact cumulative unions of
-their identities across overlapping reports, not a sum of nightly counts; a
-regression reconfirmed on three nights is counted once. The attribution clause
-then says how many of tonight's regressions are attributed to this pull request
-at or above the configured `min_score`, and the strongest likelihood. Two numbers
+those rows. The regression and scope totals are exact cumulative unions of their
+identities across overlapping reports, not a sum of nightly counts; a regression
+reconfirmed on three nights is counted once and uses its newest published
+attribution. The attribution clause describes that same cumulative population:
+how many are attributed to this pull request at or above the configured
+`min_score`, and the strongest likelihood. Two numbers
 rather than one, because a single high score says nothing about reach: one row
 at 95% out of forty is a very different claim from thirty-eight of them. The
 threshold is named rather than called "certain" — it is the same configured
 number that decided the comment exists at all. Then comes the change window,
 labelled as **Key4hep releases** since the two dates are release dates and not
-the days the benchmark ran. When a containing window spans several step onsets,
-a compact table keeps those findings distinct: regressions, scopes and UP/DOWN
-counts for each onset. The direction is descriptive, not a good/bad judgement.
+the days the benchmark ran.
 
 The reviewer's short account of the pattern follows. Below it sits a **table**
 of the regressions in that window — metric, detector, sample, benchmark
@@ -237,11 +236,10 @@ five rows, reserving in order: the **globally strongest row**, whatever its
 onset; the strongest currently confirmed row; one representative per onset the
 table covers; then the strongest rows remaining. The strongest row is reserved
 first because the alert quotes it — a table that hid the 95% row while the alert
-said "highest at 95%" would contradict itself. Any onsets past that are counted
-as *additional* rather than *earlier*: since the strongest row's onset may be an
-old one, the omitted groups are not necessarily a contiguous older tail. The
-onset summary above the table describes exactly the onsets the table shows. A
-row nobody scored — a regression this pull request was not even a candidate for
+said "highest at 95%" would contradict itself. The **Onset** column keeps the
+represented steps distinct; the dashboard remains the complete view when more
+onsets exist than the five-row table can show. A row nobody scored — a
+regression this pull request was not even a candidate for
 — says "not scored" rather than 0%, which would claim a judgement no model made.
 
 ### Reproducing the measurement
@@ -283,40 +281,23 @@ of a comment carries a bounded, structured snapshot of its strongest rows, and
 the next version's table can resurface the ones that still outrank tonight's
 evidence. This is the AIDASoft/DD4hep#1617 case, and it reads:
 
-| Metric | Detector | Sample | Config | Onset | Change | Last reported | Current state | Attribution |
-|:---|:---|:---|:---|:---|---:|:---|:---|---:|
-| `mean_time_s` | ALLEGRO_o1_v03 | Single e⁻ · 10GeV | `without_InnerTrackers` | `2026-08-28` | 🔺 **+36.7%** | `2026-08-28` | `WATCH` | 88% |
-| `wall_time_s` | ALLEGRO_o1_v03 | Single e⁻ · 10GeV | `baseline` | `2026-08-29` | 🔺 **+12.0%** | **current** | `CONFIRMED` | 82% |
-
-Two extra columns, present only when a retained row renders, keep the two kinds
-apart without a footnote: **Last reported** is `current` for a row confirmed
-tonight and, for a retained one, the night it was last *published* as confirmed,
-and **Current state** is that row's standing in the report behind this version.
-Published, not confirmed: a night that reconfirms a row on unchanged evidence
-writes nothing at all, so the date names the last version a reader was shown,
-which is the only confirmation this comment can honestly vouch for.
+| Metric | Detector | Sample | Config | Onset | Change | Attribution |
+|:---|:---|:---|:---|:---|---:|---:|
+| `mean_time_s` | ALLEGRO_o1_v03 | Single e⁻ · 10GeV | `without_InnerTrackers` | `2026-08-28` | 🔺 **+36.7%** | 88% |
+| `wall_time_s` | ALLEGRO_o1_v03 | Single e⁻ · 10GeV | `baseline` | `2026-08-29` | 🔺 **+12.0%** | 82% |
 
 The rules that keep this honest:
 
 - **A historical score is never a fresh review.** The change and the likelihood
   on a retained row are what the review recorded on its last published
-  version, and are not rescored after the row stops being confirmed. A note under the
-  table says so, so an 88% row above current 82% rows cannot be read as
-  contradicting the alert — whose measurement count is cumulative but whose
-  attribution clause summarises **tonight's report and tonight's review**.
+  version and are not rescored after the row stops being confirmed. The alert
+  uses the same newest-published rule for every cumulative identity.
 - **Current evidence always wins.** When a retained identity is confirmed again,
   its snapshot is discarded and tonight's movement, likelihood and state are
   what render — including a current *not a candidate* or unscored state, which
   must not be papered over by an old percentage.
-- **Absence is not recovery.** A retained identity the report no longer carries
-  at all says `not reported`. `OK` is a measurement, and inferring it from
-  absence would claim one nobody made.
 - **Retention is not promotion.** Retained rows join one ranked pool with the
   current ones on the same key, so a stronger current row still leads.
-- **Selection is never widened to refresh a state.** A pull request that
-  produces no plan tonight has its comment left untouched, exactly as the
-  lifecycle below describes; "current state" means the state in the report that
-  produced this material version, not a nightly heartbeat.
 
 Under the table, when the window carried more regressions than it shows, **one
 line counts them and links into the dashboard**. The likelihood ranking answers
@@ -413,8 +394,8 @@ successor:
   retained row the table renders** — its frozen identity, movement, onset,
   likelihood and link-routing fields, plus its standing in tonight's report.
   Per-row onset is in because a row's onset can move while the plan's outer
-  window stands still, and it changes the Onset cell, the onset summary and the
-  row's `reg_onset=` deep link; when the plan's *own* window marker moves,
+  window stands still, and it changes the Onset cell and the row's `reg_onset=`
+  deep link; when the plan's *own* window marker moves,
   publisher migration already forces the edit regardless of the digest. Because
   the final table is not known until the prior retained state has been decoded,
   the digest is finalized at the write boundary alongside it, never appended

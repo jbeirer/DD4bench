@@ -1,24 +1,32 @@
-"""Build the runnable benchmark recipe attached to one blame comment.
+"""Build the runnable benchmark recipe one blame comment links to.
+
+The recipe is a standalone plain-text file (:func:`render_text`) published
+beside the nightly data under a name derived from the measurement it
+reproduces (:func:`artifact_name`), so the comment spends one table cell on a
+link rather than dozens of lines on a fold-out shell script.
 
 This module deliberately owns no I/O.  Callers fetch the two immutable
 ``run_info.json`` records (and, for legacy HepMC runs, may fill ``input_files``
-from the checked-in benchmark config) before handing them to :func:`facts_from`.
+from the checked-in benchmark config) before handing them to :func:`facts_from`,
+and callers publish whatever :func:`render_text` returns.
 """
 
 from __future__ import annotations
 
-import html
+import hashlib
 import math
 import re
 import shlex
+import textwrap
 from dataclasses import asdict, dataclass
 from typing import Any
 
 from k4bench.labels import pretty_sample
 
-_MAX_BYTES = 8192
+#: The rendered recipe is an uploaded artifact rather than comment body, so the
+#: cap is only there to bound what a malformed run record can produce.
+_MAX_BYTES = 65536
 _NIGHTLY_REPO = "/cvmfs/sw-nightlies.hsf.org"
-_ZWSP = "​"
 
 
 @dataclass(frozen=True)
@@ -281,8 +289,9 @@ def facts_from(
 
 
 def _safe(value: object) -> str:
-    """Shell-quote untrusted text after making Markdown fences impossible."""
-    return shlex.quote(str(value).replace("```", f"`{_ZWSP}``"))
+    """Shell-quote untrusted text: every value below reaches the reader as part
+    of a command they are invited to paste into a shell."""
+    return shlex.quote(str(value))
 
 
 def _xml_arg(path: str) -> str:
@@ -330,33 +339,69 @@ def _command(
     return "\n".join(lines)
 
 
-def render(facts: ReproducerFacts) -> str:
-    """Render the bounded ``<details>`` block, or ``""`` above its byte cap."""
-    title = " / ".join(
-        html.escape(v)
-        for v in (
-            facts.detector,
-            pretty_sample(facts.sample),
-            facts.label,
-        )
+def artifact_name(facts: ReproducerFacts) -> str:
+    """The published recipe's file name — stable for one measurement in one
+    change window, and unique across every other.
+
+    Readable, because it is the last thing shown in a browser's address bar
+    before someone reads a script they are about to run, and suffixed with a
+    digest of the full identity (platform and sub-detector included) so two
+    measurements that differ only in a part the readable stem drops can never
+    land on one name. Nothing nightly is in it: re-publishing the same window
+    replaces the same file, so the link a standing comment already carries
+    keeps working rather than accumulating a copy a night.
+    """
+    identity = "|".join((
+        facts.detector, facts.platform, facts.sample, facts.label,
+        facts.metric, facts.sub_detector or "",
+        facts.base_release, facts.onset_release,
+    ))
+    digest = hashlib.sha256(identity.encode()).hexdigest()[:12]
+    stem = _slug("-".join(
+        (facts.detector, facts.sample, facts.label, facts.metric)
+    ))[:96].strip("-")
+    return f"{stem}-{_slug(facts.base_release)}-{_slug(facts.onset_release)}-{digest}.txt"
+
+
+def _slug(value: str) -> str:
+    """*value* reduced to the characters a file name and a URL path both carry
+    without quoting. Names here are detector, sample and metric identifiers
+    from the report, so this is a bound on untrusted input, not a nicety."""
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-") or "unnamed"
+
+
+def render_text(facts: ReproducerFacts) -> str:
+    """The recipe as the standalone text file a comment links to, or ``""``
+    above its byte cap.
+
+    Plain text on purpose: it is read in a browser tab and pasted into a shell,
+    so it carries no markup to strip and nothing that renders differently from
+    what runs. It opens by naming the measurement — a link out of a table is
+    read with none of the surrounding comment's context — and closes with the
+    two nightly runs it was derived from.
+    """
+    heading = "k4Bench — reproduce this measurement"
+    scope = " / ".join(
+        (facts.detector, pretty_sample(facts.sample), facts.label)
     )
     if facts.parity_diffs:
-        parity = (
-            "⚠️ These runs did **not** measure the same workload; the recorded "
-            "values differed for: "
-            + ", ".join(f"`{html.escape(v)}`" for v in facts.parity_diffs)
-            + "."
+        parity = _wrap(
+            "WARNING: these runs did NOT measure the same workload; the "
+            "recorded values differed for: "
+            + ", ".join(facts.parity_diffs)
+            + ". The commands below reproduce each run as it was, so that "
+            "difference is reproduced too."
         )
     elif facts.base_seed is None:
-        parity = (
-            "⚠️ Neither run recorded a fixed random seed, so their exact "
+        parity = _wrap(
+            "WARNING: neither run recorded a fixed random seed, so their exact "
             "generated workloads cannot be reproduced or shown to be identical."
         )
     else:
-        parity = (
-            f"Both nightly runs used k4Bench `{html.escape(facts.base_commit[:12])}` "
-            f"and the same workload: {facts.base_n_events} events, "
-            f"seed `{facts.base_seed}`."
+        parity = _wrap(
+            f"Both nightly runs used k4Bench {facts.base_commit[:12]} and the "
+            f"same workload: {facts.base_n_events} events, seed "
+            f"{facts.base_seed}."
         )
 
     before = _command(
@@ -381,33 +426,65 @@ def render(facts: ReproducerFacts) -> str:
         resolved_steering_file=facts.onset_resolved_steering_file,
         output=f"logs/{facts.onset_release}",
     )
-    block = "\n".join(
-        (
-            "<details>",
-            f"<summary><b>🔁 Reproduce this measurement</b> — {title}</summary>",
-            "",
-            parity,
-            "",
-            "Run each block in a **fresh shell** — the Key4hep setup script cannot be sourced twice.",
-            "",
-            f"**Before — Key4hep `{html.escape(facts.base_release)}`**",
-            "```bash",
-            before,
-            "```",
-            "",
-            f"**After — Key4hep `{html.escape(facts.onset_release)}`**",
-            "```bash",
-            after,
-            f"# quick directional check: --events {max(1, min(100, facts.onset_n_events // 10))} reproduces the direction, not the percentage",
-            "```",
-            "",
-            "Key4hep nightlies are kept on CVMFS for about three weeks; past that this window cannot be re-run.",
-            "",
-            f"Compare `{html.escape(facts.metric)}` for `{html.escape(facts.label)}` between the two: "
-            f"the nightly measured **{facts.pct_change}**.  ",
-            f"Nightly runs: [{html.escape(facts.base_run_id)} ↗]({html.escape(facts.base_actions_url, quote=True)}) · "
-            f"[{html.escape(facts.onset_run_id)} ↗]({html.escape(facts.onset_actions_url, quote=True)})",
-            "</details>",
-        )
+    check = max(1, min(100, facts.onset_n_events // 10))
+    metric = facts.metric + (
+        f" ({facts.sub_detector})" if facts.sub_detector else ""
     )
-    return block if len(block.encode("utf-8")) <= _MAX_BYTES else ""
+    text = "\n".join((
+        heading,
+        "=" * len(heading),
+        "",
+        scope,
+        f"Metric:            {metric}",
+        f"Platform:          {facts.platform}",
+        f"Change window:     {facts.base_release} -> {facts.onset_release} "
+        "(Key4hep releases)",
+        f"Nightly measured:  {facts.pct_change}",
+        "",
+        parity,
+        "",
+        _wrap(
+            "Run each block in a fresh shell — the Key4hep setup script "
+            "cannot be sourced twice."
+        ),
+        "",
+        _rule(f"Before — Key4hep {facts.base_release}"),
+        "",
+        before,
+        "",
+        _rule(f"After — Key4hep {facts.onset_release}"),
+        "",
+        after,
+        f"# quick directional check: --events {check} reproduces the "
+        "direction, not the percentage",
+        "",
+        _wrap(
+            f"Then compare {facts.metric} for {facts.label} between the two "
+            f"runs: the nightly measured {facts.pct_change}."
+        ),
+        "",
+        _wrap(
+            "Key4hep nightlies are kept on CVMFS for about three weeks; past "
+            "that this window cannot be re-run."
+        ),
+        "",
+        "Nightly runs this recipe was derived from:",
+        f"  {facts.base_run_id}  {facts.base_actions_url}",
+        f"  {facts.onset_run_id}  {facts.onset_actions_url}",
+        "",
+    ))
+    return text if len(text.encode("utf-8")) <= _MAX_BYTES else ""
+
+
+def _rule(title: str, width: int = 78) -> str:
+    """A titled section rule of a fixed width, so the two commands are equally
+    easy to find when scrolling."""
+    prefix = f"--- {title} "
+    return prefix + "-" * max(3, width - len(prefix))
+
+
+def _wrap(text: str, width: int = 78) -> str:
+    """Soft-wrap prose so the file reads in a terminal as well as a browser.
+    Commands are never passed through here: a wrapped command is a broken one.
+    """
+    return "\n".join(textwrap.wrap(text, width=width)) or text

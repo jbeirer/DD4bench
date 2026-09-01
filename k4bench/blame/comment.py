@@ -39,10 +39,9 @@ One comment covers one pull request and one change-window lineage — the reader
 question is "did my change do this?", asked once. A strictly expanding or
 contracting window is a newer view of the same finding, while non-containing
 windows remain distinct. :func:`marker_for` names the current window, and the
-publisher migrates the nearest comparable marker. A containing window keeps its
-newest steps distinct in an onset summary, and its bounded detail table reserves
-the globally strongest row and one row for each represented onset before filling
-the remaining places by attribution likelihood. Rows that stopped being
+publisher migrates the nearest comparable marker. A containing window's bounded
+detail table reserves the globally strongest row and one row for each represented
+onset before filling the remaining places by attribution likelihood. Rows that stopped being
 confirmed are not simply dropped: each material version carries a bounded,
 validated snapshot of its strongest rows (:class:`RetainedRow`), and the next
 version's table resurfaces the ones that still outrank tonight's evidence —
@@ -102,7 +101,6 @@ from k4bench.blame.models import (
 )
 from k4bench.blame.reproduce import ReproducerFacts
 from k4bench.blame.reproduce import facts_from as reproducer_facts_from
-from k4bench.blame.reproduce import render as render_reproducer
 from k4bench.labels import pretty_platform, pretty_sample
 from k4bench.regression.models import MetricVerdict, NightlyReport
 from k4bench.regression.render import (
@@ -142,10 +140,10 @@ _OBSERVATION_PREFIX = "<!-- k4bench-blame-observation:v1 "
 _OBSERVATION_SUFFIX = " -->"
 _OMITTED_OBSERVATIONS_PREFIX = "<!-- k4bench-blame-observations-omitted:v1 "
 
-# Exact cumulative regression identities for this comment lineage. Report
-# snapshots overlap heavily, so adding their row counts would over-count; the
-# marker carries the union itself and lets a converging lineage merge all of
-# its parents without scraping presentation Markdown.
+# Exact cumulative regression identities and their latest published attribution
+# for this comment lineage. Report snapshots overlap heavily, so adding their
+# row counts would over-count; the marker carries the union itself and lets a
+# converging lineage merge all of its parents without scraping Markdown.
 _CUMULATIVE_PLACEHOLDER = "<!-- k4bench-blame-cumulative -->"
 _CUMULATIVE_PREFIX = "<!-- k4bench-blame-cumulative:v1 "
 _CUMULATIVE_SUFFIX = " -->"
@@ -160,8 +158,8 @@ _ALERT_END = "<!-- k4bench-blame-alert:end -->"
 #: is dropped strongest-last, and the dashboard remains the complete view.
 _MAX_RETAINED_ROWS = 20
 
-#: The write-boundary region between these two hidden lines — the onset summary,
-#: the assessment, and the regression table — is re-rendered by
+#: The write-boundary region between these two hidden lines — the assessment and
+#: regression table — is re-rendered by
 #: :func:`materialize` once the publisher knows the prior owned bodies, so rows
 #: retained from earlier material versions can join the table from structured
 #: state rather than from parsing any presentation Markdown. The rendered body
@@ -417,6 +415,12 @@ class RetainedRow:
     likelihood: float | None
     source: str
     state: str
+    #: The row's own last-accepted release — the tight end of the window the
+    #: table shows for it, which can be later than the comment's
+    #: ``base_release``. Defaulted because markers written before the column
+    #: existed carry no such field; those fall back to ``base_release``, the
+    #: window they were rendered under.
+    base: str = ""
 
 
 @dataclass(frozen=True)
@@ -536,8 +540,9 @@ def materialize(
     Four things are materialized, all from structured hidden state rather than
     from any presentation Markdown:
 
-    * the **headline regression and scope counts** become the exact identity
-      union across the current report and every comparable lineage body;
+    * the **headline counts and attribution summary** describe the exact
+      identity union across the current report and every comparable lineage
+      body, using the newest published attribution for a repeated identity;
     * the **regression table region** between the details sentinels is
       re-rendered so rows retained from earlier material versions
       (:class:`RetainedRow`) can rejoin the selection pool beside tonight's
@@ -580,23 +585,35 @@ def _with_cumulative(
         or _ALERT_END not in comment.body
     ):
         return comment
-    identities = {_row_identity(row) for row in plan.rows}
+    state: dict[tuple, tuple[float | None, str, str]] = {}
     for body in previous_bodies:
-        identities.update(_cumulative_identities(body))
-    ordered = sorted(identities)
-    marker = _cumulative_marker(ordered)
+        for identity, recorded in _decoded_cumulative(body).items():
+            kept = state.get(identity)
+            if kept is None or recorded[2] > kept[2]:
+                state[identity] = recorded
+    for row in plan.rows:
+        likelihood, source = _score_source(row, comment.attribution)
+        state[_row_identity(row)] = (likelihood, source, plan.report_night)
+
+    identities = sorted(state)
+    marker = _cumulative_marker(state)
     if not marker:
         return comment
 
-    scopes = len({identity[:3] for identity in ordered})
+    scopes = len({identity[:3] for identity in identities})
+    reviewed = [score for score, source, _ in state.values()
+                if score is not None and source == "reviewer"]
+    carried = [score for score, source, _ in state.values()
+               if score is not None and source == "ranker"]
     rows = sorted(plan.rows, key=lambda row: _row_sort_key(row, comment.attribution))
     alert = _alert(
         plan,
         rows,
         comment.attribution,
         min_score=comment.min_score,
-        n_regressions=len(ordered),
+        n_regressions=len(identities),
         n_scopes=scopes,
+        scores=(reviewed, carried),
     )
     head, _, rest = comment.body.partition(_ALERT_START)
     _, _, tail = rest.partition(_ALERT_END)
@@ -604,26 +621,34 @@ def _with_cumulative(
     body = body.replace(_CUMULATIVE_PLACEHOLDER, marker, 1)
 
     payload = dict(comment.facts_payload)
-    canonical = json.dumps(ordered, separators=(",", ":"))
+    canonical = json.dumps(identities, separators=(",", ":"))
     payload["cumulative"] = {
         "digest": hashlib.sha256(canonical.encode()).hexdigest()[:16],
-        "regressions": len(ordered),
+        "regressions": len(identities),
         "scopes": scopes,
     }
     return replace(comment, body=body, facts_payload=payload)
 
 
-def _cumulative_marker(identities: Sequence[tuple]) -> str:
-    if len(identities) > _MAX_CUMULATIVE_IDENTITIES:
+def _cumulative_marker(
+    state: dict[tuple, tuple[float | None, str, str]]
+) -> str:
+    if len(state) > _MAX_CUMULATIVE_IDENTITIES:
         return ""
-    raw = json.dumps(identities, separators=(",", ":")).encode()
+    payload = [
+        [*identity, likelihood, source, last_reported]
+        for identity, (likelihood, source, last_reported) in sorted(state.items())
+    ]
+    raw = json.dumps(payload, separators=(",", ":")).encode()
     if len(raw) > _MAX_CUMULATIVE_BYTES:
         return ""
     encoded = urlsafe_b64encode(zlib.compress(raw, level=9)).decode()
     return f"{_CUMULATIVE_PREFIX}{encoded}{_CUMULATIVE_SUFFIX}"
 
 
-def _cumulative_identities(body: str) -> set[tuple]:
+def _decoded_cumulative(
+    body: str,
+) -> dict[tuple, tuple[float | None, str, str]]:
     for line in body.splitlines():
         if not line.startswith(_CUMULATIVE_PREFIX) or not line.endswith(
             _CUMULATIVE_SUFFIX
@@ -637,25 +662,50 @@ def _cumulative_identities(body: str) -> set[tuple]:
             if (
                 len(raw) > _MAX_CUMULATIVE_BYTES
                 or decoder.unconsumed_tail
+                or decoder.unused_data
                 or not decoder.eof
             ):
-                return set()
+                return {}
             values = json.loads(raw)
         except (BinasciiError, UnicodeDecodeError, ValueError, zlib.error):
-            return set()
+            return {}
         if not isinstance(values, list) or len(values) > _MAX_CUMULATIVE_IDENTITIES:
-            return set()
-        identities = set()
+            return {}
+        state = {}
         for value in values:
+            # Six-field entries are the short-lived identity-only v1 format.
+            # Reading them makes an already-rendered preview forward-compatible;
+            # its historical rows simply have no cumulative score to claim.
+            if isinstance(value, list) and len(value) == 6:
+                value = [*value, None, "", ""]
             if (
                 not isinstance(value, list)
-                or len(value) != 6
-                or not all(isinstance(part, str) and len(part) <= 2048 for part in value)
+                or len(value) != 9
+                or not all(
+                    isinstance(part, str) and len(part) <= 2048
+                    for part in value[:6]
+                )
             ):
-                return set()
-            identities.add(tuple(value))
-        return identities
-    return set()
+                return {}
+            likelihood, source, last_reported = value[6:]
+            if likelihood is not None and (
+                isinstance(likelihood, bool)
+                or not isinstance(likelihood, (int, float))
+                or not math.isfinite(likelihood)
+                or not 0 <= likelihood <= 100
+            ):
+                return {}
+            if source not in ("", "reviewer", "ranker") or not isinstance(
+                last_reported, str
+            ) or len(last_reported) > 64:
+                return {}
+            state[tuple(value[:6])] = (likelihood, source, last_reported)
+        return state
+    return {}
+
+
+def _cumulative_identities(body: str) -> set[tuple]:
+    return set(_decoded_cumulative(body))
 
 
 def _with_history(comment: PRComment, previous_body: str = "") -> PRComment:
@@ -875,7 +925,7 @@ def _with_details(
     body = f"{head}{_DETAILS_START}\n{region}\n{_DETAILS_END}{tail}"
     digest = _digest_from(
         comment.facts_payload,
-        [_retained_fact(row, plan) for row in shown_past],
+        [_retained_fact(row) for row in shown_past],
     )
     return replace(
         comment,
@@ -907,15 +957,7 @@ def _snapshot(
     """One current row frozen at tonight's evidence — the form it would be
     resurfaced in if it stopped being confirmed tomorrow."""
     v = row.verdict
-    likelihood = _likelihood(row, attribution)
-    if likelihood is not None and not (
-        math.isfinite(likelihood) and 0 <= likelihood <= 100
-    ):
-        likelihood = None
-    source = ""
-    if likelihood is not None:
-        reviewed = attribution is not None and row.fact_id in attribution.likelihoods
-        source = "reviewer" if reviewed else "ranker"
+    likelihood, source = _score_source(row, attribution)
     pct = v.pct_change
     return RetainedRow(
         detector=v.detector,
@@ -928,6 +970,7 @@ def _snapshot(
         pct=pct if pct is not None and math.isfinite(pct) else None,
         onset=v.onset_run_date or "",
         onset_run=v.onset_run_id or "",
+        base=v.last_accepted_run_date or "",
         base_release=plan.base_release,
         base_run=v.last_accepted_run_id or "",
         onset_release=plan.onset_release,
@@ -1053,6 +1096,7 @@ def _valid_retained(row: RetainedRow) -> bool:
         and _iso_date(row.onset_release)
         and (row.base_release is None or _iso_date(row.base_release))
         and (row.onset == "" or _iso_date(row.onset))
+        and (row.base == "" or _iso_date(row.base))
         and row.direction in _RETAINED_DIRECTIONS
         and row.state in _RETAINED_STATES
         and row.source in _RETAINED_SOURCES
@@ -1087,6 +1131,14 @@ def _retained_identity(row: RetainedRow) -> tuple:
     )
 
 
+def _retained_window(row: RetainedRow) -> tuple[str, str]:
+    """A retained row's change window as it is shown. A snapshot taken before
+    the column existed recorded no window of its own, so it falls back to the
+    comment window it was published under — wider than the row's own, never
+    narrower, and exactly what that reader was shown."""
+    return (row.base or row.base_release or "", row.onset)
+
+
 def _retained_sort_key(row: RetainedRow) -> tuple:
     """The same shape :func:`_row_sort_key` produces, so current and retained
     rows rank in one pool: likelihood first, movement second, identity last."""
@@ -1104,18 +1156,16 @@ def _retained_sort_key(row: RetainedRow) -> tuple:
     )
 
 
-def _retained_fact(row: RetainedRow, plan: CommentPlan) -> dict[str, Any]:
+def _retained_fact(row: RetainedRow) -> dict[str, Any]:
     """One rendered historical row as the digest hashes it: its frozen snapshot
     — identity, movement, window, link-routing fields, confirmation night, and
-    the recorded likelihood at the precision the table displays it — plus its
-    standing in the report behind this version, which is the one cell of the row
-    tonight's data still moves."""
-    state_now = plan.report_states.get(_retained_identity(row))
+    the recorded likelihood at the precision the table displays it."""
     return {
         "id": list(_retained_identity(row)),
         "moved": _canonical_pct(row.pct),
         "direction": row.direction,
         "onset": row.onset,
+        "shown_window": list(_retained_window(row)),
         "window": [row.base_release or "", row.onset_release],
         "runs": [row.base_run, row.onset_run],
         "stack": row.stack,
@@ -1123,7 +1173,6 @@ def _retained_fact(row: RetainedRow, plan: CommentPlan) -> dict[str, Any]:
         "likelihood": None if row.likelihood is None else _pct(row.likelihood),
         "source": row.source,
         "state": row.state,
-        "now": state_now or "not reported",
     }
 
 
@@ -1244,12 +1293,6 @@ class CommentPlan:
     #: the cross-configuration review, so that both passes weigh the same
     #: material.
     historical: dict[tuple[str, int], HistoricalRef] = field(default_factory=dict)
-    #: ``row identity -> severity`` for every verdict in tonight's report — how
-    #: a retained historical row is annotated with its *current* standing at the
-    #: write boundary (``WATCH``, ``OK``, …; an absent identity renders as "not
-    #: reported", never inferred as OK). Built once per night by :func:`select`
-    #: and shared read-only across its plans; ephemeral, never serialized.
-    report_states: dict[tuple, str] = field(default_factory=dict)
     selected: bool = False
 
     @property
@@ -1391,20 +1434,8 @@ def select(
         for verdict, stack in _confirmed_rows(report)
     ]
     plans = _targets(confirmed, policy)
-    # One severity map for the whole night, shared by every plan: the write
-    # boundary annotates rows retained from earlier versions with what tonight's
-    # report says about them, and only the report — in hand here, gone by
-    # build/publish time — can answer that for an identity no longer confirmed.
-    report_states = {
-        _verdict_identity(verdict): str(
-            getattr(verdict.severity, "value", verdict.severity)
-        )
-        for group in report.groups
-        for verdict in group.verdicts
-    }
     for plan in plans:
         plan.report_night = report.report_night
-        plan.report_states = report_states
         _collect_window(confirmed, plan)
         plan.outcomes = _outcomes_for(report, plan)
 
@@ -1764,6 +1795,12 @@ BodyFor = Callable[[str, int], str]
 #: seams above it is injected so this module remains free of network I/O.
 RunInfoFor = Callable[[str, str, str, str, str], dict | None]
 
+#: Publishes one row's reproducer recipe and returns the URL it can be read at,
+#: or ``None`` when it could not be published. Called *before* the comment is
+#: rendered, so the table only ever links a recipe that is already readable —
+#: a comment must not carry a link that 404s while a reader is looking at it.
+ReproducerUrlFor = Callable[[ReproducerFacts], str | None]
+
 
 def build_comments(
     plans: list[CommentPlan],
@@ -1772,6 +1809,7 @@ def build_comments(
     patch_for: PatchFor | None = None,
     body_for: BodyFor | None = None,
     run_info_for: RunInfoFor | None = None,
+    reproducer_url_for: ReproducerUrlFor | None = None,
     dashboard_url: str | None = None,
     min_score: float = _DEFAULT_MIN_SCORE,
 ) -> list[PRComment]:
@@ -1870,8 +1908,9 @@ def build_comments(
                 plan.target, attribution.assessment.reason or "no reason given",
             )
             continue
-        reproduce = _reproducer_for(
-            plan, attribution=attribution, run_info_for=run_info_for,
+        reproduce = _reproducer_link(
+            plan, attribution=attribution,
+            run_info_for=run_info_for, reproducer_url_for=reproducer_url_for,
         )
         comments.append(
             _render(
@@ -1883,6 +1922,59 @@ def build_comments(
     return comments
 
 
+@dataclass(frozen=True)
+class ReproducerLink:
+    """A published recipe and the table row it belongs to.
+
+    ``identity`` is the row's, so the table can put the link on the one row the
+    recipe actually reproduces rather than under the whole comment; ``facts``
+    stays for the digest, which must change when the commands do."""
+
+    identity: tuple
+    url: str
+    facts: ReproducerFacts
+
+
+def _reproducer_link(
+    plan: CommentPlan,
+    *,
+    attribution: Attribution | None,
+    run_info_for: RunInfoFor | None,
+    reproducer_url_for: ReproducerUrlFor | None,
+) -> ReproducerLink | None:
+    """Publish a reproducer for the strongest current row in *plan* and return
+    the link to it — best-effort at both steps.
+
+    The recipe is built *and published* before anything is rendered, so a
+    comment either carries a link that already resolves or carries none at all.
+    A publisher that fails costs the link and nothing else."""
+    facts = _reproducer_for(
+        plan, attribution=attribution, run_info_for=run_info_for,
+    )
+    if facts is None or reproducer_url_for is None:
+        return None
+    try:
+        url = reproducer_url_for(facts)
+    except Exception as exc:  # noqa: BLE001 — an optional artifact, never fatal
+        _log.info("build_comments: reproducer not published for %s (%s)",
+                  plan.target, exc)
+        return None
+    if not url:
+        _log.info(
+            "build_comments: reproducer not published for %s — no link to give",
+            plan.target,
+        )
+        return None
+    row = _strongest_row(plan, attribution)
+    return ReproducerLink(identity=_row_identity(row), url=url, facts=facts)
+
+
+def _strongest_row(
+    plan: CommentPlan, attribution: Attribution | None
+) -> RegressionRow:
+    return sorted(plan.rows, key=lambda item: _row_sort_key(item, attribution))[0]
+
+
 def _reproducer_for(
     plan: CommentPlan,
     *,
@@ -1892,7 +1984,7 @@ def _reproducer_for(
     """Best-effort reproducer for the strongest current row in *plan*."""
     if run_info_for is None or not plan.rows:
         return None
-    row = sorted(plan.rows, key=lambda item: _row_sort_key(item, attribution))[0]
+    row = _strongest_row(plan, attribution)
     verdict = row.verdict
     if not verdict.last_accepted_run_id or not verdict.last_accepted_run_date \
             or not verdict.onset_run_id or not verdict.onset_run_date:
@@ -2139,7 +2231,7 @@ def _render(
     attribution: Attribution | None,
     request: AttributionRequest | None,
     *,
-    reproduce: ReproducerFacts | None,
+    reproduce: ReproducerLink | None,
     dashboard_url: str | None,
     min_score: float,
 ) -> PRComment:
@@ -2161,15 +2253,9 @@ def _render(
     # night to night, so a standing comment still renders byte-identically.
     region, _shown_past = _details_region(
         plan, attribution, dashboard_url=dashboard_url,
-        historical=[], retained_marker=None,
+        historical=[], retained_marker=None, reproduce=reproduce,
     )
     observation = _observation_for(plan, by_likelihood, dashboard_url)
-    reproduce_block = render_reproducer(reproduce) if reproduce is not None else ""
-    if reproduce is not None and not reproduce_block:
-        # Rendering can decline an oversized block. Its unseen facts must not
-        # churn the digest of a comment that does not actually carry it.
-        payload = _facts_payload(plan, request, None)
-        digest = _digest_from(payload, [])
 
     body = "\n".join(
         part for part in (
@@ -2186,7 +2272,6 @@ def _render(
             _DETAILS_START,
             region,
             _DETAILS_END,
-            reproduce_block or None,
             _HISTORY_PLACEHOLDER,
             _others_section(plan),
             "",
@@ -2227,9 +2312,10 @@ def _details_region(
     dashboard_url: str | None,
     historical: list[RetainedRow],
     retained_marker: str | None,
+    reproduce: ReproducerLink | None = None,
 ) -> tuple[str, list[RetainedRow]]:
-    """The dynamic middle of a comment — onset summary, assessment, regression
-    table and its reference links — rendered from structured inputs alone.
+    """The dynamic middle of a comment — assessment, regression table and its
+    reference links — rendered from structured inputs alone.
 
     One function serves both render time (``historical=[]``, no state marker)
     and the write boundary, so the two can never disagree about how a row is
@@ -2238,7 +2324,7 @@ def _details_region(
     by_likelihood = sorted(
         plan.rows, key=lambda row: _row_sort_key(row, attribution)
     )
-    shown, visible_onsets = _selected_rows(by_likelihood, historical, attribution)
+    shown = _selected_rows(by_likelihood, historical, attribution)
     shown_current = [entry.current for entry in shown if entry.current is not None]
     shown_past = [entry.past for entry in shown if entry.past is not None]
     links = _row_links(plan, shown_current, dashboard_url)
@@ -2248,13 +2334,12 @@ def _details_region(
     region = "\n".join(
         part for part in (
             retained_marker,
-            _onset_breakdown(plan, visible_onsets),
             _assessment(plan, by_likelihood, attribution, rendered=shown_current),
             _crowded_note(plan),
             _table(
                 plan, by_likelihood, attribution,
                 shown=shown, links=links, past_links=past_links,
-                dashboard_url=dashboard_url,
+                dashboard_url=dashboard_url, reproduce=reproduce,
             ),
             _link_definitions(definitions),
         ) if part is not None
@@ -2287,6 +2372,18 @@ def _likelihood(row: RegressionRow, attribution: Attribution | None) -> float | 
     return attribution.likelihoods.get(row.fact_id, row.scope_score)
 
 
+def _score_source(
+    row: RegressionRow, attribution: Attribution | None
+) -> tuple[float | None, str]:
+    likelihood = _likelihood(row, attribution)
+    if likelihood is None or not (
+        math.isfinite(likelihood) and 0 <= likelihood <= 100
+    ):
+        return None, ""
+    reviewed = attribution is not None and row.fact_id in attribution.likelihoods
+    return likelihood, "reviewer" if reviewed else "ranker"
+
+
 def _row_sort_key(row: RegressionRow, attribution: Attribution | None) -> tuple:
     """Most likely first, then the largest movement, then identity — so the
     table is stable across nights and a re-render triggers no edit. Rows nobody
@@ -2315,9 +2412,8 @@ def _selected_rows(
     current: list[RegressionRow],
     historical: list[RetainedRow],
     attribution: Attribution | None,
-) -> tuple[list[_PoolRow], set[str]]:
-    """The rows the table shows, in ranked order, and the current onsets they
-    cover — the one onset set the summary must agree with.
+) -> list[_PoolRow]:
+    """The rows the table shows, in ranked order.
 
     The pool is every currently confirmed row plus every retained historical
     row, ranked by the shared likelihood/movement/identity key. Selection then
@@ -2363,17 +2459,31 @@ def _selected_rows(
     for entry in pool:
         _reserve(entry)
     shown = sorted(chosen.values(), key=lambda entry: entry.key)
-    visible_onsets = {
-        _onset_label(entry.current)
-        for entry in shown
-        if entry.current is not None
-    }
-    return shown, visible_onsets
+    return shown
 
 
 def _onset_label(row: RegressionRow) -> str:
-    """The one display and grouping key used for a row's step onset."""
+    """The one grouping key used for a row's step onset — what the table
+    reserves a place for, so every step inside a containing window is
+    represented."""
     return row.verdict.onset_run_date or _UNKNOWN_ONSET
+
+
+def _row_window(row: RegressionRow) -> tuple[str, str]:
+    """A row's *own* tightest change window, which can be narrower than the
+    comment's: a metric that settled later carries a later last-accepted
+    release, and the step is only bounded by the pair the metric itself
+    measured."""
+    v = row.verdict
+    return (v.last_accepted_run_date or "", v.onset_run_date or "")
+
+
+def _window_cell(base: str, onset: str) -> str:
+    """One row's change window as the table shows it. An unbounded base is
+    written as an upper bound rather than invented, matching
+    :func:`_window_line`."""
+    onset_text = f"`{_cell(onset or _UNKNOWN_ONSET)}`"
+    return f"`{_cell(base)}` → {onset_text}" if base else f"≤ {onset_text}"
 
 
 def _row_identity(row: RegressionRow) -> tuple:
@@ -2406,6 +2516,7 @@ def _alert(
     min_score: float,
     n_regressions: int | None = None,
     n_scopes: int | None = None,
+    scores: tuple[list[float], list[float]] | None = None,
 ) -> str:
     """The headline claim as a GitHub warning alert: what the benchmarks
     measured, and how strongly a model ties it to this pull request.
@@ -2417,9 +2528,9 @@ def _alert(
     model behind it is said out loud, matching what the assessment below calls
     itself.
 
-    Once materialized, the measured regression and scope totals are the exact
-    identity union over the comment lineage; the score clauses remain about the
-    current rows and current review.
+    Once materialized, the measured totals and score clauses describe the same
+    exact identity union over the comment lineage. A reconfirmed identity keeps
+    only its newest published attribution.
 
     A peak alone is misleading, so each clause pairs it with *reach*: one row at
     95% out of forty reads very differently from thirty-eight of them, and the
@@ -2461,7 +2572,7 @@ def _alert(
             "change window"
         )
     measured = f"k4Bench's nightly benchmarks confirmed {what}."
-    reviewed, carried = _scored(rows, attribution)
+    reviewed, carried = scores or _scored(rows, attribution)
     if not reviewed and not carried:
         return f"> [!WARNING]\n> {measured}"
     clauses = []
@@ -2470,6 +2581,7 @@ def _alert(
     if carried:
         clauses.append(_ranker_clause(
             carried, min_score=min_score,
+            population=n_regressions,
             # Every row the review did not answer, including the ones nobody
             # scored: the clause counts *within* that set, so it has to know how
             # big the set is.
@@ -2506,7 +2618,8 @@ def _reviewer_clause(reviewed: list[float], *, min_score: float) -> str:
 
 
 def _ranker_clause(
-    carried: list[float], *, min_score: float, unreviewed: int
+    carried: list[float], *, min_score: float, unreviewed: int,
+    population: int,
 ) -> str:
     """What the per-configuration pass scored, in *its* voice.
 
@@ -2518,6 +2631,7 @@ def _ranker_clause(
     counted into a clause that would then claim scores for them."""
     over = sum(1 for likelihood in carried if likelihood >= min_score)
     scored = _count(len(carried), "regression")
+    population_text = _count(population, "regression")
     highest = _pct(max(carried))
     if unreviewed:
         which = (
@@ -2538,19 +2652,20 @@ def _ranker_clause(
             f"(highest {highest})."
         )
     if not over:
+        subject = scored if len(carried) == population else f"{scored} of {population_text}"
         return (
-            f"The AI ranker scored {scored} and put none at {_pct(min_score)} "
+            f"The AI ranker scored {subject} and put none at {_pct(min_score)} "
             f"or above (highest {highest})."
         )
     lead = "The AI ranker estimates this PR is a likely contributor:"
-    if len(carried) == 1:
+    if len(carried) == population == 1:
         return (
             f"{lead} it scored the one regression at {highest}, at or above "
             f"the {_pct(min_score)} threshold."
         )
     verb = "is" if over == 1 else "are"
     return (
-        f"{lead} {over} of {scored} {verb} attributed to it at "
+        f"{lead} {over} of {population_text} {verb} attributed to it at "
         f"{_pct(min_score)} or above, the highest at {highest}."
     )
 
@@ -2610,56 +2725,6 @@ def _direction_text(up: int, down: int, none: int = 0) -> str:
     if none:
         parts.append(f"{none} NONE")
     return " · ".join(parts)
-
-
-def _onset_breakdown(
-    plan: CommentPlan, visible_onsets: set[str]
-) -> str | None:
-    """Summarise the distinct steps the table represents inside a containing
-    comment window.
-
-    Both sides read the *currently confirmed* rows only: the groups come from
-    ``plan.rows`` and *visible_onsets* is the onset set the selected **current**
-    rows cover (:func:`_selected_rows`), so the counts here and the table's
-    current rows can never disagree. Retained rows are deliberately outside it —
-    they are no longer confirmed, so they are not steps this window still holds,
-    and the heading says "current" rather than let a reader match a historical
-    row's onset against a table it was never counted in. Because the globally
-    strongest row's onset is always kept, the omitted groups are not necessarily
-    a contiguous older tail — they are counted as "additional", never as
-    "earlier"."""
-    groups: dict[str, list[RegressionRow]] = {}
-    for row in plan.rows:
-        groups.setdefault(_onset_label(row), []).append(row)
-    if len(groups) < 2:
-        return None
-
-    shown_onsets = sorted(
-        visible_onsets, key=lambda onset: (onset == _UNKNOWN_ONSET, onset)
-    )
-    omitted = len(groups) - len(visible_onsets)
-
-    lines = [
-        "",
-        "**Current steps represented inside this window**",
-        "",
-        "| Step onset | Regressions | Scopes | Directions |",
-        "|:---|---:|---:|:---|",
-    ]
-    for onset in shown_onsets:
-        rows = groups[onset]
-        directions = _direction_counts(rows)
-        lines.append(
-            f"| `{onset}` | {len(rows)} | {len({row.scope for row in rows})} | "
-            f"{_direction_text(directions['UP'], directions['DOWN'], directions['NONE'])} |"
-        )
-    if omitted:
-        lines += [
-            "",
-            f"_{_count(omitted, 'additional onset')} also included in the total; "
-            "open the dashboard for those rows._",
-        ]
-    return "\n".join(lines)
 
 
 def _observation_for(
@@ -2866,11 +2931,9 @@ def _link_definitions(links: dict[str, str]) -> str | None:
     )
 
 
-def _table_head(*, show_onset: bool, show_history: bool) -> list[str]:
-    """The header and alignment rows both tables share. The **Platform** column
-    follows :data:`_SHOW_PLATFORM_COLUMN`, which is a rendering choice only;
-    the **Last reported**/**Current state** pair appears only when a retained
-    historical row renders, so an all-current table keeps its familiar shape."""
+def _table_head(*, show_window: bool, show_reproduce: bool) -> list[str]:
+    """The table header, including the optional platform, change-window and
+    reproduce columns."""
     header = ["Metric", "Detector"]
     align = [":---", ":---"]
     if _SHOW_PLATFORM_COLUMN:
@@ -2878,16 +2941,16 @@ def _table_head(*, show_onset: bool, show_history: bool) -> list[str]:
         align.append(":---")
     header += ["Sample", "Config"]
     align += [":---", ":---"]
-    if show_onset:
-        header.append("Onset")
+    if show_window:
+        header.append("Change window")
         align.append(":---")
     header.append("Change")
     align.append("---:")
-    if show_history:
-        header += ["Last reported", "Current state"]
-        align += [":---", ":---"]
     header.append("Attribution")
     align.append("---:")
+    if show_reproduce:
+        header.append("Reproduce")
+        align.append(":---")
     return [
         "| " + " | ".join(header) + " |",
         "|" + "|".join(align) + "|",
@@ -2899,8 +2962,8 @@ def _row_line(
     attribution: Attribution | None,
     links: dict[str, str],
     *,
-    show_onset: bool,
-    show_history: bool,
+    show_window: bool,
+    reproduce: ReproducerLink | None,
 ) -> str:
     """One regression as a table row — the same cells whichever ordering placed
     it, so both tables read identically row for row.
@@ -2908,9 +2971,7 @@ def _row_line(
     The dashboard link hangs off the **metric** cell because that is what it
     opens, and only when :func:`_row_links` emitted a definition for this row.
     Metric and configuration keep their raw names: those are what the dashboard
-    labels the series with. In a table that also carries retained rows, a
-    current row says **current**/`CONFIRMED` in the history columns — the cells
-    that make the two kinds tellable apart without a footnote."""
+    labels the series with."""
     v = row.verdict
     metric = (
         f"`{_cell(v.metric)}`"
@@ -2926,24 +2987,22 @@ def _row_line(
         _cell(pretty_sample(v.sample)),
         f"`{_cell(v.label)}`",
     ]
-    if show_onset:
-        cells.append(f"`{_cell(_onset_label(row))}`")
+    if show_window:
+        cells.append(_window_cell(*_row_window(row)))
     cells.append(_change_cell(v.pct_change))
-    if show_history:
-        cells += ["**current**", "`CONFIRMED`"]
     cells.append(_likelihood_cell(row, attribution))
+    if reproduce is not None:
+        cells.append(_reproduce_cell(row, reproduce))
     return "| " + " | ".join(cells) + " |"
 
 
 def _past_row_line(
     row: RetainedRow,
-    plan: CommentPlan,
     past_links: dict[tuple, tuple[str, str]],
+    *,
+    reproduce: ReproducerLink | None,
 ) -> str:
-    """One retained historical row — its identity, the movement and likelihood
-    recorded on the night it was last published as confirmed, that night's date,
-    and its standing in the report behind this version. Only rendered in a table whose onset and
-    history columns are on, so the cell count always matches the header."""
+    """One retained row with its last published movement and likelihood."""
     metric = (
         f"`{_cell(row.metric)}`"
         + (f" · {_cell(row.sub_detector)}" if row.sub_detector else "")
@@ -2958,22 +3017,27 @@ def _past_row_line(
     cells += [
         _cell(pretty_sample(row.sample)),
         f"`{_cell(row.label)}`",
-        f"`{_cell(row.onset or _UNKNOWN_ONSET)}`",
+        _window_cell(*_retained_window(row)),
         _change_cell(row.pct),
-        f"`{row.last_reported}`",
-        _current_state_cell(row, plan),
         _past_likelihood_cell(row),
     ]
+    if reproduce is not None:
+        # The recipe is always built from a *currently confirmed* row, so a
+        # retained one never carries it — but the cell still has to exist, or
+        # the row would be one short of the header.
+        cells.append("")
     return "| " + " | ".join(cells) + " |"
 
 
-def _current_state_cell(row: RetainedRow, plan: CommentPlan) -> str:
-    """What tonight's report says about a retained row — read from the report
-    behind this material version, never from the historical marker. An identity
-    the report no longer carries says "not reported"; inferring OK from absence
-    would claim a measurement nobody made."""
-    state = plan.report_states.get(_retained_identity(row))
-    return f"`{_cell(state)}`" if state else "_not reported_"
+def _reproduce_cell(row: RegressionRow, reproduce: ReproducerLink) -> str:
+    """The link to this row's published recipe, on the one row it reproduces.
+
+    Empty on every other row, rather than a link that would send a reader to
+    commands for a different configuration than the one whose line they
+    followed."""
+    if _row_identity(row) != reproduce.identity:
+        return ""
+    return f"[🔁 recipe ↗]({_cell(reproduce.url)})"
 
 
 def _past_likelihood_cell(row: RetainedRow) -> str:
@@ -3034,9 +3098,15 @@ def _table(
     links: dict[str, str],
     past_links: dict[tuple, tuple[str, str]],
     dashboard_url: str | None,
+    reproduce: ReproducerLink | None = None,
 ) -> str:
     """The selected rows of the window, most likely first — tonight's confirmed
     regressions and any retained rows that outrank them.
+
+    Each row carries its **own tightest change window** rather than the
+    comment's: a metric that settled later entered on a narrower range, and
+    pinning the step to the pair that metric actually measured is what makes a
+    row checkable.
 
     One table rather than one section per configuration: which configurations
     moved — and, read against the review's summary, which did not — is the
@@ -3057,16 +3127,16 @@ def _table(
     the overflow line below counts what was cut and links all of it
     (:func:`_overflow_line`).
 
-    A retained historical row is a **confirmed benchmark regression that was
-    probabilistically attributed to this pull request by an earlier material
-    version**, not a claim tonight's review made: its date and current standing
-    are their own columns, and the note under the table says its numbers were
-    never rescored — so a historical 88% leading current 82%s cannot read as
-    contradicting the alert, which summarises tonight alone."""
-    show_history = any(entry.past is not None for entry in shown)
-    show_onset = (
-        len({row.verdict.onset_run_date for row in rows}) > 1 or show_history
-    )
+    A retained historical row keeps the movement and likelihood last published
+    for it; the cumulative alert uses the same newest-published rule."""
+    has_retained = any(entry.past is not None for entry in shown)
+    # Shown whenever a row's own window is not simply the comment's — a
+    # narrower base, a newer onset, or a retained row carrying a window of its
+    # own. When every row measured exactly the window the header states, the
+    # column would repeat it once per line.
+    show_window = has_retained or {_row_window(row) for row in rows} != {
+        (plan.base_release or "", plan.onset_release)
+    }
     lines = [
         "",
         # A bold caption, not a Markdown heading: it reads at the same size as the
@@ -3075,26 +3145,18 @@ def _table(
         # the window that scopes it.
         "📊 **Regressions in this window, ranked by AI-based attribution likelihood**",
         "",
-        *_table_head(show_onset=show_onset, show_history=show_history),
+        *_table_head(show_window=show_window, show_reproduce=reproduce is not None),
     ]
     for entry in shown:
         if entry.current is not None:
             lines.append(_row_line(
                 entry.current, attribution, links,
-                show_onset=show_onset, show_history=show_history,
+                show_window=show_window, reproduce=reproduce,
             ))
         else:
-            lines.append(_past_row_line(entry.past, plan, past_links))
-    if show_history:
-        lines += [
-            "",
-            "_Rows with a dated **Last reported** entry are retained from an "
-            "earlier version of this comment: their change and likelihood are "
-            "what that report's review recorded and were not rescored after "
-            "the row stopped being confirmed. **Current state** is their "
-            "standing in the report behind this update; `not reported` means "
-            "that report no longer carries the metric._",
-        ]
+            lines.append(_past_row_line(
+                entry.past, past_links, reproduce=reproduce,
+            ))
     shown_current = sum(1 for entry in shown if entry.current is not None)
     overflow = _overflow_line(plan, rows, shown_current, dashboard_url=dashboard_url)
     if overflow:
@@ -3297,7 +3359,7 @@ def _digest_from(
 
 def _facts_payload(
     plan: CommentPlan, request: AttributionRequest | None = None,
-    reproduce: ReproducerFacts | None = None,
+    reproduce: ReproducerLink | None = None,
 ) -> dict[str, Any]:
     """The *benchmark facts* behind a comment, as the digest's canonical payload.
 
@@ -3308,9 +3370,9 @@ def _facts_payload(
     number that moves on its own every night must be out.
 
     **In**: the window; every regression row's identity — platform included —
-    how far it moved, and its own step onset (the Onset column and each row's
-    deep link route through it, and a row's onset can move while the plan's
-    outer window stands still); what the first pass knew about this pull request
+    how far it moved, and its own change window (the Change window column and
+    each row's deep link route through it, and a row's window can move while
+    the plan's outer window stands still); what the first pass knew about this pull request
     in each of those scopes; the clean and watch outcomes with their watched
     metrics and unjudged counts; the per-platform package diff and unchanged
     counts; which pull requests were in the field and whether each was judged;
@@ -3355,14 +3417,18 @@ def _facts_payload(
                 "id": list(_row_identity(row)),
                 "moved": _canonical_pct(row.verdict.pct_change),
                 "state": row.scope_state,
-                # Both halves of the onset identity: the date is the visible
-                # Onset cell and grouping key, the run id is what the row's
-                # ``reg_onset`` deep link pins. Fixed once a change is
-                # confirmed, so neither is nightly churn.
+                # Both halves of the onset identity: the date is the grouping
+                # key and the right-hand end of the visible Change window cell,
+                # the run id is what the row's ``reg_onset`` deep link pins.
+                # Fixed once a change is confirmed, so neither is nightly churn.
                 "onset": [
                     row.verdict.onset_run_date or "",
                     row.verdict.onset_run_id or "",
                 ],
+                # The other end of that cell. A row's own base moves when the
+                # metric's last accepted release does, which the comment's
+                # window marker cannot see.
+                "base": row.verdict.last_accepted_run_date or "",
             }
             for row in sorted(plan.rows, key=_row_identity)
         ],
@@ -3417,7 +3483,14 @@ def _facts_payload(
             for ref in plan.historical_refs
         ],
         "evidence": _evidence_facts(request),
-        "reproduce": reproduce.payload() if reproduce is not None else None,
+        # Both halves of the recipe: the commands, so a changed workload edits
+        # the comment, and the URL, so a link that appeared (or moved) does
+        # too. A run of the same night that failed to publish renders no link,
+        # and must not share a digest with one that did.
+        "reproduce": None if reproduce is None else {
+            "facts": reproduce.facts.payload(),
+            "url": reproduce.url,
+        },
     }
     return payload
 

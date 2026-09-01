@@ -163,6 +163,13 @@ def main(argv: list[str] | None = None) -> int:
              "(default: $K4BENCH_DATA_URL or the production data host)",
     )
     parser.add_argument(
+        "--reproducer-dir", default=os.environ.get("K4BENCH_REPRODUCER_EOS_DIR"),
+        help="xrootd URL of the directory the runnable recipes are published to "
+             "(default: $K4BENCH_REPRODUCER_EOS_DIR). A run without --post "
+             "uploads nothing but still shows the link production would carry; "
+             "without the flag the preview carries no recipe link at all",
+    )
+    parser.add_argument(
         "--config", default=".github/blame-comments.yml",
         help="Repository allowlist and thresholds "
              "(default: .github/blame-comments.yml)",
@@ -310,6 +317,12 @@ def main(argv: list[str] | None = None) -> int:
         attributor=attributor,
         **_blame_comment._review_inputs(args.read_token, attributor),
         run_info_for=_blame_comment._run_info_source(args.data_url),
+        # Publishing is gated on --post for the same reason posting is: a run
+        # that writes nothing must write nothing here either, and it still
+        # renders the link so the preview is a preview of the real comment.
+        reproducer_url_for=_blame_comment._reproducer_publisher(
+            args.reproducer_dir, args.data_url, dry_run=not args.post,
+        ),
         dashboard_url=args.dashboard_url,
         min_score=policy.min_score,
     )

@@ -42,7 +42,9 @@ import argparse
 import json
 import logging
 import os
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 # Executing a file below ``.github/scripts`` otherwise puts that directory—not
@@ -108,6 +110,88 @@ def _run_info_source(data_url: str | None):
         return cache[key]
 
     return run_info_for
+
+
+def _reproducer_publisher(
+    eos_dir: str | None, data_url: str | None, *, dry_run: bool = False
+):
+    """``(facts) -> url`` that publishes one recipe beside the nightly data.
+
+    The recipe is a plain-text file under ``{EOS_ROOT}/_reproducers/``, named
+    for the measurement and window it reproduces, and read back over the same
+    WebEOS host the dashboard uses. Both ends are needed: without a write
+    target there is nowhere to put it, and without a read base there is no link
+    to give — either way the comments render without a recipe rather than with
+    a link that goes nowhere.
+
+    Called from :func:`k4bench.blame.comment.build_comments` *before* the
+    comment that links it is rendered, so a comment is only ever posted once
+    its recipe is already readable. Every failure is one log line and a
+    ``None``: an artifact nobody can fetch must not cost the comment.
+
+    A dry run uploads nothing — it writes nowhere, which is the whole promise —
+    but still returns the link the real run would publish, so the body it logs
+    is the body that would have been posted.
+    """
+    if not eos_dir or not data_url:
+        return None
+    from k4bench.blame.reproduce import artifact_name, render_text
+
+    made = {"dir": False}
+
+    def publish(facts) -> str | None:
+        text = render_text(facts)
+        if not text:
+            _log.info("blame_comment: reproducer for %s is over its size cap",
+                      facts.label)
+            return None
+        name = artifact_name(facts)
+        target = f"{data_url.rstrip('/')}/_reproducers/{name}"
+        if dry_run:
+            _log.info("blame_comment: dry run — would publish %s", target)
+            return target
+        if not made["dir"] and not _run(
+            ["xrdfs", _eos_host(eos_dir), "mkdir", "-p", _eos_path(eos_dir)]
+        ):
+            return None
+        made["dir"] = True
+        with tempfile.TemporaryDirectory() as scratch:
+            local = Path(scratch) / name
+            local.write_text(text, encoding="utf-8")
+            if not _run(
+                ["xrdcp", "--force", str(local), f"{eos_dir.rstrip('/')}/{name}"]
+            ):
+                return None
+        return target
+
+    return publish
+
+
+def _run(command: list[str]) -> bool:
+    """One xrootd call, reported rather than raised — see
+    :func:`_reproducer_publisher`."""
+    try:
+        done = subprocess.run(command, capture_output=True, text=True, timeout=300)
+    except (OSError, subprocess.SubprocessError) as exc:
+        _log.info("blame_comment: %s failed (%s)", command[0], exc)
+        return False
+    if done.returncode != 0:
+        _log.info("blame_comment: %s exited %d: %s",
+                  command[0], done.returncode, done.stderr.strip()[:400])
+        return False
+    return True
+
+
+def _eos_host(url: str) -> str:
+    """``root://host//path`` → ``root://host``."""
+    scheme, _, rest = url.partition("://")
+    return f"{scheme}://{rest.partition('/')[0]}"
+
+
+def _eos_path(url: str) -> str:
+    """``root://host//path`` → ``/path``."""
+    rest = url.partition("://")[2]
+    return "/" + rest.partition("/")[2].lstrip("/")
 
 
 def _load_policy(path: Path, overrides: dict):
@@ -228,6 +312,13 @@ def main(argv: list[str] | None = None) -> int:
              "(default: $K4BENCH_DATA_URL)",
     )
     parser.add_argument(
+        "--reproducer-dir", default=os.environ.get("K4BENCH_REPRODUCER_EOS_DIR"),
+        help="xrootd URL of the directory the runnable recipes are published to, "
+             "e.g. root://eosuser.cern.ch//eos/user/j/jbeirer/k4bench/_reproducers "
+             "(default: $K4BENCH_REPRODUCER_EOS_DIR). Without it — or without "
+             "--data-url to read them back — the comments carry no recipe link",
+    )
+    parser.add_argument(
         "--token", default=os.environ.get("K4BENCH_PR_COMMENT_TOKEN"),
         help="GitHub token with pull-requests:write on the allowlisted repos "
              "(default: $K4BENCH_PR_COMMENT_TOKEN); without one the run is a dry run",
@@ -343,6 +434,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
+    dry_run = args.dry_run or not args.token
+    if dry_run and not args.dry_run:
+        _log.warning(
+            "blame_comment: no K4BENCH_PR_COMMENT_TOKEN — dry run, nothing posted"
+        )
+
     attributor = attributor_from_env()
     if attributor is None:
         _log.info(
@@ -354,6 +451,9 @@ def main(argv: list[str] | None = None) -> int:
         attributor=attributor,
         **_review_inputs(args.read_token, attributor),
         run_info_for=_run_info_source(args.data_url),
+        reproducer_url_for=_reproducer_publisher(
+            args.reproducer_dir, args.data_url, dry_run=dry_run
+        ),
         dashboard_url=args.dashboard_url,
         min_score=policy.min_score,
     )
@@ -379,11 +479,6 @@ def main(argv: list[str] | None = None) -> int:
             )
         return 0
 
-    dry_run = args.dry_run or not args.token
-    if dry_run and not args.dry_run:
-        _log.warning(
-            "blame_comment: no K4BENCH_PR_COMMENT_TOKEN — dry run, nothing posted"
-        )
     result = publish(GitHubClient(token=args.token), comments, dry_run=dry_run)
     print(f"blame comments for {night}: {result.summary}")
     # A write that failed is worth a red step *inside this isolated block* — the
