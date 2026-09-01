@@ -309,17 +309,25 @@ The file compares event count, source input files, logical geometry and
 steering configuration, non-path ddsim arguments, seed and harness commit. If
 they differ it says so explicitly instead of describing the two measurements as
 the same workload. Release-specific resolved geometry and steering prefixes do
-not create false differences. Each half starts in a fresh shell, checks out the
-recorded k4Bench commit, sources the dated nightly stack directly, and then runs
-that checkout's `setup.sh`; its plugin build is not repeated separately. For
-steering files, the recorded directory is restored in `PYTHONPATH`, including
-CLD configurations whose steering file imports a sibling module. Since
-nightlies expire from CVMFS after roughly three weeks, old recipes also say when
-they can no longer be executed. Each side clones into its **own** checkout
-directory (`k4Bench-before-{release}` / `k4Bench-after-{release}`): the two
-blocks need a fresh shell each because the Key4hep setup script cannot be
-sourced twice, but a fresh shell is not a fresh directory, and two clones into
-one `k4Bench` would abort the second block.
+not create false differences. Each half checks out the recorded k4Bench commit,
+sources the dated nightly stack directly, and then runs that checkout's
+`setup.sh`; its plugin build is not repeated separately. For steering files, the
+recorded directory is restored in `PYTHONPATH`, including CLD configurations
+whose steering file imports a sibling module. Since nightlies expire from CVMFS
+after roughly three weeks, old recipes also say when they can no longer be
+executed.
+
+**The whole file is one paste.** The harness is cloned once, and each half runs
+inside a **subshell** `( … )` that checks out its own commit and sources its own
+Key4hep release. A subshell holds a copy of the environment, so neither release
+leaks into the other or into the shell the reader pasted into — which is what
+satisfies the Key4hep setup script's refusal to be sourced twice without asking
+anyone to open a second terminal. Every word of commentary is carried as a `#`
+comment for the same reason: nothing in the file has to be skipped past to run
+it. The halves are sequential, so one checkout directory serves both. An xrootd
+input both runs read is fetched once, above them; when the two runs read
+different sources — a workload difference the file already warns about — each
+half fetches its own.
 
 No absolute timing or memory value is quoted. Those values are remeasured and
 move nightly; the recipe names only the percentage at the same one-decimal

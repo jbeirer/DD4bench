@@ -218,6 +218,21 @@ def test_migration_rewrites_the_marker_even_when_the_facts_are_unchanged():
     assert not gh.created
 
 
+def _observations_of(body: str) -> list[dict]:
+    """The observations a rendered body carries in its hidden markers."""
+    prefix = "<!-- k4bench-blame-observation:v1 "
+    return [
+        json.loads(
+            urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+        )
+        for encoded in (
+            line.removeprefix(prefix).removesuffix(" -->")
+            for line in body.splitlines()
+            if line.startswith(prefix)
+        )
+    ]
+
+
 def test_a_created_comment_materialises_its_current_observation():
     comment = _observed_comment(
         "2026-07-01", "2026-07-03", night="2026-07-04", digest="first",
@@ -229,13 +244,22 @@ def test_a_created_comment_materialises_its_current_observation():
 
     assert result.created == ["key4hep/k4geo#7"]
     body = gh.created[0][1]
-    assert "Observation history</b> — 1 material update" in body
-    assert (
-        "| [2026-07-04](https://dashboard.example/?report=2026-07-04) | "
-        "`2026-07-01` → `2026-07-03` | 12 | 2 | 6 UP · 6 DOWN |"
-    ) in body
+    # A first comment has nothing to compare its observation against, so the
+    # visible section is withheld — but the marker that carries it into the
+    # next night is written, and holds the night's counts exactly.
+    assert "Observation history" not in body
     assert "<!-- k4bench-blame-history -->" not in body
-    assert body.count("k4bench-blame-observation:v1") == 1
+    assert _observations_of(body) == [{
+        "report_night": "2026-07-04",
+        "base_release": "2026-07-01",
+        "onset_release": "2026-07-03",
+        "regressions": 12,
+        "scopes": 2,
+        "up": 6,
+        "down": 6,
+        "none": 0,
+        "url": "https://dashboard.example/?report=2026-07-04",
+    }]
 
 
 def test_an_expanding_update_carries_the_previous_observation_forward():
@@ -330,9 +354,9 @@ def test_a_same_night_rerun_replaces_instead_of_duplicating_its_observation():
 
     assert publish(gh, [current]).updated
     body = gh.updated[0][1]
-    assert body.count("k4bench-blame-observation:v1") == 1
-    assert "| 10 | 2 | 4 UP · 6 DOWN |" in body
-    assert "| 12 | 2 | 6 UP · 6 DOWN |" not in body
+    observations = _observations_of(body)
+    assert len(observations) == 1
+    assert (observations[0]["regressions"], observations[0]["up"]) == (10, 4)
 
 
 def test_an_unchanged_night_does_not_append_history_or_trigger_an_edit():

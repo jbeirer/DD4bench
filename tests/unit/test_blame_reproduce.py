@@ -59,6 +59,22 @@ def _facts(**after_overrides):
     )
 
 
+def _halves(body: str) -> list[str]:
+    """The two subshells of a rendered recipe, in order."""
+    halves = body.split("\n(\n")[1:]
+    return [half.split("\n)\n", 1)[0] for half in halves]
+
+
+def _facts_with_inputs(before: list[str], after: list[str]):
+    facts = facts_from(
+        _row(),
+        _info("2026-08-27", "1", input_files=before),
+        _info("2026-08-28", "2", input_files=after),
+    )
+    assert facts is not None
+    return facts
+
+
 def test_sweep_flag_inverts_supported_labels_and_rejects_hashed_multi_sweep():
     assert sweep_flag("baseline_all") == ""
     assert sweep_flag("without_TPC") == "--sweep-detectors TPC"
@@ -171,9 +187,7 @@ def test_render_shell_quotes_untrusted_arguments_into_one_word():
     body = render_text(replace(facts, onset_ddsim_args=hostile))
     # The whole hostile value reaches the shell as one quoted word, so the
     # embedded newline cannot start a command of its own.
-    argument = body.rsplit("--ddsim-args=", 1)[1].split(
-        "\n# quick directional check", 1
-    )[0]
+    argument = body.rsplit("--ddsim-args=", 1)[1].split("\n)", 1)[0]
     assert shlex.split(argument) == [hostile]
 
 
@@ -181,49 +195,78 @@ def test_render_contains_two_full_commands_and_only_display_precision_pct():
     facts = _facts()
     assert facts is not None
     body = render_text(facts)
-    assert body.count("git clone https://github.com/key4hep/k4Bench") == 2
+    assert body.count("git clone https://github.com/key4hep/k4Bench") == 1
+    assert body.count("k4bench --xml ") == 2
     assert "--sweep-detectors TPC" in body
     assert "Nightly measured:  +36.1%" in body
     assert "0.3614" not in body
 
 
-def test_each_side_clones_into_its_own_directory():
-    # A fresh shell is not a fresh directory: two `git clone` calls into the
-    # same `k4Bench` abort the second block with "destination path already
-    # exists", which would break the recipe the comment advertises as runnable.
+def test_one_clone_serves_both_halves_and_each_checks_out_its_own_commit():
+    # One paste, one working copy: the halves are sequential, so a second clone
+    # would only abort with "destination path already exists". What keeps them
+    # apart is the subshell — a copy of the environment per half, which is what
+    # lets two Key4hep releases be sourced in a single shell at all.
     facts = _facts()
     assert facts is not None
-    body = render_text(facts)
-    clones = [
-        line for line in body.splitlines()
-        if line.startswith("git clone https://github.com/key4hep/k4Bench")
-    ]
+    body = render_text(replace(facts, onset_commit="a" * 40))
+    lines = body.splitlines()
 
-    assert len(clones) == 2
-    targets = [line.split()[3] for line in clones]
-    assert targets == ["k4Bench-before-2026-08-27", "k4Bench-after-2026-08-28"]
-    assert len(set(targets)) == 2
-    for target in targets:
-        assert f"&& cd {target}" in body
+    assert sum(
+        line.startswith("git clone https://github.com/key4hep/k4Bench")
+        for line in lines
+    ) == 1
+    assert "cd k4Bench" in lines
+    assert lines.count("(") == 2 and lines.count(")") == 2
+    for commit in (facts.base_commit, "a" * 40):
+        assert f"  git checkout {commit}" in lines
 
 
 def test_command_checks_out_recorded_harness_before_setup_without_duplicate_build():
     facts = _facts()
     assert facts is not None
     body = render_text(facts)
-    checkout = body.index("git checkout")
-    nightly = body.index("source /cvmfs/sw-nightlies.hsf.org/key4hep/setup.sh")
-    historical_setup = body.index("source setup.sh")
-    assert checkout < nightly < historical_setup
+    for half in _halves(body):
+        checkout = half.index("git checkout")
+        nightly = half.index("source /cvmfs/sw-nightlies.hsf.org/key4hep/setup.sh")
+        historical_setup = half.index("source setup.sh")
+        assert checkout < nightly < historical_setup
     assert "KEY4HEP_REPO=" not in body
     assert "bash plugin/build.sh" not in body
+
+
+def test_a_shared_input_is_fetched_once_and_a_differing_one_per_half():
+    source = "root://example/events.hepmc"
+    shared = render_text(
+        _facts_with_inputs([source], [source])
+    )
+    assert shared.count("xrdcp --force") == 1
+    # Fetched outside both subshells, since both runs read the same file.
+    assert all("xrdcp" not in half for half in _halves(shared))
+
+    # Differing sources are a workload difference, and each half has to run
+    # against the one its own nightly used.
+    split = render_text(
+        _facts_with_inputs(
+            ["root://old.example/before.hepmc"],
+            ["root://new.example/after.hepmc"],
+        )
+    )
+    assert split.count("xrdcp --force") == 2
+    halves = _halves(split)
+    assert "xrdcp --force root://old.example/before.hepmc /tmp/before.hepmc" \
+        in halves[0]
+    assert "xrdcp --force root://new.example/after.hepmc /tmp/after.hepmc" \
+        in halves[1]
+    assert "/tmp/after.hepmc" not in halves[0]
+    assert "/tmp/before.hepmc" not in halves[1]
 
 
 def test_the_recipe_names_the_measurement_it_reproduces():
     facts = _facts()
     assert facts is not None
     body = render_text(facts)
-    assert body.startswith("k4Bench — reproduce this measurement")
+    assert body.startswith("# k4Bench — reproduce this measurement")
     assert "ILD_FCCee_v01" in body and "without_TPC" in body
     assert "2026-08-27 -> 2026-08-28" in body
     # Read on its own, it still says which runs it came from.
