@@ -184,7 +184,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--dry-run", action="store_true",
         default=bool(os.environ.get("K4BENCH_PR_COMMENT_DRY_RUN")),
-        help="Log the exact comments instead of posting them "
+        help="Log the newly rendered comments instead of posting them "
              "(also set by a non-empty $K4BENCH_PR_COMMENT_DRY_RUN)",
     )
     parser.add_argument(

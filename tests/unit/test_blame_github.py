@@ -357,8 +357,8 @@ def test_changed_file_page_cap_marks_the_resolution_truncated(monkeypatch):
 
 # ── Pull-request comments ─────────────────────────────────────────────────────
 
-def _comment(cid: int, body: str) -> dict:
-    return {"id": cid, "body": body}
+def _comment(cid: int, body: str, **extra) -> dict:
+    return {"id": cid, "body": body, **extra}
 
 
 def test_list_issue_comments_reads_every_page():
@@ -376,6 +376,15 @@ def test_list_issue_comments_captures_the_lowercased_author():
     routes = {"/issues/7/comments": _Resp(200, body)}
     got = gh_mod.list_issue_comments(_client(routes), "key4hep/k4geo", 7)
     assert got[0].author == "k4bench-bot"
+
+
+def test_list_issue_comments_captures_when_each_comment_was_last_updated():
+    body = [_comment(1, "hi", updated_at="2026-07-09T12:34:56Z")]
+    routes = {"/issues/7/comments": _Resp(200, body)}
+
+    got = gh_mod.list_issue_comments(_client(routes), "key4hep/k4geo", 7)
+
+    assert got[0].updated_at == "2026-07-09T12:34:56Z"
 
 
 def test_authenticated_login_reads_the_lowercased_login():

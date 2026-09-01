@@ -507,11 +507,13 @@ class IssueComment:
     ``author`` is the commenter's login, lower-cased for a case-insensitive
     match: the upsert edits only a comment the bot itself wrote, so someone who
     quotes the hidden marker in their own comment cannot make the bot try to
-    PATCH a comment it does not own."""
+    PATCH a comment it does not own. ``updated_at`` breaks a tie when several
+    older window lineages converge into tonight's containing window."""
 
     id: int
     body: str
     author: str = ""
+    updated_at: str = ""
 
 
 def list_issue_comments(
@@ -549,6 +551,7 @@ def list_issue_comments(
                 id=int(c["id"]),
                 body=str(c.get("body") or ""),
                 author=str((c.get("user") or {}).get("login", "")).lower(),
+                updated_at=str(c.get("updated_at") or ""),
             )
             for c in batch
             if isinstance(c, dict) and c.get("id") is not None

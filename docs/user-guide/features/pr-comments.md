@@ -200,13 +200,18 @@ workflow's built-in `GITHUB_TOKEN`, which is read-only and scoped to k4Bench
 alone — that one is used here too, but only to read the candidates' diffs for the
 review, so a write token is never spent on an ordinary public-repo read. Without
 a write token — or with `K4BENCH_PR_COMMENT_DRY_RUN` set, or
-`--dry-run` — the exact comment bodies are logged and nothing is written. That is
-how a new repository is checked before it is added to the allowlist.
+`--dry-run` — the newly rendered standalone bodies are logged and nothing is
+read from or written to the target thread. Existing observation history is
+therefore absent from a dry run; all new content remains reviewable before a
+repository is added to the allowlist.
 
 ## What the comment says
 
-One comment covers one `(pull request, change window)` pair, because the
-reader's question — "did my change do this?" — is asked once per window.
+One comment covers one pull request and one change-window lineage, because the
+reader's question — "did my change do this?" — should be asked once. A window
+that strictly contains an earlier one, or narrows one after evidence is revoked,
+is a newer view of that finding and updates it; non-containing windows remain
+separate findings.
 
 It opens with a warning alert giving both halves of the claim — what the
 benchmarks measured, and what a model estimated from it: how many of the
@@ -217,15 +222,70 @@ at 95% out of forty is a very different claim from thirty-eight of them. The
 threshold is named rather than called "certain" — it is the same configured
 number that decided the comment exists at all. Then comes the change window,
 labelled as **Key4hep releases** since the two dates are release dates and not
-the days the benchmark ran, and the reviewer's short account of the pattern it
-found. Below those sits a **table** of
-the regressions in that window — metric, detector, sample, benchmark
+the days the benchmark ran. When a containing window spans several step onsets,
+a compact table keeps those findings distinct: regressions, scopes and UP/DOWN
+counts for each onset. The direction is descriptive, not a good/bad judgement.
+
+The reviewer's short account of the pattern follows. Below it sits a **table**
+of the regressions in that window — metric, detector, sample, benchmark
 configuration, how far it moved, and the attribution likelihood — ordered by
-likelihood, with the top five shown. Which configurations moved (and, by their
-absence, which did not) is the substance of the claim, so it is one list a reader
-can scan rather than one configuration in full and the others in a footnote. A
-row nobody scored — a regression this pull request was not even a candidate for —
-says "not scored" rather than 0%, which would claim a judgement no model made.
+likelihood, then by the larger movement where likelihoods tie. It shows at most
+five rows, reserving in order: the **globally strongest row**, whatever its
+onset; the strongest currently confirmed row; one representative per onset the
+table covers; then the strongest rows remaining. The strongest row is reserved
+first because the alert quotes it — a table that hid the 95% row while the alert
+said "highest at 95%" would contradict itself. Any onsets past that are counted
+as *additional* rather than *earlier*: since the strongest row's onset may be an
+old one, the omitted groups are not necessarily a contiguous older tail. The
+onset summary above the table describes exactly the onsets the table shows. A
+row nobody scored — a regression this pull request was not even a candidate for
+— says "not scored" rather than 0%, which would claim a judgement no model made.
+
+### Current rows and retained rows
+
+The table is **not** rebuilt from tonight's confirmed rows alone. A row can be
+confirmed at +36.7% and attributed at 88% one night, and be back to `WATCH` two
+nights later — at which point rebuilding from tonight's report alone would drop
+the strongest finding in the comment and leave a table of weaker rows behind it,
+with no trace that the stronger one was ever claimed. So each material version
+of a comment carries a bounded, structured snapshot of its strongest rows, and
+the next version's table can resurface the ones that still outrank tonight's
+evidence. This is the AIDASoft/DD4hep#1617 case, and it reads:
+
+| Metric | Detector | Sample | Config | Onset | Change | Last reported | Current state | Attribution |
+|:---|:---|:---|:---|:---|---:|:---|:---|---:|
+| `mean_time_s` | ALLEGRO_o1_v03 | Single e⁻ · 10GeV | `without_InnerTrackers` | `2026-08-28` | 🔺 **+36.7%** | `2026-08-28` | `WATCH` | 88% |
+| `wall_time_s` | ALLEGRO_o1_v03 | Single e⁻ · 10GeV | `baseline` | `2026-08-29` | 🔺 **+12.0%** | **current** | `CONFIRMED` | 82% |
+
+Two extra columns, present only when a retained row renders, keep the two kinds
+apart without a footnote: **Last reported** is `current` for a row confirmed
+tonight and, for a retained one, the night it was last *published* as confirmed,
+and **Current state** is that row's standing in the report behind this version.
+Published, not confirmed: a night that reconfirms a row on unchanged evidence
+writes nothing at all, so the date names the last version a reader was shown,
+which is the only confirmation this comment can honestly vouch for.
+
+The rules that keep this honest:
+
+- **A historical score is never a fresh review.** The change and the likelihood
+  on a retained row are what the review recorded on its last published
+  version, and are not rescored after the row stops being confirmed. A note under the
+  table says so, so an 88% row above current 82% rows cannot be read as
+  contradicting the alert — which summarises **tonight's report and tonight's
+  review**, and nothing else.
+- **Current evidence always wins.** When a retained identity is confirmed again,
+  its snapshot is discarded and tonight's movement, likelihood and state are
+  what render — including a current *not a candidate* or unscored state, which
+  must not be papered over by an old percentage.
+- **Absence is not recovery.** A retained identity the report no longer carries
+  at all says `not reported`. `OK` is a measurement, and inferring it from
+  absence would claim one nobody made.
+- **Retention is not promotion.** Retained rows join one ranked pool with the
+  current ones on the same key, so a stronger current row still leads.
+- **Selection is never widened to refresh a state.** A pull request that
+  produces no plan tonight has its comment left untouched, exactly as the
+  lifecycle below describes; "current state" means the state in the report that
+  produced this material version, not a nightly heartbeat.
 
 Under the table, when the window carried more regressions than it shows, **one
 line counts them and links into the dashboard**. The likelihood ranking answers
@@ -241,18 +301,40 @@ of both prompts, of the links and of the digest. Each
 **metric** cell links to that regression pinned in the dashboard's Stack Changes
 view — the metric's own trend and onset, the ranked candidates, and the window's
 package diff in one place, which is what "did my change do this?" actually needs.
-Below the table sit the other candidates in the window with their likelihoods, in
-a disclosure whose summary carries the count and the strongest competing score
+Below the regression table is a collapsed **observation history**. The newest 20
+material versions record the report night, window, regression and scope counts,
+and UP/DOWN split; an omitted count preserves how many earlier versions aged out.
+The report night links to the dashboard pinned to that archived report. Below
+that sit the other candidates in the window with their likelihoods, in a
+disclosure whose summary carries the count and the strongest competing score
 without being opened (capped at five, the rest counted).
 
-The table is capped, and anything past it is linked rather than pasted.
+The table has a hard five-row cap — current and retained rows together — and
+anything past it is linked rather than pasted.
 A detector-removal sweep confirms one row per removed sub-detector — a real night
 has carried 318, nearly all repeating the same movement — and a comment over
-GitHub's 65,536-character limit is rejected outright rather than truncated. The
+GitHub's 65,536-byte limit is rejected outright rather than truncated. Folding
+the surplus into a `<details>` block is not a way around that: collapsed
+Markdown still counts against the body. The
 dashboard is where the complete set lives — and because those
 URLs are ~400 characters each, they are written as Markdown *reference* links
 collected at the end of the body, one per rendered row and none for a row that
-did not survive the caps.
+did not survive the caps. A retained row's link is rebuilt from its stored
+identity, window, run ids, stack and last-reported night through the same link
+helpers — no URL is ever stored in the snapshot — and lands on the archived
+dashboard view for that night. The run ids are carried so a same-release window
+would resolve, though no comment names one today — see below.
+
+!!! note "Same-release windows are not commented on"
+
+    A change window whose two ends are the same Key4hep release is reported and
+    ranked like any other, but never produces a pull-request comment. A comment
+    is keyed by its release pair alone, which cannot tell two windows inside one
+    release apart, and the row predicate reads that pair as half-open, so such a
+    window cannot even hold the regression that formed it. Nothing is withheld
+    in practice: a same-release window's package diff is empty by construction,
+    so its only candidates are k4Bench's own commits, and k4Bench is not a
+    repository comments are posted to.
 
 Two rules run through the rendering:
 
@@ -270,22 +352,42 @@ Two rules run through the rendering:
 
 ## Lifecycle of a comment
 
-Each comment carries a hidden marker keyed to its change window. The publisher
-upserts on that marker:
+Each comment carries a hidden marker naming its current change window. The
+publisher upserts on that marker and can migrate its nearest predecessor or
+successor:
 
-- **Same window, next night** — the existing comment is edited in place, so a
-  regression standing for a week is one comment, not seven.
+- **Same window, materially different evidence** — the existing comment is
+  edited in place, so a regression standing for a week is one comment, not
+  seven. The version it replaces remains in the observation history.
+- **Strictly expanding or contracting window** — the new view replaces the
+  nearest comparable comment, rewrites its marker and retains that comment's
+  observation history. If several formerly separate lineages converge into one
+  containing window, the most recently updated bot comment is the deterministic
+  survivor; the others remain as dated historical comments. This publishes the
+  unified evidence and avoids a permanently failing nightly step.
 - **Nothing changed** — no request at all. An edit re-surfaces the comment for
-  everyone watching the PR, so it must mean something changed. The body contains
-  nothing nightly-varying (no run URL, no report-night parameter), and "changed"
-  is judged on a second hidden line: a digest of the *benchmark facts*. It covers
+  everyone watching the PR, so it must mean something changed. The stable body
+  and digest contain nothing nightly-varying. A report night is added to the
+  observation history only when a create or material edit is already warranted;
+  it never causes an edit by itself. "Changed" is judged on a second hidden
+  line: a digest of the *benchmark facts*. It covers
   everything deterministic the comment rests on — the window; every regression
-  row's identity (platform included) and how far it moved; this pull request's
+  row's identity (platform included), how far it moved, and **its own step
+  onset**; this pull request's
   standing in each of those scopes; the configurations that measured the window
   cleanly or stayed under the threshold, with their watched metrics and unjudged
   counts; the per-platform package diff and unchanged counts; which pull
-  requests were in the field and whether each was judged; and whether the
-  review's evidence — the diffs — could actually be fetched. The outcomes matter
+  requests were in the field and whether each was judged; whether the
+  review's evidence — the diffs — could actually be fetched; and **every
+  retained row the table renders** — its frozen identity, movement, onset,
+  likelihood and link-routing fields, plus its standing in tonight's report.
+  Per-row onset is in because a row's onset can move while the plan's outer
+  window stands still, and it changes the Onset cell, the onset summary and the
+  row's `reg_onset=` deep link; when the plan's *own* window marker moves,
+  publisher migration already forces the edit regardless of the digest. Because
+  the final table is not known until the prior retained state has been decoded,
+  the digest is finalized at the write boundary alongside it, never appended
+  after the fact. The outcomes matter
   especially: a comment written while IDEA had no reliable result reads
   differently once IDEA delivers a clean measurement of the same window, and a
   digest of the positive rows alone would leave that stale reasoning standing
@@ -293,19 +395,43 @@ upserts on that marker:
   the patch produced a review made from paths and titles alone.
 
     Left out: the narrative and every model score, which drift between nights
-    without anything having happened. Also left out, less obviously — the
+    without anything having happened. A retained row's likelihood is not an
+    exception to that: it is frozen at its last published version and never
+    rescored, so it can only change when that row is published again.
+    Also left out, less obviously — the
     absolute value, baseline median and z-score. Those are deterministic and do
     reach the review's prompt, but they are re-derived from the *latest run*
     every night, so hashing them would edit every standing comment nightly,
     which is the exact harm the digest exists to prevent. `pct_change` is the
     same kind of number and counts only at the precision the table displays it,
     so the digest changes when the visible comment does and not before.
-- **A genuinely different window** — a separate comment, with its own marker.
+- **A genuinely different, non-containing window** — a separate comment, with
+  its own marker.
 - **The regression resolves, or the score drops below `min_score`** — the
   comment is **left exactly as it is**. It is not edited, retracted, or deleted.
   It records what the benchmarks saw at the time, which stays true even once the
   metric recovers; and silently rewriting a comment people have already replied
   to is worse than leaving a dated one standing. Follow-ups belong in the thread.
+
+History retention is forward-only, and so is row retention. Both the observation
+history and the retained rows are carried in versioned hidden markers; a comment
+written before those markers existed cannot reconstruct its overwritten versions,
+and its Markdown is never parsed to try. Its first later material edit starts the
+history with the new snapshot. The same applies to adding per-row onset to the
+digest: the schema change causes one edit the next time an otherwise-standing
+comment is selected, and it cannot reach comments no longer selected at all.
+
+The retained state is one compact marker per comment, never one per row per
+report. At most 20 snapshots are kept and at most five rows render, so a lineage
+cannot grow itself past GitHub's limit however wide a night is. Decoded state is
+validated as strictly as the observation markers — exact schema, bounded strings
+and counts, ISO dates, finite percentages, a likelihood that is either absent or
+finite in [0, 100], known direction and scope-state values, and a maximum row
+count — and a marker failing any check is ignored whole, leaving tonight's rows
+to render on their own. When separate lineages converge, the survivor merges the
+valid retained state of the comments it absorbs, newest confirmation winning per
+identity; the other comments are left untouched, so no marker is ever duplicated
+by the merge.
 
 Safety rules on the write path:
 
@@ -315,9 +441,17 @@ Safety rules on the write path:
   line is the marker *and* its author is the token's login. If that login cannot
   be established — an empty answer or a failed call alike — the run fails closed:
   it reads no thread, posts nothing and records every comment as failed.
-- **Duplicates are never guessed at.** If two comments the bot owns carry the
-  same window marker, the pull request is skipped and the duplicate ids logged.
-  Editing one would leave the other standing with reasoning nobody updates.
+- **Duplicate identities are never guessed at.** If two comments the bot owns
+  carry the same current window marker, or two sit at the same *nearest*
+  predecessor or successor window, the pull request is skipped and their ids
+  logged: the migration target is genuinely ambiguous, and editing one would
+  leave the other standing with stale reasoning. Duplicates at a more distant
+  comparable window, with one unique nearer comment between them and the current
+  window, are a different case — that nearer comment is the unambiguous
+  survivor, so it is migrated, the distant anomaly is logged for a human to
+  clear, and the pull request is not failed over comments the migration never
+  touches. Distinct lineages that later converge do not violate the invariant
+  either: the most recently updated one is migrated and the choice is logged.
 - **One failure is one PR's failure.** A repo the token cannot write to does not
   silence the others. Only a rate limit stops the run.
 
