@@ -1937,7 +1937,7 @@ def build_comments(
             )
             continue
         reproduce = _publish_reproducers(
-            plan, attribution=attribution,
+            plan,
             run_info_for=run_info_for, reproducer_url_for=reproducer_url_for,
         )
         comments.append(
@@ -1963,19 +1963,59 @@ class Reproducers:
     facts: tuple[ReproducerFacts, ...]
 
 
+#: How many recipes one comment publishes. Twice the table's height, so the
+#: deterministic set below almost always covers whichever rows the
+#: likelihood-ranked table ends up showing, while a detector-removal sweep of
+#: three hundred near-identical rows still uploads ten small files.
+_MAX_RECIPES = 2 * _TARGET_TABLE_ROWS
+
+
+def _recipe_rows(plan: CommentPlan) -> list[RegressionRow]:
+    """Which rows get a published recipe — **decided without any model score**.
+
+    The table is ranked by attribution likelihood, but the recipes must not be:
+    the published set and its URLs are hashed into the facts digest, and a
+    digest that moved when two model scores swapped places would edit standing
+    comments — re-notifying everyone subscribed to the pull request — on
+    nothing but model drift. That is the one thing the digest exists to
+    prevent, so this ranks on benchmark facts alone: one row reserved per step
+    onset, then the largest movements, ties broken by identity.
+
+    The cost of the split is that a row the table shows may fall outside this
+    set and render an empty cell. That is the safe direction to fail: a missing
+    link is a smaller harm than a nightly edit storm, and at twice the table's
+    height the overlap is near-total in practice."""
+    ordered = sorted(
+        plan.rows,
+        key=lambda row: (
+            -abs(row.verdict.pct_change)
+            if row.verdict.pct_change is not None
+            and math.isfinite(row.verdict.pct_change)
+            else 0.0,
+            *_row_identity(row),
+        ),
+    )
+    chosen: dict[tuple, RegressionRow] = {}
+    seen: set[str] = set()
+    for row in ordered:                      # one per onset, largest first
+        onset = _onset_label(row)
+        if onset not in seen and len(chosen) < _MAX_RECIPES:
+            seen.add(onset)
+            chosen[_row_identity(row)] = row
+    for row in ordered:                      # then fill on movement
+        if len(chosen) >= _MAX_RECIPES:
+            break
+        chosen.setdefault(_row_identity(row), row)
+    return [chosen[key] for key in sorted(chosen)]
+
+
 def _publish_reproducers(
     plan: CommentPlan,
     *,
-    attribution: Attribution | None,
     run_info_for: RunInfoFor | None,
     reproducer_url_for: ReproducerUrlFor | None,
 ) -> Reproducers | None:
-    """Build and publish a recipe for each row the table will show.
-
-    Bounded by that selection rather than by the plan: a detector-removal sweep
-    confirms hundreds of near-identical rows and the table shows at most
-    :data:`_TARGET_TABLE_ROWS` of them, so this uploads a handful of files a
-    night, not a directory a night.
+    """Build and publish the recipes for one comment (:func:`_recipe_rows`).
 
     Everything happens *before* the comment is rendered, so a comment either
     carries links that already resolve or carries none. Each row fails on its
@@ -1983,17 +2023,9 @@ def _publish_reproducers(
     that row's link and leaves the rest of the table alone."""
     if run_info_for is None or reproducer_url_for is None or not plan.rows:
         return None
-    by_likelihood = sorted(
-        plan.rows, key=lambda row: _row_sort_key(row, attribution)
-    )
-    shown = [
-        entry.current
-        for entry in _selected_rows(by_likelihood, [], attribution)
-        if entry.current is not None
-    ]
     urls: dict[tuple, str] = {}
     facts: list[ReproducerFacts] = []
-    for row in shown:
+    for row in _recipe_rows(plan):
         recipe = _reproducer_for(plan, row, run_info_for=run_info_for)
         if recipe is None:
             continue
@@ -2622,10 +2654,14 @@ def _alert(
         clauses.append(_ranker_clause(
             carried, min_score=min_score,
             population=n_regressions,
-            # Every row the review did not answer, including the ones nobody
-            # scored: the clause counts *within* that set, so it has to know how
-            # big the set is.
-            unreviewed=len(rows) - len(reviewed) if reviewed else 0,
+            # Every regression the review did not answer, including the ones
+            # nobody scored: the clause counts *within* that set, so it has to
+            # know how big the set is. Counted against ``n_regressions`` and
+            # never against ``rows``: once materialized, ``reviewed`` describes
+            # the whole cumulative lineage while ``rows`` is only tonight's
+            # plan, and differencing the two populations can go negative — a
+            # clause about "-1 regressions it did not score".
+            unreviewed=max(0, n_regressions - len(reviewed)) if reviewed else 0,
         ))
     return f"> [!WARNING]\n> {measured} {' '.join(clauses)}"
 

@@ -25,6 +25,7 @@ from k4bench.blame.attribute import (
 )
 from k4bench.blame.attribute import StepAssessment as AttrStepAssessment
 from k4bench.blame import comment as comment_mod
+from k4bench.blame.comment import _decoded_cumulative
 from k4bench.blame.comment import (
     CommentConfigError,
     CommentPolicy,
@@ -1735,6 +1736,38 @@ def test_the_recipe_link_survives_the_write_boundary():
 
     assert "| Reproduce |" in body
     assert f"https://data.test/_reproducers/{artifact_name(published[0])}" in body
+
+
+def test_model_score_drift_does_not_change_the_published_recipes():
+    # The recipe set and its URLs are hashed into the digest, so if publishing
+    # followed the likelihood ranking, two scores swapping places would edit a
+    # standing comment and re-notify the pull request on model drift alone.
+    rows = [
+        _verdict(metric=f"m{n}", label=f"without_cfg{n}", pct=0.5 - n / 100)
+        for n in range(12)
+    ]
+    report = _report(*rows)
+
+    def digest_for(scores):
+        publish, published = _publish_reproducer()
+        comment = _comments(
+            report,
+            _blame_of(*(
+                (row, [_candidate(score=score)])
+                for row, score in zip(rows, scores, strict=True)
+            )),
+            run_info_for=_run_info_for()[0], reproducer_url_for=publish,
+        )[0]
+        return comment.facts_digest, {facts.label for facts in published}
+
+    ranked = [95.0 - n for n in range(12)]
+    first_digest, first_set = digest_for(ranked)
+    # Same benchmark facts, the model's ordering turned upside down.
+    second_digest, second_set = digest_for(list(reversed(ranked)))
+
+    assert first_set == second_set
+    assert len(first_set) == comment_mod._MAX_RECIPES
+    assert first_digest == second_digest
 
 
 def test_a_retained_row_keeps_the_recipe_published_when_it_was_confirmed():
@@ -3648,6 +3681,39 @@ def test_reconfirmed_identity_uses_its_newest_cumulative_attribution():
     assert "2 of 2 regressions are attributed to it at 80% or above" in alert
     assert "highest at 82%" in alert
     assert "95%" not in alert
+
+
+def test_the_unreviewed_count_is_taken_from_the_cumulative_population():
+    # The reviewed scores come from the whole lineage while plan.rows is only
+    # tonight's; differencing those two populations went negative, and a
+    # negative "regressions it did not score" is read as truthy and rendered.
+    # Two reviewer-scored identities are retired, one ranker-only row is
+    # current, so the naive difference would be 1 - 2 = -1.
+    a, b = _verdict(metric="a"), _verdict(metric="b")
+    reviewer = _FakeAttributor(scores={f"r{n}": 95.0 - n for n in range(4)})
+    first = materialize(
+        _comments(
+            _report(a, b),
+            _blame_of((a, [_candidate(score=88.0)]), (b, [_candidate(score=87.0)])),
+            attributor=reviewer,
+        )[0],
+        [],
+    )
+    carried = _decoded_cumulative(first.body)
+    assert [v[1] for v in carried.values()] == ["reviewer", "reviewer"]
+
+    c = _verdict(metric="c")
+    latest = materialize(
+        _comments(_report(c), _blame([c], [_candidate(score=82.0)]))[0],
+        [first.body],
+    )
+
+    alert = _row(latest.body, "nightly benchmarks confirmed")
+    assert "3 regressions" in alert
+    # Three cumulative identities, two of them reviewer-scored, so exactly one
+    # is left for the ranker clause to speak about — never "-1".
+    assert "-1" not in alert
+    assert "The one regression it did not score" in alert
 
 
 def test_malformed_cumulative_state_falls_back_to_current_rows():

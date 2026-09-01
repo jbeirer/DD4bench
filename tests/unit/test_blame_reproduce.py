@@ -187,6 +187,26 @@ def test_render_contains_two_full_commands_and_only_display_precision_pct():
     assert "0.3614" not in body
 
 
+def test_each_side_clones_into_its_own_directory():
+    # A fresh shell is not a fresh directory: two `git clone` calls into the
+    # same `k4Bench` abort the second block with "destination path already
+    # exists", which would break the recipe the comment advertises as runnable.
+    facts = _facts()
+    assert facts is not None
+    body = render_text(facts)
+    clones = [
+        line for line in body.splitlines()
+        if line.startswith("git clone https://github.com/key4hep/k4Bench")
+    ]
+
+    assert len(clones) == 2
+    targets = [line.split()[3] for line in clones]
+    assert targets == ["k4Bench-before-2026-08-27", "k4Bench-after-2026-08-28"]
+    assert len(set(targets)) == 2
+    for target in targets:
+        assert f"&& cd {target}" in body
+
+
 def test_command_checks_out_recorded_harness_before_setup_without_duplicate_build():
     facts = _facts()
     assert facts is not None

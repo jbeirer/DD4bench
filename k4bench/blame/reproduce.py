@@ -311,9 +311,16 @@ def _command(
     xml_path: str,
     resolved_steering_file: str,
     output: str,
+    checkout: str,
 ) -> str:
+    # Each side clones into its own directory. The two blocks are run from one
+    # working directory — a fresh *shell* is not a fresh *directory* — so a
+    # second `git clone` into the same `k4Bench` would abort with "destination
+    # path already exists", and the two sides need different commits checked
+    # out anyway.
     lines = [
-        "git clone https://github.com/key4hep/k4Bench && cd k4Bench",
+        f"git clone https://github.com/key4hep/k4Bench {_safe(checkout)}"
+        f" && cd {_safe(checkout)}",
         f"git checkout {_safe(commit)}",
         f"source {_safe(_NIGHTLY_REPO + '/key4hep/setup.sh')} -r {_safe(release)}",
         "source setup.sh",
@@ -414,6 +421,7 @@ def render_text(facts: ReproducerFacts) -> str:
         xml_path=facts.base_xml_path,
         resolved_steering_file=facts.base_resolved_steering_file,
         output=f"logs/{facts.base_release}",
+        checkout=f"k4Bench-before-{_slug(facts.base_release)}",
     )
     after = _command(
         facts,
@@ -425,6 +433,7 @@ def render_text(facts: ReproducerFacts) -> str:
         xml_path=facts.onset_xml_path,
         resolved_steering_file=facts.onset_resolved_steering_file,
         output=f"logs/{facts.onset_release}",
+        checkout=f"k4Bench-after-{_slug(facts.onset_release)}",
     )
     check = max(1, min(100, facts.onset_n_events // 10))
     metric = facts.metric + (
@@ -445,7 +454,8 @@ def render_text(facts: ReproducerFacts) -> str:
         "",
         _wrap(
             "Run each block in a fresh shell — the Key4hep setup script "
-            "cannot be sourced twice."
+            "cannot be sourced twice. Both blocks can be run from the same "
+            "working directory: each clones into its own checkout."
         ),
         "",
         _rule(f"Before — Key4hep {facts.base_release}"),

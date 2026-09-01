@@ -259,16 +259,27 @@ fold-out block because the commands are a page of shell script that almost no
 reader of the comment wants inline, and because a `.txt` file is read, copied
 and pasted without any of the markup a comment would wrap it in.
 
-**Every row the table shows gets its own recipe.** A reader following one line
-wants the commands for *that* configuration, and one recipe under the whole
-comment answers only one of them — so each link points at the row it actually
+**Each row links its own recipe.** A reader following one line wants the
+commands for *that* configuration, and one recipe under the whole comment
+answers only one of them — so each link points at the row it actually
 reproduces and can never land on commands for a different configuration.
-Publishing is bounded by that selection rather than by the window: a
-detector-removal sweep confirms hundreds of near-identical rows and the table
-shows at most five, so a night uploads a handful of files, not a directory.
-A row whose run records cannot be read keeps an empty cell rather than
-borrowing a neighbour's commands, and the column is dropped entirely when no
-shown row has a link.
+
+Which rows get one is decided **without any model score**: one row reserved per
+step onset, then the largest movements, ties broken by identity, capped at
+twice the table's height. The table is ranked by attribution likelihood, but
+the recipes must not be — the published set and its URLs are hashed into the
+facts digest, and a digest that moved when two model scores swapped places
+would edit standing comments, re-notifying every subscriber on nothing but
+model drift. The cap also bounds the cost: a detector-removal sweep confirms
+hundreds of near-identical rows, and a night still uploads ten small files
+rather than a directory.
+
+The split means a row the table shows can fall outside the published set and
+render an empty cell. That is the safe direction to fail — a missing link is a
+smaller harm than a nightly edit storm — and at twice the table's height the
+overlap is near-total in practice. A row whose run records cannot be read keeps
+an empty cell too, rather than borrowing a neighbour's commands, and the column
+is dropped entirely when no shown row has a link.
 
 A retained row keeps the recipe published on the night it was last confirmed —
 carried in its snapshot rather than rebuilt. The file name is derivable from
@@ -298,7 +309,11 @@ that checkout's `setup.sh`; its plugin build is not repeated separately. For
 steering files, the recorded directory is restored in `PYTHONPATH`, including
 CLD configurations whose steering file imports a sibling module. Since
 nightlies expire from CVMFS after roughly three weeks, old recipes also say when
-they can no longer be executed.
+they can no longer be executed. Each side clones into its **own** checkout
+directory (`k4Bench-before-{release}` / `k4Bench-after-{release}`): the two
+blocks need a fresh shell each because the Key4hep setup script cannot be
+sourced twice, but a fresh shell is not a fresh directory, and two clones into
+one `k4Bench` would abort the second block.
 
 No absolute timing or memory value is quoted. Those values are remeasured and
 move nightly; the recipe names only the percentage at the same one-decimal
