@@ -328,6 +328,26 @@ def _fetch(input_files: tuple[str, ...]) -> list[str]:
     ]
 
 
+def _shared_fetch(release: str, input_files: tuple[str, ...]) -> str:
+    """The one fetch both halves read from, as a subshell of its own.
+
+    ``xrdcp`` comes from the Key4hep stack rather than from the host, so a
+    fetch that runs before any release is sourced is a ``command not found``.
+    This one sources the BEFORE release — both halves read the same sources
+    here, so either release would serve — and takes its own subshell, so that
+    release reaches neither half below: each of those sources the release its
+    own nightly ran, and the Key4hep setup script forbids a second one in an
+    environment that already holds one.
+    """
+    lines = [
+        "set -e",
+        f"source {_safe(_NIGHTLY_REPO + '/key4hep/setup.sh')} -r {_safe(release)}",
+        *_fetch(input_files),
+    ]
+    body = "\n".join(f"  {line}" for line in lines)
+    return f"(\n{body}\n)"
+
+
 def _command(
     facts: ReproducerFacts,
     *,
@@ -498,7 +518,11 @@ def render_text(facts: ReproducerFacts) -> str:
     # sequential, and the second run's copy replaces one the first has already
     # consumed.
     shared_input = facts.base_input_files == facts.onset_input_files
-    shared_fetch = _fetch(facts.base_input_files) if shared_input else []
+    shared_fetch = (
+        _shared_fetch(facts.base_release, facts.base_input_files)
+        if shared_input and facts.base_input_files
+        else ""
+    )
     # Named for the runs, never for the releases: a window can begin and end
     # inside one release, and two directories named after it would be one
     # directory, with the AFTER half overwriting the results it is compared
@@ -581,7 +605,7 @@ def render_text(facts: ReproducerFacts) -> str:
         *([
             "",
             _rule("input (fetched once; both runs read the same sources)"),
-            *shared_fetch,
+            shared_fetch,
         ] if shared_fetch else []),
         "",
         _rule(f"BEFORE: Key4hep {facts.base_release}"),

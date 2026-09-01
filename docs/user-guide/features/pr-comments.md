@@ -331,9 +331,12 @@ satisfies the Key4hep setup script's refusal to be sourced twice without asking
 anyone to open a second terminal. Every word of commentary is carried as a `#`
 comment for the same reason: nothing in the file has to be skipped past to run
 it. The halves are sequential, so one checkout directory serves both. An xrootd
-input both runs read is fetched once, above them; when the two runs read
-different sources — a workload difference the file already warns about — each
-half fetches its own.
+input both runs read is fetched once, above them, inside a subshell that
+sources a release first: `xrdcp` is part of the Key4hep stack rather than a
+host tool, and that subshell keeps the release it sources out of both halves.
+When the two runs read different sources — a workload difference the file
+already warns about — each half fetches its own, after sourcing its own
+release.
 
 No absolute timing or memory value is quoted. Those values are remeasured and
 move nightly; the recipe names only the percentage at the same one-decimal
