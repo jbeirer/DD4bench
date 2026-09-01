@@ -123,6 +123,7 @@ echo "::group::5. Resolve inputs"
 # DD4hep's own reference/example detectors, which live outside $K4GEO) so expand
 # them here, after the Key4hep stack is sourced, before checking for an absolute
 # path.
+CONFIGURED_XML_PATH="${XML_PATH}"
 XML_PATH=$(python3 -c "import os, sys; print(os.path.expandvars(sys.argv[1]))" "${XML_PATH}")
 if [[ "${XML_PATH}" = /* ]]; then
     DETECTOR_XML="${XML_PATH}"
@@ -137,6 +138,7 @@ echo "XML      : ${DETECTOR_XML}"
 # Optional steering file. The path may reference Key4hep env vars (e.g. $FCCCONFIG)
 # so we expand it here, after the Key4hep stack is sourced. Prepended to DDSIM_ARGS
 # so a sample-level --steeringFile flag would override it if both are given.
+STEERING_PATH=""
 if [[ -n "${STEERING_FILE}" ]]; then
     STEERING_PATH=$(python3 -c "import os, sys; print(os.path.expandvars(sys.argv[1]))" "${STEERING_FILE}")
     [[ -f "${STEERING_PATH}" ]] || { echo "ERROR: steering file not found: ${STEERING_PATH}"; exit 1; }
@@ -253,7 +255,9 @@ fi
 
 # run_info.json
 python3 - "${DETECTOR}" "${SAMPLE}" "${DATE}" "${K4H_PLATFORM}" "${K4H_RELEASE}" \
-          "${N_EVENTS}" "${SWEEP}" "${XML_PATH}" "${DDSIM_ARGS}" <<PYEOF
+          "${N_EVENTS}" "${SWEEP}" "${XML_PATH}" "${DDSIM_ARGS}" \
+          "${INPUT_FILES}" "${STEERING_FILE}" "${CONFIGURED_XML_PATH}" \
+          "${STEERING_PATH}" <<PYEOF
 import json, os, shlex, sys
 
 detector, sample, date, platform, k4h_rel = sys.argv[1:6]
@@ -264,6 +268,10 @@ sweep    = sys.argv[7] == "true"
 # geometry this run actually reads, instead of inferring it from path names.
 xml_path = sys.argv[8] if len(sys.argv) > 8 else ""
 ddsim_args = sys.argv[9] if len(sys.argv) > 9 else ""
+input_files = shlex.split(sys.argv[10]) if len(sys.argv) > 10 and sys.argv[10] else []
+steering_file = sys.argv[11] if len(sys.argv) > 11 else ""
+configured_xml_path = sys.argv[12] if len(sys.argv) > 12 else ""
+resolved_steering_file = sys.argv[13] if len(sys.argv) > 13 else ""
 
 # The Monte-Carlo workload this run actually measured. Timing is a function of
 # which events were simulated, so a report comparing two nights is only
@@ -299,6 +307,7 @@ run_info = {
     "detector":         detector,
     "sample":           sample,
     "xml_path":         xml_path,
+    "configured_xml_path": configured_xml_path,
     "github_run_id":    os.environ["GITHUB_RUN_ID"],
     "github_run_url": (
         f"{os.environ['GITHUB_SERVER_URL']}"
@@ -310,6 +319,18 @@ run_info = {
     "sweep":            sweep,
     "ddsim_args":       ddsim_args,
     "random_seed":      _random_seed(ddsim_args),
+    # How the benchmark was invoked, beyond its arguments.  Both move a timing
+    # measurement -- --verbose streams ddsim's output while it is being timed,
+    # and the runner pins the process to a fixed CPU set -- so a reproducer that
+    # does not know them cannot say it ran the same measurement.
+    "verbose":          os.environ.get("VERBOSE", "").lower() == "true",
+    "runner_cpu_set":   os.environ.get("RUNNER_CPU_SET", ""),
+    # Preserve the configured source values.  DDSIM_ARGS above names the /tmp
+    # copy actually read by ddsim; a reproducer also needs the xrootd URL from
+    # which that ephemeral file was obtained.
+    "input_files":      input_files,
+    "steering_file":    steering_file,
+    "resolved_steering_file": resolved_steering_file,
     "configs":          ${CONFIGS_JSON},
     "configured_labels": ${CONFIGURED_LABELS_JSON},
 }

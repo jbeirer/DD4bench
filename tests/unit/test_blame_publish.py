@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
-from base64 import urlsafe_b64encode
+from base64 import urlsafe_b64decode, urlsafe_b64encode
 
 import pytest
 import requests
@@ -218,6 +218,21 @@ def test_migration_rewrites_the_marker_even_when_the_facts_are_unchanged():
     assert not gh.created
 
 
+def _observations_of(body: str) -> list[dict]:
+    """The observations a rendered body carries in its hidden markers."""
+    prefix = "<!-- k4bench-blame-observation:v1 "
+    return [
+        json.loads(
+            urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+        )
+        for encoded in (
+            line.removeprefix(prefix).removesuffix(" -->")
+            for line in body.splitlines()
+            if line.startswith(prefix)
+        )
+    ]
+
+
 def test_a_created_comment_materialises_its_current_observation():
     comment = _observed_comment(
         "2026-07-01", "2026-07-03", night="2026-07-04", digest="first",
@@ -229,13 +244,22 @@ def test_a_created_comment_materialises_its_current_observation():
 
     assert result.created == ["key4hep/k4geo#7"]
     body = gh.created[0][1]
-    assert "Observation history</b> — 1 material update" in body
-    assert (
-        "| [2026-07-04](https://dashboard.example/?report=2026-07-04) | "
-        "`2026-07-01` → `2026-07-03` | 12 | 2 | 6 UP · 6 DOWN |"
-    ) in body
+    # A first comment has nothing to compare its observation against, so the
+    # visible section is withheld — but the marker that carries it into the
+    # next night is written, and holds the night's counts exactly.
+    assert "Observation history" not in body
     assert "<!-- k4bench-blame-history -->" not in body
-    assert body.count("k4bench-blame-observation:v1") == 1
+    assert _observations_of(body) == [{
+        "report_night": "2026-07-04",
+        "base_release": "2026-07-01",
+        "onset_release": "2026-07-03",
+        "regressions": 12,
+        "scopes": 2,
+        "up": 6,
+        "down": 6,
+        "none": 0,
+        "url": "https://dashboard.example/?report=2026-07-04",
+    }]
 
 
 def test_an_expanding_update_carries_the_previous_observation_forward():
@@ -330,9 +354,9 @@ def test_a_same_night_rerun_replaces_instead_of_duplicating_its_observation():
 
     assert publish(gh, [current]).updated
     body = gh.updated[0][1]
-    assert body.count("k4bench-blame-observation:v1") == 1
-    assert "| 10 | 2 | 4 UP · 6 DOWN |" in body
-    assert "| 12 | 2 | 6 UP · 6 DOWN |" not in body
+    observations = _observations_of(body)
+    assert len(observations) == 1
+    assert (observations[0]["regressions"], observations[0]["up"]) == (10, 4)
 
 
 def test_an_unchanged_night_does_not_append_history_or_trigger_an_edit():
@@ -899,10 +923,23 @@ def test_an_evidence_rows_onset_moving_updates_the_standing_comment():
     assert not settled.updated
 
 
+def _retained_rows_of(body: str) -> list[dict]:
+    """The snapshots a rendered body carries in its hidden retained marker."""
+    line = next(
+        line for line in body.splitlines()
+        if line.startswith("<!-- k4bench-blame-retained:v1 ")
+    )
+    encoded = line.removeprefix("<!-- k4bench-blame-retained:v1 ").removesuffix(" -->")
+    payload = json.loads(
+        urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+    )
+    return payload["rows"]
+
+
 def test_a_row_that_stops_being_confirmed_is_retained_through_the_upsert():
     # The whole point, across a real write: the strongest row drops to WATCH and
-    # the comment keeps showing it, dated and annotated, from the state marker
-    # the previous body carried.
+    # the comment keeps showing it, at the evidence last published for it, from
+    # the state marker the previous body carried.
     strong = _verdict(metric="mean_time_s", onset="2026-07-03", pct=0.367)
     weak = _verdict(metric="wall_time_s", onset="2026-07-05", pct=0.12)
     scores = {"mean_time_s": 88.0, "wall_time_s": 82.0}
@@ -920,7 +957,9 @@ def test_a_row_that_stops_being_confirmed_is_retained_through_the_upsert():
     row = next(line for line in body.splitlines() if "mean_time_s" in line
                and line.startswith("| ["))
     assert "+36.7%" in row and "88%" in row
-    assert "`2026-07-05`" in row and "`WATCH`" in row
+    # Its own window, not the comment's: the row entered on 2026-07-01 →
+    # 2026-07-03 while the comment now spans through 2026-07-05.
+    assert "`2026-07-01` → `2026-07-03`" in row
     assert body.count("<!-- k4bench-blame-retained:v1 ") == 1
     assert len(body.encode()) < 65_536
 
@@ -953,7 +992,7 @@ def test_a_converging_lineage_hands_its_retained_rows_to_the_survivor():
     assert len(gh.updated) == 1                      # the others stand untouched
     body = gh.updated[0][1]
     assert "+36.7%" in body and "88%" in body
-    assert "`WATCH`" in body
+    assert "`2026-07-01` → `2026-07-03`" in body
 
 
 def test_a_standing_comment_is_left_alone_though_its_retained_state_is_redated():
@@ -980,11 +1019,14 @@ def test_a_standing_comment_is_left_alone_though_its_retained_state_is_redated()
 
 
 def test_a_retained_rows_date_is_the_night_it_was_last_published():
-    # The consequence of the test above, and why the column says "reported"
-    # rather than "confirmed": a night that reconfirms on unchanged evidence
-    # writes nothing, so its snapshot never reaches the comment. When the row
-    # later stops being confirmed, the date resurfaced is the last *published*
-    # one. Hashing the report night to keep it current would re-notify everyone
+    # The consequence of the test above, and why the snapshot field is called
+    # "last reported" rather than "last confirmed": a night that reconfirms on
+    # unchanged evidence writes nothing, so its snapshot never reaches the
+    # comment. The date a retained row carries is therefore the last
+    # *published* one. It is hidden state now rather than a column, but it
+    # still decides which snapshot survives when lineages converge
+    # (:func:`k4bench.blame.comment._merged_retained`), so it has to be right.
+    # Hashing the report night to keep it current would re-notify everyone
     # watching the pull request every night, which is the worse trade.
     wall = _verdict(metric="wall_time_s", onset="2026-07-05", pct=0.20)
     mean = _verdict(metric="mean_time_s", onset="2026-07-05", pct=0.14)
@@ -1011,11 +1053,9 @@ def test_a_retained_rows_date_is_the_night_it_was_last_published():
         gh, [_rendered([moved, watching], scores, night="2026-07-07")]
     ).updated
     body = gh.updated[0][1]
-    lines = body.splitlines()
-    header = next(line for line in lines if "Last reported" in line)
-    column = [cell.strip() for cell in header.split("|")].index("Last reported")
-    retained = next(line for line in lines if "mean_time_s" in line)
-    cells = [cell.strip() for cell in retained.split("|")]
+    snapshot = next(
+        row for row in _retained_rows_of(body) if row["metric"] == "mean_time_s"
+    )
 
-    assert cells[column] == "`2026-07-05`"     # the night it was last published
-    assert "2026-07-06" not in retained        # not the night it last confirmed
+    assert snapshot["last_reported"] == "2026-07-05"  # last *published*
+    assert snapshot["last_reported"] != "2026-07-06"  # not last confirmed

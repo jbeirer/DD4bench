@@ -214,17 +214,19 @@ is a newer view of that finding and updates it; non-containing windows remain
 separate findings.
 
 It opens with a warning alert giving both halves of the claim — what the
-benchmarks measured, and what a model estimated from it: how many of the
-window's regressions are attributed to this pull request at or above the
-configured `min_score`, and the strongest likelihood among them. Two numbers
+runs in this comment lineage have measured, and what a model estimated from
+those rows. The regression and scope totals are exact cumulative unions of their
+identities across overlapping reports, not a sum of nightly counts; a regression
+reconfirmed on three nights is counted once and uses its newest published
+attribution. The attribution clause describes that same cumulative population:
+how many are attributed to this pull request at or above the configured
+`min_score`, and the strongest likelihood. Two numbers
 rather than one, because a single high score says nothing about reach: one row
 at 95% out of forty is a very different claim from thirty-eight of them. The
 threshold is named rather than called "certain" — it is the same configured
 number that decided the comment exists at all. Then comes the change window,
 labelled as **Key4hep releases** since the two dates are release dates and not
-the days the benchmark ran. When a containing window spans several step onsets,
-a compact table keeps those findings distinct: regressions, scopes and UP/DOWN
-counts for each onset. The direction is descriptive, not a good/bad judgement.
+the days the benchmark ran.
 
 The reviewer's short account of the pattern follows. Below it sits a **table**
 of the regressions in that window — metric, detector, sample, benchmark
@@ -234,12 +236,112 @@ five rows, reserving in order: the **globally strongest row**, whatever its
 onset; the strongest currently confirmed row; one representative per onset the
 table covers; then the strongest rows remaining. The strongest row is reserved
 first because the alert quotes it — a table that hid the 95% row while the alert
-said "highest at 95%" would contradict itself. Any onsets past that are counted
-as *additional* rather than *earlier*: since the strongest row's onset may be an
-old one, the omitted groups are not necessarily a contiguous older tail. The
-onset summary above the table describes exactly the onsets the table shows. A
-row nobody scored — a regression this pull request was not even a candidate for
+said "highest at 95%" would contradict itself. A row nobody scored — a
+regression this pull request was not even a candidate for
 — says "not scored" rather than 0%, which would claim a judgement no model made.
+
+Each row carries its **own tightest change window** rather than the comment's.
+A containing window is the union of several steps, and a metric that settled
+later entered it on a narrower range of its own — so the header names the
+window the comment covers and every row names the release pair that metric
+actually measured, which is the pair someone re-running it needs. The column is
+omitted when every row measured exactly the window the header already states,
+and the dashboard remains the complete view when more rows exist than the
+five-row table can show.
+
+### Reproducing the measurement
+
+The table's **Reproduce** column links a runnable recipe: a plain-text file
+published beside the nightly data at
+`{K4BENCH_DATA_URL}/_reproducers/{name}.txt`, holding the two shell commands
+that re-measure that row's before and after. It is a link rather than a
+fold-out block because the commands are a page of shell script that almost no
+reader of the comment wants inline, and because a `.txt` file is read, copied
+and pasted without any of the markup a comment would wrap it in.
+
+**Each row links its own recipe.** A reader following one line wants the
+commands for *that* configuration, and one recipe under the whole comment
+answers only one of them — so each link points at the row it actually
+reproduces and can never land on commands for a different configuration.
+
+Two sets are published, and their union is what gets uploaded: **the rows the
+table shows**, so every rendered row can link its own commands, and a
+**model-independent set** that is the only part the facts digest hashes. The
+second is ranked on benchmark facts alone — one row reserved per step onset,
+then the largest movements, ties broken by identity, capped at twice the
+table's height.
+
+The split is what lets two properties hold at once. The table is ranked by
+attribution likelihood, so hashing every published recipe would let two model
+scores swapping places edit a standing comment and re-notify every subscriber
+on nothing but model drift — the one thing the digest exists to prevent.
+Hashing only the model-independent subset keeps the digest a statement about
+benchmark facts, while the rendered table still links a recipe on every row it
+shows. A link that appears because the ranking moved therefore surfaces on the
+next edit some real change earns, exactly as a row that entered the table the
+same way already does. Both sets are bounded, so a detector-removal sweep that
+confirms hundreds of near-identical rows still uploads a handful of small files
+rather than a directory.
+
+A row whose run records cannot be read keeps an empty cell rather than
+borrowing a neighbour's commands, and the column is dropped entirely when no
+shown row has a link.
+
+A retained row keeps the recipe published on the night it was last confirmed —
+carried in its snapshot rather than rebuilt. The file name is derivable from
+the fields the snapshot already holds, but only the night that actually
+published it can vouch for the file being there.
+
+Recipes are **published before the comment that links them is rendered**, so a
+posted comment either carries links that already resolve or carries no column;
+a failed upload costs that row's link and nothing else. A name is derived from
+the measurement and the change window it reproduces, so a later night
+re-publishing the same window replaces the same file and the links a standing
+comment already carries keep working. Dry runs upload nothing but still render
+the links the real run would publish.
+
+The two commands are built from the exact before/after `run_info.json` records:
+geometry, event count, ddsim arguments, seed, harness commit, Key4hep release
+and Actions run. HepMC recipes also download the source xrootd input recorded
+by the run; for older records, the checked-in benchmark YAML supplies that URL.
+
+The file compares event count, source input files, logical geometry and
+steering configuration, non-path ddsim arguments, seed and harness commit. If
+they differ it says so explicitly instead of describing the two measurements as
+the same workload. Release-specific resolved geometry and steering prefixes do
+not create false differences. Each half checks out the recorded k4Bench commit,
+sources the dated nightly stack directly, and then runs that checkout's
+`setup.sh`; its plugin build is not repeated separately. For steering files, the
+recorded directory is restored in `PYTHONPATH`, including CLD configurations
+whose steering file imports a sibling module. Since nightlies expire from CVMFS
+after roughly three weeks, old recipes also say when they can no longer be
+executed.
+
+**The whole file runs.** It opens with a shebang, so it can be saved and run
+with `bash <file>` as readily as pasted into a shell, and it is written in pure
+ASCII — it is served as plain text with no declared charset, and a browser
+guessing latin-1 turns any multi-byte character into mojibake. The harness is
+cloned once, and each half runs inside a **subshell** `( … )` that sets `set -e`,
+checks out its own commit and sources its own Key4hep release. Errexit lives
+inside the subshells rather than at the top: a failed setup aborts that half
+instead of benchmarking a broken environment, and never leaves errexit behind in
+the shell of a reader who pasted the file. A subshell holds a copy of the environment, so neither release
+leaks into the other or into the shell the reader pasted into — which is what
+satisfies the Key4hep setup script's refusal to be sourced twice without asking
+anyone to open a second terminal. Every word of commentary is carried as a `#`
+comment for the same reason: nothing in the file has to be skipped past to run
+it. The halves are sequential, so one checkout directory serves both. An xrootd
+input both runs read is fetched once, above them; when the two runs read
+different sources — a workload difference the file already warns about — each
+half fetches its own.
+
+No absolute timing or memory value is quoted. Those values are remeasured and
+move nightly; the recipe names only the percentage at the same one-decimal
+precision already visible in the table. Every published recipe's immutable
+command facts **and its URL** are part of the comment digest, so a newly
+readable run record — or a recipe that appears where there was none — can
+improve a standing comment, while normal nightly measurement noise still
+causes no edit churn.
 
 ### Current rows and retained rows
 
@@ -252,40 +354,27 @@ of a comment carries a bounded, structured snapshot of its strongest rows, and
 the next version's table can resurface the ones that still outrank tonight's
 evidence. This is the AIDASoft/DD4hep#1617 case, and it reads:
 
-| Metric | Detector | Sample | Config | Onset | Change | Last reported | Current state | Attribution |
-|:---|:---|:---|:---|:---|---:|:---|:---|---:|
-| `mean_time_s` | ALLEGRO_o1_v03 | Single e⁻ · 10GeV | `without_InnerTrackers` | `2026-08-28` | 🔺 **+36.7%** | `2026-08-28` | `WATCH` | 88% |
-| `wall_time_s` | ALLEGRO_o1_v03 | Single e⁻ · 10GeV | `baseline` | `2026-08-29` | 🔺 **+12.0%** | **current** | `CONFIRMED` | 82% |
+| Metric | Detector | Sample | Config | Change window | Change | Attribution | Reproduce |
+|:---|:---|:---|:---|:---|---:|---:|:---|
+| `mean_time_s` | ALLEGRO_o1_v03 | Single e⁻ · 10GeV | `without_InnerTrackers` | `2026-08-27` → `2026-08-28` | 🔺 **+36.7%** | 88% | [🔁 recipe ↗] |
+| `wall_time_s` | ALLEGRO_o1_v03 | Single e⁻ · 10GeV | `baseline` | `2026-08-28` → `2026-08-29` | 🔺 **+12.0%** | 82% | [🔁 recipe ↗] |
 
-Two extra columns, present only when a retained row renders, keep the two kinds
-apart without a footnote: **Last reported** is `current` for a row confirmed
-tonight and, for a retained one, the night it was last *published* as confirmed,
-and **Current state** is that row's standing in the report behind this version.
-Published, not confirmed: a night that reconfirms a row on unchanged evidence
-writes nothing at all, so the date names the last version a reader was shown,
-which is the only confirmation this comment can honestly vouch for.
+A retained row keeps the window — and the recipe — it was published with; one
+taken before those fields existed falls back to the comment window it was
+rendered under, which is what that reader was shown, and to an empty cell.
 
 The rules that keep this honest:
 
 - **A historical score is never a fresh review.** The change and the likelihood
   on a retained row are what the review recorded on its last published
-  version, and are not rescored after the row stops being confirmed. A note under the
-  table says so, so an 88% row above current 82% rows cannot be read as
-  contradicting the alert — which summarises **tonight's report and tonight's
-  review**, and nothing else.
+  version and are not rescored after the row stops being confirmed. The alert
+  uses the same newest-published rule for every cumulative identity.
 - **Current evidence always wins.** When a retained identity is confirmed again,
   its snapshot is discarded and tonight's movement, likelihood and state are
   what render — including a current *not a candidate* or unscored state, which
   must not be papered over by an old percentage.
-- **Absence is not recovery.** A retained identity the report no longer carries
-  at all says `not reported`. `OK` is a measurement, and inferring it from
-  absence would claim one nobody made.
 - **Retention is not promotion.** Retained rows join one ranked pool with the
   current ones on the same key, so a stronger current row still leads.
-- **Selection is never widened to refresh a state.** A pull request that
-  produces no plan tonight has its comment left untouched, exactly as the
-  lifecycle below describes; "current state" means the state in the report that
-  produced this material version, not a nightly heartbeat.
 
 Under the table, when the window carried more regressions than it shows, **one
 line counts them and links into the dashboard**. The likelihood ranking answers
@@ -379,11 +468,11 @@ successor:
   counts; the per-platform package diff and unchanged counts; which pull
   requests were in the field and whether each was judged; whether the
   review's evidence — the diffs — could actually be fetched; and **every
-  retained row the table renders** — its frozen identity, movement, onset,
-  likelihood and link-routing fields, plus its standing in tonight's report.
-  Per-row onset is in because a row's onset can move while the plan's outer
-  window stands still, and it changes the Onset cell, the onset summary and the
-  row's `reg_onset=` deep link; when the plan's *own* window marker moves,
+  retained row the table renders** — its frozen identity, movement, change
+  window, likelihood, recipe link and link-routing fields.
+  Each row's own window is in because it can move while the plan's outer
+  window stands still, and it changes the Change window cell and the row's
+  `reg_onset=` deep link; when the plan's *own* window marker moves,
   publisher migration already forces the edit regardless of the digest. Because
   the final table is not known until the prior retained state has been decoded,
   the digest is finalized at the write boundary alongside it, never appended

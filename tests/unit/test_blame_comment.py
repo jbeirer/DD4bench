@@ -25,6 +25,7 @@ from k4bench.blame.attribute import (
 )
 from k4bench.blame.attribute import StepAssessment as AttrStepAssessment
 from k4bench.blame import comment as comment_mod
+from k4bench.blame.comment import _decoded_cumulative
 from k4bench.blame.comment import (
     CommentConfigError,
     CommentPolicy,
@@ -45,6 +46,7 @@ from k4bench.blame.models import (
     RepoBlame,
     StepAssessment,
 )
+from k4bench.blame.reproduce import artifact_name
 from k4bench.regression.models import (
     Direction,
     ReleasePoint,
@@ -191,13 +193,29 @@ def _plans(report, blame, policy=None):
 
 
 def _comments(report, blame, policy=None, *, attributor=None, patch_for=None,
-              body_for=None, dashboard_url=_DASH):
+              body_for=None, run_info_for=None, reproducer_url_for=None,
+              dashboard_url=_DASH):
     policy = policy or _policy()
     return build_comments(
         _plans(report, blame, policy),
         attributor=attributor, patch_for=patch_for, body_for=body_for,
+        run_info_for=run_info_for, reproducer_url_for=reproducer_url_for,
         dashboard_url=dashboard_url, min_score=policy.min_score,
     )
+
+
+def _publish_reproducer(published: list | None = None, url=None):
+    """A stand-in for the nightly recipe publisher: records what it was handed
+    and returns the URL the table is expected to link."""
+    store = published if published is not None else []
+
+    def publish(facts):
+        store.append(facts)
+        return url(facts) if callable(url) else (
+            url or f"https://data.test/_reproducers/{artifact_name(facts)}"
+        )
+
+    return publish, store
 
 
 def _row(body: str, needle: str) -> str:
@@ -217,6 +235,42 @@ def _table_rows(body: str) -> list[str]:
         line for line in body.splitlines()
         if line.startswith("| `") or line.startswith("| [`")
     ]
+
+
+def _window_cells(rows: list[str]) -> set[str]:
+    """The Change window cell of each row, as rendered."""
+    return {row.split(" | ")[4] for row in rows}
+
+
+def _onsets_of(rows: list[str]) -> set[str]:
+    """Each row's onset — the last quoted date in its Change window cell,
+    whether that cell renders a base → onset pair or an upper bound alone."""
+    return {cell.rsplit("`", 2)[-2] for cell in _window_cells(rows)}
+
+
+def _run_info_for(*, args="--random.seed 42 --enableGun", missing=False):
+    calls = []
+
+    def fetch(detector, platform, stack, sample, run_id):
+        calls.append((detector, platform, stack, sample, run_id))
+        if missing and len(calls) == 1:
+            return None
+        return {
+            "detector": detector,
+            "platform": platform,
+            "sample": sample,
+            "k4h_release": stack,
+            "xml_path": f"FCCee/{detector}/compact/{detector}.xml",
+            "github_run_url": f"https://github.test/actions/runs/{run_id}",
+            "commit_sha": "c" * 40,
+            "n_events": 1000,
+            "ddsim_args": args,
+            "random_seed": 42,
+            "input_files": [],
+            "steering_file": "",
+        }
+
+    return fetch, calls
 
 
 # ── The policy ────────────────────────────────────────────────────────────────
@@ -648,10 +702,13 @@ def test_the_visible_table_shows_its_top_rows_and_links_the_rest():
     body = _comments(_report(*verdicts), _blame(verdicts, [_candidate()]))[0].body
     # Five rows, and one line pointing at the complete set.
     assert len(_table_rows(body)) == 5
-    assert f"View all 8 regressions in the [dashboard ↗]({_DASH}" in body
+    assert (
+        f"View all 8 regressions from the 2026-07-05 report in the "
+        f"[dashboard ↗]({_DASH}"
+    ) in body
 
 
-def test_a_containing_window_shows_every_onset_in_summary_and_table():
+def test_a_containing_window_represents_each_onset_in_the_table():
     older = [
         _verdict(
             metric=f"old_{index}", label=f"old_{index}",
@@ -675,10 +732,7 @@ def test_a_containing_window_shows_every_onset_in_summary_and_table():
     comment = _comments(report, blame, policy=_policy(min_score=70))[0]
     body = comment.body
 
-    assert "**Current steps represented inside this window**" in body
-    assert "| `2026-07-03` | 6 | 1 | 6 UP · 0 DOWN |" in body
-    assert "| `2026-07-04` | 1 | 1 | 0 UP · 1 DOWN |" in body
-    assert "| Onset |" in body
+    assert "| Change window |" in body
     visible = [
         row for row in _table_rows(body)
         if "old_" in row or "new_step" in row
@@ -688,15 +742,89 @@ def test_a_containing_window_shows_every_onset_in_summary_and_table():
     assert sum("old_" in row for row in visible) == 4
 
 
-def test_a_single_onset_needs_no_redundant_breakdown_or_onset_column():
+def test_a_single_window_needs_no_redundant_change_window_column():
+    # Every row measured exactly the window the header states, so a per-row
+    # column would repeat it once a line.
     verdict = _verdict()
     comment = _comments(_report(verdict), _blame([verdict], [_candidate()]))[0]
 
-    assert "steps represented inside this window" not in comment.body.lower()
-    assert "| Onset |" not in comment.body
+    assert "| Change window |" not in comment.body
 
 
-def test_an_open_window_bounds_onset_summary_and_representative_rows():
+def test_each_row_carries_its_own_tightest_change_window():
+    # A metric that settled later entered this comment's window on a narrower
+    # range of its own. The header names the containing window; each row names
+    # the pair that metric actually measured, which is what makes it checkable.
+    early = _verdict(metric="mean_time_s", base="2026-07-01", onset="2026-07-03")
+    outer = _verdict(metric="wall_time_s", base="2026-07-01", onset="2026-07-04")
+    # Settled two releases later, so it entered the window on its own base.
+    late = _verdict(metric="max_rss_kb", base="2026-07-03", onset="2026-07-04")
+    body = _comments(
+        _report(early, outer, late), _blame_of(
+            (early, [_candidate(score=95.0)]),
+            (outer, [_candidate(score=90.0)]),
+            (late, [_candidate(score=10.0)]),
+        ),
+        policy=_policy(min_score=70),
+    )[0].body
+    rows = _table_rows(body)
+
+    assert "**Change window** (Key4hep releases): `2026-07-01` → `2026-07-04`" in body
+    assert "| Change window |" in body
+    assert "`2026-07-01` → `2026-07-03`" in _row_of(rows, "mean_time_s")
+    assert "`2026-07-01` → `2026-07-04`" in _row_of(rows, "wall_time_s")
+    assert "`2026-07-03` → `2026-07-04`" in _row_of(rows, "max_rss_kb")
+
+
+def test_a_window_column_is_decided_by_the_rows_that_actually_render():
+    # A narrower window carried only by a row the cap cut is not on the page,
+    # so it cannot justify a column that then repeats the header's window on
+    # every line that *is* on the page.
+    wide = [
+        _verdict(
+            metric=f"m{index}", label=f"wide_{index}",
+            base="2026-07-01", onset="2026-07-04",
+        )
+        for index in range(6)
+    ]
+    narrow = _verdict(
+        metric="max_rss_kb", label="narrow",
+        base="2026-07-03", onset="2026-07-04",
+    )
+    body = _comments(
+        _report(*wide, narrow), _blame_of(
+            *((row, [_candidate(score=95.0)]) for row in wide),
+            (narrow, [_candidate(score=10.0)]),
+        ),
+        policy=_policy(min_score=70),
+    )[0].body
+
+    assert "**Change window** (Key4hep releases): `2026-07-01` → `2026-07-04`" in body
+    assert len(_table_rows(body)) == 5
+    assert "narrow" not in body
+    assert "| Change window |" not in body
+
+
+def test_a_rows_own_base_moving_can_edit_a_standing_comment():
+    # The plan's window marker is unchanged, so only the digest can force the
+    # edit — and the row's base is now a visible cell.
+    early = _verdict(metric="mean_time_s", base="2026-07-01", onset="2026-07-04")
+    late = replace(
+        early, last_accepted_run_id="2026-07-03", last_accepted_run_date="2026-07-03",
+    )
+    outer = _verdict(metric="wall_time_s", base="2026-07-01", onset="2026-07-04")
+
+    def _digest(row):
+        return _comments(
+            _report(row, outer), _blame_of(
+                (row, [_candidate(score=95.0)]), (outer, [_candidate(score=90.0)]),
+            ),
+        )[0].facts_digest
+
+    assert _digest(early) != _digest(late)
+
+
+def test_an_open_window_bounds_representative_rows():
     verdicts = [
         _verdict(
             metric=f"m{day}", label=f"onset_{day}",
@@ -715,20 +843,14 @@ def test_an_open_window_bounds_onset_summary_and_representative_rows():
         policy=_policy(min_score=70),
     )[0].body
 
-    breakdown = body.split("**Current steps represented inside this window**", 1)[1]
-    breakdown = breakdown.split("> 🤖", 1)[0]
-    assert "3 additional onsets also included in the total" in breakdown
-    assert "`2026-07-01`" not in breakdown
-    assert "`2026-07-03`" not in breakdown
-    assert "`2026-07-04`" in breakdown
     visible = [line for line in body.splitlines() if line.startswith("| [")]
     assert len(visible) == 5
-    assert {
-        row.split(" | ")[4].strip("`") for row in visible
-    } == {f"2026-07-{day:02d}" for day in range(4, 9)}
+    assert _onsets_of(visible) == {f"2026-07-{day:02d}" for day in range(4, 9)}
+    # The row with no settled base is the only one shown as an upper bound.
+    assert "≤ `2026-07-08`" in _window_cells(visible)
 
 
-def test_undated_onset_is_consistent_between_summary_and_detail_table():
+def test_undated_onset_is_represented_in_the_detail_table():
     dated = [
         _verdict(
             metric=f"m{day}", label=f"onset_{day}",
@@ -753,8 +875,6 @@ def test_undated_onset_is_consistent_between_summary_and_detail_table():
         policy=_policy(min_score=70),
     )[0].body
 
-    breakdown = body.split("**Current steps represented inside this window**", 1)[1]
-    breakdown = breakdown.split("> 🤖", 1)[0]
     detail = body.split("📊 **Regressions in this window", 1)[1]
     detail = detail.split("<details>", 1)[0]
     visible = [
@@ -762,10 +882,8 @@ def test_undated_onset_is_consistent_between_summary_and_detail_table():
         if line.startswith("| [") or line.startswith("| `")
     ]
     expected = {"2026-07-03", "2026-07-04", "2026-07-05", "2026-07-06", "unknown"}
-    assert "2 additional onsets also included in the total" in breakdown
-    assert all(f"`{onset}`" in breakdown for onset in expected)
     assert len(visible) == 5
-    assert {row.split(" | ")[4].strip("`") for row in visible} == expected
+    assert _onsets_of(visible) == expected
 
 
 def test_a_comment_carries_the_current_observation_outside_its_stable_body():
@@ -797,7 +915,10 @@ def test_a_row_below_the_cut_is_reachable_even_when_it_moved_furthest():
     body = _comments(_report(*small, big), _blame([*small, big], [_candidate()]),
                      attributor=_FakeAttributor(scores))[0].body
     assert "huge_but_unlikely" not in body        # not in the visible five
-    assert "View all 7 regressions in the [dashboard ↗](" in body
+    assert (
+        "View all 7 regressions from the 2026-07-05 report in the "
+        "[dashboard ↗]("
+    ) in body
 
 
 def test_no_overflow_line_when_every_regression_is_already_shown():
@@ -821,7 +942,10 @@ def test_a_detector_sweeps_worth_of_rows_still_fits_in_a_github_comment():
     assert len(comment.body) < 65_536
     # Five rows in the table, and all 318 one click away.
     assert len(_table_rows(comment.body)) == 5
-    assert f"View all 318 regressions in the [dashboard ↗]({_DASH}" in comment.body
+    assert (
+        f"View all 318 regressions from the 2026-07-05 report in the "
+        f"[dashboard ↗]({_DASH}"
+    ) in comment.body
 
 
 def test_the_urls_live_in_reference_definitions_not_in_the_rows():
@@ -1345,6 +1469,21 @@ def test_the_ranker_clause_counts_against_every_row_the_review_skipped():
            "ranker score of 91%." in alert
 
 
+def test_ranker_reach_uses_the_full_regression_population():
+    scored = _verdict(metric="scored")
+    unscored = _verdict(metric="unscored")
+    rival = _candidate(number=77, repo="key4hep/DD4hep", title="Field map")
+    blame = BlameReport("x", "2026-07-05", entries=(
+        _blame([scored], [_candidate()]).entries[0],
+        _entry_without(unscored, [rival]),
+    ))
+    body = _comments(_report(scored, unscored), blame)[0].body
+
+    assert "1 of 2 regressions is attributed to it at 80% or above" in _row(
+        body, "nightly benchmarks confirmed"
+    )
+
+
 def test_a_review_that_clears_a_row_does_not_claim_a_likely_contributor():
     # The partial-disagreement case: the review answered one row and put it at
     # 20%, and the comment survives only because another row still carries the
@@ -1538,10 +1677,249 @@ def test_external_prose_cannot_carry_an_active_link():
     # The bot's *own* links — the dashboard views it renders itself — are
     # untouched: only quoted, externally-authored prose is defanged.
     assert f"]: {_DASH}" in body
-    # The only live HTML comments are the bot's own marker, digest, the two
-    # details sentinels and the history slot; the one smuggled into the reason
-    # is broken by the same zero-width space.
-    assert body.count("<!--") == 5 and body.startswith("<!--")
+    # The only live HTML comments are the bot's own marker, digest, cumulative
+    # slot, alert/details sentinels and history slot; the one smuggled into the
+    # reason is broken by the same zero-width space.
+    assert body.count("<!--") == 8 and body.startswith("<!--")
+
+
+# ── Runnable reproducer ───────────────────────────────────────────────────────
+
+def test_every_shown_row_links_its_own_recipe():
+    weak = _verdict(label="without_ECal", metric="wall_time_s", pct=0.4)
+    strong = _verdict(label="without_TPC", metric="mean_time_s", pct=0.2)
+    report = _report(weak, strong)
+    blame = _blame_of(
+        (weak, [_candidate(score=82)]),
+        (strong, [_candidate(score=96)]),
+    )
+    fetch, calls = _run_info_for()
+    publish, published = _publish_reproducer()
+    body = _comments(
+        report, blame, run_info_for=fetch, reproducer_url_for=publish,
+    )[0].body
+
+    # A recipe per shown row, each linked on its own line — the commands
+    # themselves live in the artifacts, not in the comment.
+    assert {facts.label for facts in published} == {"without_TPC", "without_ECal"}
+    assert len(calls) == 4
+    assert "--sweep-detectors TPC" not in body
+    assert "| Reproduce |" in body
+    for facts in published:
+        url = f"https://data.test/_reproducers/{artifact_name(facts)}"
+        assert body.count(url) == 1
+        assert f"[🔁 recipe ↗]({url})" in _row(body, facts.label)
+
+
+def test_a_row_whose_recipe_could_not_be_built_keeps_an_empty_cell():
+    # One row's run records are unreadable; it must not borrow another row's
+    # commands, and the rows that do have one keep their links.
+    weak = _verdict(label="without_ECal", metric="wall_time_s", pct=0.4)
+    strong = _verdict(label="without_TPC", metric="mean_time_s", pct=0.2)
+    fetch, _ = _run_info_for()
+    publish, published = _publish_reproducer(
+        url=lambda f: "" if f.label == "without_ECal" else
+        f"https://data.test/_reproducers/{artifact_name(f)}"
+    )
+    body = _comments(
+        _report(weak, strong),
+        _blame_of((weak, [_candidate(score=82)]), (strong, [_candidate(score=96)])),
+        run_info_for=fetch, reproducer_url_for=publish,
+    )[0].body
+
+    assert "| Reproduce |" in body
+    assert "recipe ↗" in _row(body, "without_TPC")
+    assert "recipe ↗" not in _row(body, "without_ECal")
+
+
+def test_no_reproducer_column_without_a_published_recipe():
+    # Nothing was published, so there is no link to give and no column to hold
+    # one — never a link to an artifact that does not exist.
+    weak = _verdict(label="without_ECal", metric="wall_time_s", pct=0.4)
+    fetch, _calls = _run_info_for()
+    body = _comments(
+        _report(weak), _blame([weak], [_candidate()]), run_info_for=fetch,
+    )[0].body
+
+    assert "| Reproduce |" not in body and "recipe" not in body
+
+
+def test_a_publisher_that_fails_costs_the_link_and_nothing_else():
+    verdict = _verdict(label="without_TPC")
+
+    def refuse(_facts):
+        raise OSError("upload failed")
+
+    body = _comments(
+        _report(verdict), _blame([verdict], [_candidate()]),
+        run_info_for=_run_info_for()[0], reproducer_url_for=refuse,
+    )[0].body
+
+    assert "| Reproduce |" not in body
+    assert "📊 **Regressions in this window" in body
+
+
+def test_the_recipe_link_survives_the_write_boundary():
+    # materialize() re-renders the table from structured state, so the link has
+    # to travel with the comment — otherwise every *published* comment would
+    # lose the column that render time gave it.
+    verdict = _verdict(label="without_TPC")
+    publish, published = _publish_reproducer()
+    comment = _comments(
+        _report(verdict), _blame([verdict], [_candidate()]),
+        run_info_for=_run_info_for()[0], reproducer_url_for=publish,
+    )[0]
+
+    body = materialize(comment, []).body
+
+    assert "| Reproduce |" in body
+    assert f"https://data.test/_reproducers/{artifact_name(published[0])}" in body
+
+
+def test_model_score_drift_does_not_change_the_published_recipes():
+    # The recipe set and its URLs are hashed into the digest, so if publishing
+    # followed the likelihood ranking, two scores swapping places would edit a
+    # standing comment and re-notify the pull request on model drift alone.
+    rows = [
+        _verdict(metric=f"m{n}", label=f"without_cfg{n}", pct=0.5 - n / 100)
+        for n in range(12)
+    ]
+    report = _report(*rows)
+
+    def built(scores):
+        publish, published = _publish_reproducer()
+        comment = _comments(
+            report,
+            _blame_of(*(
+                (row, [_candidate(score=score)])
+                for row, score in zip(rows, scores, strict=True)
+            )),
+            run_info_for=_run_info_for()[0], reproducer_url_for=publish,
+        )[0]
+        return comment, {facts.label for facts in published}
+
+    ranked = [95.0 - n for n in range(12)]
+    first, first_published = built(ranked)
+    # Same benchmark facts, the model's ordering turned upside down.
+    second, second_published = built(list(reversed(ranked)))
+
+    # The rendered table follows the ranking, so which rows got a recipe moves…
+    assert first_published != second_published
+    # …but the hashed subset, and therefore the digest, does not.
+    assert first.reproduce.hashed == second.reproduce.hashed
+    assert len(first.reproduce.hashed) == comment_mod._MAX_RECIPES
+    assert first.facts_digest == second.facts_digest
+
+
+def test_every_shown_row_has_a_recipe_even_outside_the_hashed_set():
+    # The hashed set ranks on movement and the table ranks on likelihood, so
+    # the two diverge. The union is published, so no shown row is left without
+    # its commands just because the models liked a small mover.
+    rows = [
+        _verdict(metric=f"m{n}", label=f"without_cfg{n}", pct=0.5 - n / 100)
+        for n in range(12)
+    ]
+    # The models rank the *smallest* movers highest — the worst case for
+    # overlap with a movement-ranked hashed set.
+    publish, _ = _publish_reproducer()
+    body = _comments(
+        _report(*rows),
+        _blame_of(*(
+            (row, [_candidate(score=70.0 + n)])
+            for n, row in enumerate(rows)
+        )),
+        run_info_for=_run_info_for()[0], reproducer_url_for=publish,
+    )[0].body
+
+    shown = _detail_rows(body)
+    assert len(shown) == 5
+    assert all("recipe ↗" in row for row in shown)
+
+
+def test_a_retained_row_keeps_the_recipe_published_when_it_was_confirmed():
+    # A row that stops being confirmed keeps the link a reader was already
+    # given: the artifact is still on EOS, and rebuilding the name here would
+    # claim a file this night never published.
+    row_a, _ = _dd4hep_night_one()
+    publish, published = _publish_reproducer()
+    night_one = materialize(
+        _comments(
+            _report(row_a, night="2026-08-28"),
+            _blame([row_a], [_candidate(score=88.0)]),
+            run_info_for=_run_info_for()[0], reproducer_url_for=publish,
+        )[0],
+        [],
+    ).body
+    url = f"https://data.test/_reproducers/{artifact_name(published[0])}"
+    assert url in night_one
+
+    # Two nights on it is only WATCH, and a weaker row is confirmed instead.
+    watching = replace(row_a, severity=Severity.WATCH)
+    newer = _verdict(metric="wall_time_s", base="2026-08-27", onset="2026-08-29")
+    body = materialize(
+        _comments(
+            _report(watching, newer, night="2026-08-30"),
+            _blame([newer], [_candidate(score=82.0)]),
+        )[0],
+        [night_one],
+    ).body
+
+    assert url in _row(body, "mean_time_s")
+
+
+def test_reproducer_is_absent_when_either_run_record_is_missing():
+    verdict = _verdict(label="baseline_all")
+    fetch, calls = _run_info_for(missing=True)
+    publish, published = _publish_reproducer()
+    body = _comments(_report(verdict), _blame([verdict], [_candidate()]),
+                     run_info_for=fetch, reproducer_url_for=publish)[0].body
+    assert "| Reproduce |" not in body
+    assert published == []
+    assert len(calls) == 2
+
+
+def test_reproducer_command_changes_digest_but_tonights_value_does_not():
+    verdict = _verdict(label="baseline_all", pct=0.204)
+    report = _report(verdict)
+    blame = _blame([verdict], [_candidate()])
+    publish, _ = _publish_reproducer()
+    fetch_a, _ = _run_info_for(args="--random.seed 42 --enableGun")
+    original = _comments(
+        report, blame, run_info_for=fetch_a, reproducer_url_for=publish,
+    )[0]
+
+    # Values excluded by the digest can move without changing the command or
+    # the visible one-decimal percentage.
+    moved = replace(verdict, value=999.0, baseline_median=888.0, z_score=22.0)
+    fetch_b, _ = _run_info_for(args="--random.seed 42 --enableGun")
+    same = _comments(_report(moved), _blame([moved], [_candidate()]),
+                     run_info_for=fetch_b, reproducer_url_for=publish)[0]
+    assert same.facts_digest == original.facts_digest
+
+    fetch_c, _ = _run_info_for(args="--random.seed 42 --enableGun --foo changed")
+    changed = _comments(
+        report, blame, run_info_for=fetch_c, reproducer_url_for=publish,
+    )[0]
+    assert changed.facts_digest != original.facts_digest
+
+
+def test_a_recipe_that_appears_or_moves_edits_a_standing_comment():
+    # The link is part of what the comment claims, so publishing one where
+    # there was none — or publishing it somewhere else — must be able to
+    # replace a standing body.
+    verdict = _verdict(label="baseline_all")
+    report, blame = _report(verdict), _blame([verdict], [_candidate()])
+    fetch, _ = _run_info_for()
+
+    without = _comments(report, blame, run_info_for=fetch)[0]
+    here, _ = _publish_reproducer(url="https://data.test/_reproducers/a.txt")
+    there, _ = _publish_reproducer(url="https://elsewhere.test/a.txt")
+    first = _comments(report, blame, run_info_for=fetch,
+                      reproducer_url_for=here)[0]
+    moved = _comments(report, blame, run_info_for=fetch,
+                      reproducer_url_for=there)[0]
+
+    assert len({without.facts_digest, first.facts_digest, moved.facts_digest}) == 3
 
 
 # ── Stability, and the facts digest ───────────────────────────────────────────
@@ -2879,8 +3257,7 @@ def _retained_rows_of(body: str) -> list[dict]:
 
 
 def _detail_rows(body: str) -> list[str]:
-    """Only the regression table's rows — the onset summary above it draws its
-    own ``| `date` |`` lines, which :func:`_table_rows` cannot tell apart."""
+    """Only the regression table's rows, excluding later history tables."""
     detail = body.split("📊 **Regressions in this window", 1)[1]
     return [
         line for line in detail.splitlines()
@@ -2936,7 +3313,7 @@ def _dd4hep_night_one():
 def test_a_row_confirmed_in_an_earlier_version_survives_losing_confirmation():
     # AIDASoft/DD4hep#1617: a +36.7% step attributed at 88% on 2026-08-28, back
     # to WATCH two nights later. It outranks every row confirmed tonight, so it
-    # stays in the table — dated, with its current standing beside it.
+    # stays in the table at the evidence previously published for it.
     row_a, night_one = _dd4hep_night_one()
     watching = replace(row_a, severity=Severity.WATCH)
     newer = _verdict(
@@ -2952,11 +3329,9 @@ def test_a_row_confirmed_in_an_earlier_version_survives_losing_confirmation():
 
     assert "mean_time_s" in rows[0] and "wall_time_s" in rows[1]
     assert "+36.7%" in rows[0] and "88%" in rows[0]
-    assert "`2026-08-28`" in rows[0] and "`WATCH`" in rows[0]
-    # A current row is labelled as current in the same two columns, so the two
-    # kinds are tellable apart without reading a footnote.
-    assert "**current**" in rows[1] and "`CONFIRMED`" in rows[1]
-    assert "were not rescored after the row stopped being confirmed" in body
+    assert "`2026-08-28`" in rows[0]
+    assert "Last reported" not in body and "Current state" not in body
+    assert "were not rescored after the row stopped being confirmed" not in body
 
 
 def test_a_retained_rows_link_is_rebuilt_from_its_structured_fields():
@@ -3008,7 +3383,7 @@ def test_a_same_release_retained_link_is_qualified_by_its_run_ids():
 
 def test_a_retained_row_confirmed_again_tonight_uses_tonights_evidence():
     # Current evidence supersedes the snapshot: same identity, new movement and
-    # new likelihood, and none of the historical columns.
+    # new likelihood.
     row_a, night_one = _dd4hep_night_one()
     again = replace(row_a, pct_change=0.10)
     tonight = _comments(
@@ -3047,25 +3422,6 @@ def test_a_retained_row_the_pr_is_no_longer_a_candidate_for_loses_its_score():
     assert "_not a candidate_" in _row(body, "mean_time_s")
 
 
-def test_a_retained_row_absent_from_the_report_is_not_read_as_recovered():
-    # "Not reported" and "OK" are opposite claims, and only one of them was
-    # measured. A metric the report no longer carries at all says so.
-    row_a, night_one = _dd4hep_night_one()
-    elsewhere = _verdict(
-        detector="IDEA_o1_v03", metric="wall_time_s",
-        base="2026-08-27", onset="2026-08-29",
-    )
-    tonight = _comments(
-        _report(elsewhere, night="2026-08-30"),
-        _blame([elsewhere], [_candidate(score=82.0)]),
-    )[0]
-
-    body = materialize(tonight, [night_one]).body
-
-    assert "_not reported_" in _row(body, "mean_time_s")
-    assert "`OK`" not in body
-
-
 def test_an_unconfirmed_retained_row_keeps_ranking_below_a_stronger_current_row():
     # Retention is not promotion: the snapshot joins one ranked pool on the same
     # key every current row uses, so a stronger current row still leads.
@@ -3097,6 +3453,42 @@ def test_retained_state_is_one_marker_bounded_well_under_githubs_limit():
     assert len(comment_mod._decoded_retained(body)) == 20
     assert len(_table_rows(body)) == 5
     assert len(body.encode()) < 65_536
+
+
+def test_a_first_comment_records_its_observation_without_a_history_section():
+    # One entry has nothing to compare against: the row would repeat the window
+    # and the counts the comment already states above it. The hidden marker is
+    # still written, because it is the lineage's observation state.
+    verdict = _verdict()
+    body = materialize(
+        _comments(_report(verdict), _blame([verdict], [_candidate()]))[0], []
+    ).body
+
+    assert body.count(comment_mod._OBSERVATION_PREFIX) == 1
+    assert "🕘 Observation history" not in body
+    assert "material update" not in body
+
+
+def test_the_second_night_rebuilds_the_history_from_the_first_bodys_marker():
+    # The guard above must suppress only the visible table. Dropping the marker
+    # with it would restart the history at one entry every night, permanently.
+    verdict = _verdict()
+    first = materialize(
+        _comments(_report(verdict), _blame([verdict], [_candidate()]))[0], []
+    ).body
+    later = _verdict(metric="max_rss_kb", onset="2026-07-06", base="2026-07-04")
+    body = materialize(
+        _comments(
+            _report(verdict, later, night="2026-07-06"),
+            _blame([verdict, later], [_candidate()]),
+        )[0],
+        [first],
+    ).body
+
+    assert "Observation history</b> — 2 material updates" in body
+    assert body.count(comment_mod._OBSERVATION_PREFIX) == 2
+    for night in ("2026-07-05", "2026-07-06"):
+        assert f"| {night}" in body or f"[{night}](" in body
 
 
 def test_retained_state_survives_a_run_of_material_versions_within_the_limit():
@@ -3263,8 +3655,8 @@ def test_the_retained_table_stays_inside_the_five_row_cap():
 
 def test_the_digest_tracks_a_rows_own_onset_under_an_unchanged_window():
     # The plan's window marker is unchanged, so publisher migration cannot force
-    # the edit; only the digest can. The Onset cell, the onset summary and the
-    # row's `reg_onset=` deep link all move with this.
+    # the edit; only the digest can. The Onset cell and the row's `reg_onset=`
+    # deep link both move with this.
     early = _verdict(base="2026-07-01", onset="2026-07-03")
     late = replace(early, onset_run_id="2026-07-04", onset_run_date="2026-07-04")
     other = _verdict(metric="wall_time_s", base="2026-07-01", onset="2026-07-05")
@@ -3312,28 +3704,6 @@ def test_the_digest_covers_a_retained_rows_frozen_facts():
     }) == 4
 
 
-def test_the_digest_covers_a_retained_rows_current_state():
-    # The one cell of a historical row tonight's data still moves. A row that
-    # goes from WATCH to no longer reported is a changed comment.
-    row_a, night_one = _dd4hep_night_one()
-    newer = _verdict(metric="wall_time_s", base="2026-08-27", onset="2026-08-29")
-
-    def _comment(*extra):
-        return materialize(
-            _comments(
-                _report(newer, *extra, night="2026-08-30"),
-                _blame([newer], [_candidate(score=82.0)]),
-            )[0],
-            [night_one],
-        )
-
-    watching = _comment(replace(row_a, severity=Severity.WATCH))
-    dropped = _comment()
-
-    assert "`WATCH`" in watching.body and "_not reported_" in dropped.body
-    assert watching.facts_digest != dropped.facts_digest
-
-
 def test_a_retained_row_alone_does_not_re_notify_a_standing_comment():
     # Materializing the same night against the same prior body twice is the
     # steady state of a standing comment, and must produce one digest.
@@ -3348,6 +3718,173 @@ def test_a_retained_row_alone_does_not_re_notify_a_standing_comment():
 
     assert first.facts_digest == second.facts_digest
     assert first.body == second.body
+
+
+def test_headline_counts_the_unique_cumulative_union_not_snapshot_sums():
+    a = _verdict(metric="a", detector="A", base="2026-08-27", onset="2026-08-28")
+    b = _verdict(metric="b", detector="B", base="2026-08-27", onset="2026-08-28")
+    c = _verdict(metric="c", detector="C", base="2026-08-27", onset="2026-08-29")
+    first = materialize(
+        _comments(_report(a, b), _blame([a, b], [_candidate()]))[0], []
+    )
+    second = materialize(
+        _comments(_report(b, c), _blame([b, c], [_candidate()]))[0],
+        [first.body],
+    )
+
+    alert = _row(second.body, "nightly benchmarks confirmed")
+    assert "confirmed 3 regressions across 3 detector/platform/sample scopes" in alert
+    assert "3 of 3 regressions are attributed to it at 80% or above" in alert
+    assert len(comment_mod._cumulative_identities(second.body)) == 3
+
+
+def test_the_alert_and_the_overflow_line_each_name_the_population_they_count():
+    # Two counts in one comment: the alert's union over the lineage's reports,
+    # and the overflow line's single report. Neither is wrong, and neither may
+    # read as the other's number restated.
+    first = [_verdict(metric=f"a{i}", pct=(20 - i) / 100) for i in range(6)]
+    second = [_verdict(metric=f"b{i}", pct=(20 - i) / 100) for i in range(6)]
+    previous = materialize(
+        _comments(_report(*first), _blame(first, [_candidate()]))[0], []
+    ).body
+    body = materialize(
+        _comments(
+            _report(*second, night="2026-07-06"),
+            _blame(second, [_candidate()]),
+        )[0],
+        [previous],
+    ).body
+
+    alert = _row(body, "nightly benchmarks confirmed")
+    assert (
+        "confirmed 12 regressions within one detector/platform/sample scope "
+        "in the reports covering this PR's change window."
+    ) in alert
+    assert (
+        "View all 6 regressions from the 2026-07-06 report in the "
+        "[dashboard ↗]("
+    ) in body
+
+
+def test_converging_comments_union_every_parent_identity_once():
+    rows = [
+        _verdict(metric=name, detector=name.upper(), base="2026-08-27", onset=onset)
+        for name, onset in (("a", "2026-08-28"), ("b", "2026-08-28"),
+                            ("c", "2026-08-29"), ("d", "2026-08-30"))
+    ]
+    a, b, c, d = rows
+    left = materialize(
+        _comments(_report(a, b), _blame([a, b], [_candidate()]))[0], []
+    )
+    right = materialize(
+        _comments(_report(b, c), _blame([b, c], [_candidate()]))[0], []
+    )
+    merged = materialize(
+        _comments(_report(c, d), _blame([c, d], [_candidate()]))[0],
+        [left.body, right.body],
+    )
+
+    assert len(comment_mod._cumulative_identities(merged.body)) == 4
+    assert "confirmed 4 regressions across 4 detector/platform/sample scopes" in _row(
+        merged.body, "nightly benchmarks confirmed"
+    )
+
+
+def test_reconfirmed_identity_uses_its_newest_cumulative_attribution():
+    a = _verdict(metric="a")
+    first = materialize(
+        _comments(_report(a), _blame([a], [_candidate(score=95.0)]))[0], []
+    )
+    b = _verdict(metric="b")
+    latest = materialize(
+        _comments(
+            _report(a, b),
+            _blame_of(
+                (a, [_candidate(score=81.0)]),
+                (b, [_candidate(score=82.0)]),
+            ),
+        )[0],
+        [first.body],
+    )
+
+    alert = _row(latest.body, "nightly benchmarks confirmed")
+    assert "2 of 2 regressions are attributed to it at 80% or above" in alert
+    assert "highest at 82%" in alert
+    assert "95%" not in alert
+
+
+def test_the_unreviewed_count_is_taken_from_the_cumulative_population():
+    # The reviewed scores come from the whole lineage while plan.rows is only
+    # tonight's; differencing those two populations went negative, and a
+    # negative "regressions it did not score" is read as truthy and rendered.
+    # Two reviewer-scored identities are retired, one ranker-only row is
+    # current, so the naive difference would be 1 - 2 = -1.
+    a, b = _verdict(metric="a"), _verdict(metric="b")
+    reviewer = _FakeAttributor(scores={f"r{n}": 95.0 - n for n in range(4)})
+    first = materialize(
+        _comments(
+            _report(a, b),
+            _blame_of((a, [_candidate(score=88.0)]), (b, [_candidate(score=87.0)])),
+            attributor=reviewer,
+        )[0],
+        [],
+    )
+    carried = _decoded_cumulative(first.body)
+    assert [v[1] for v in carried.values()] == ["reviewer", "reviewer"]
+
+    c = _verdict(metric="c")
+    latest = materialize(
+        _comments(_report(c), _blame([c], [_candidate(score=82.0)]))[0],
+        [first.body],
+    )
+
+    alert = _row(latest.body, "nightly benchmarks confirmed")
+    assert "3 regressions" in alert
+    # Three cumulative identities, two of them reviewer-scored, so exactly one
+    # is left for the ranker clause to speak about — never "-1".
+    assert "-1" not in alert
+    assert "The one regression it did not score" in alert
+
+
+def test_malformed_cumulative_state_falls_back_to_current_rows():
+    old = _verdict(metric="old")
+    current = _verdict(metric="current")
+    previous = materialize(
+        _comments(_report(old), _blame([old], [_candidate()]))[0], []
+    ).body
+    previous = next(
+        line for line in previous.splitlines()
+        if line.startswith("<!-- k4bench-blame-cumulative:v1 ")
+    ).join(("prefix\n", "\nsuffix"))
+    previous = previous.replace(
+        next(line for line in previous.splitlines() if "cumulative:v1" in line),
+        "<!-- k4bench-blame-cumulative:v1 not@base64 -->",
+    )
+    result = materialize(
+        _comments(_report(current), _blame([current], [_candidate()]))[0],
+        [previous],
+    )
+
+    assert len(comment_mod._cumulative_identities(result.body)) == 1
+    assert "confirmed a regression" in _row(result.body, "nightly benchmarks confirmed")
+
+
+def test_cumulative_digest_is_stable_for_reconfirmation_and_changes_for_new_identity():
+    a = _verdict(metric="a")
+    first = materialize(
+        _comments(_report(a), _blame([a], [_candidate()]))[0], []
+    )
+    repeated = materialize(
+        _comments(_report(a), _blame([a], [_candidate()]))[0], [first.body]
+    )
+    b = _verdict(metric="b")
+    expanded = materialize(
+        _comments(_report(a, b), _blame([a, b], [_candidate()]))[0],
+        [first.body],
+    )
+
+    assert repeated.facts_digest == first.facts_digest
+    assert expanded.facts_digest != first.facts_digest
 
 
 # ── The strongest row is never selected away ──────────────────────────────────
@@ -3374,21 +3911,10 @@ def test_the_globally_strongest_row_survives_more_onsets_than_the_table_shows():
         _report(*verdicts, night="2026-07-08"), blame, policy=_policy(min_score=70),
     )[0].body
     rows = _detail_rows(body)
-    breakdown = body.split("**Current steps represented inside this window**", 1)[1]
-    breakdown = breakdown.split("📊", 1)[0]
-
     assert len(rows) == 5
     assert "m1" in rows[0] and "95%" in rows[0]
     assert "the highest at 95%" in body or "at 95%" in body
-    assert "`2026-07-01`" in breakdown
-    # Summary and table describe the same onsets, and the omitted ones are no
-    # longer a contiguous older tail.
-    shown_onsets = {row.split(" | ")[4].strip("`") for row in rows}
-    assert {
-        line.split("|")[1].strip().strip("`")
-        for line in breakdown.splitlines() if line.startswith("| `")
-    } == shown_onsets
-    assert "2 additional onsets also included in the total" in breakdown
+    assert "2026-07-01" in _onsets_of(rows)
 
 
 def test_an_undated_onset_never_costs_the_strongest_row_its_place():
@@ -3415,17 +3941,9 @@ def test_an_undated_onset_never_costs_the_strongest_row_its_place():
         policy=_policy(min_score=70),
     )[0].body
     rows = _detail_rows(body)
-    breakdown = body.split("**Current steps represented inside this window**", 1)[1]
-    breakdown = breakdown.split("📊", 1)[0]
-
     assert len(rows) == 5
     assert "m1" in rows[0] and "95%" in rows[0]
-    shown_onsets = {row.split(" | ")[4].strip("`") for row in rows}
-    assert "unknown" in shown_onsets
-    assert {
-        line.split("|")[1].strip().strip("`")
-        for line in breakdown.splitlines() if line.startswith("| `")
-    } == shown_onsets
+    assert "unknown" in _onsets_of(rows)
 
 
 def test_equal_likelihood_rows_are_ordered_by_the_larger_movement():
@@ -3447,9 +3965,9 @@ def test_the_dd4hep_lifecycle_keeps_its_leading_finding_across_three_nights():
     A ``mean_time_s`` step on ``without_InnerTrackers`` is confirmed at +36.7%
     and attributed at 88% on 2026-08-28, then drops back to ``WATCH`` for two
     nights while weaker rows are confirmed around it. The reader who was shown
-    the 88% row must still see it — dated, with its current standing beside it —
-    rather than watch the strongest finding in the comment silently vanish under
-    a table of 82% rows.
+    the 88% row must still see it, at the evidence it was published with,
+    rather than watch the strongest finding in the comment silently vanish
+    under a table of 82% rows.
     """
     row_a = _verdict(
         metric="mean_time_s", label="without_InnerTrackers",
@@ -3501,7 +4019,7 @@ def test_the_dd4hep_lifecycle_keeps_its_leading_finding_across_three_nights():
     assert len(rows) <= 5
     assert "mean_time_s" in rows[0]
     assert "+36.7%" in rows[0] and "88%" in rows[0]
-    assert "`2026-08-28`" in rows[0] and "`WATCH`" in rows[0]
+    assert "`2026-08-28`" in rows[0]
     assert all("82%" in row for row in rows[1:])
     # Its deep link is rebuilt from the validated structured fields, never from
     # a stored URL.
@@ -3509,11 +4027,11 @@ def test_the_dd4hep_lifecycle_keeps_its_leading_finding_across_three_nights():
     assert "report=2026-08-28" in _row(body, "[h1]: ")
     assert "https://" not in _retained_marker_of(body)
 
-    # The alert is a summary of tonight's report and tonight's review only: two
-    # confirmed regressions, highest 82%.
+    # Both clauses describe the three-identity cumulative union.
     alert = _row(body, "k4Bench's nightly benchmarks confirmed")
-    assert "2 regressions" in alert and "82%" in alert
-    assert "88%" not in alert
+    assert "confirmed 3 regressions" in alert
+    assert "3 of 3 regressions are attributed to it at 80% or above" in alert
+    assert "highest at 88%" in alert
 
     # All three material versions are in the observation history, and both
     # bounded states stay inside their caps and GitHub's limit.

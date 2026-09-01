@@ -363,6 +363,30 @@ def fetch_stack_packages(
     return None
 
 
+def fetch_run_info(
+    base_url: str, detector: str, platform: str, stack: str, sample: str,
+    run_id: str,
+) -> dict | None:
+    """Return one exact run's parsed ``run_info.json``, or ``None``.
+
+    There is deliberately no directory walk or same-release shortcut: manual
+    dispatches and partial re-runs can leave neighbouring run directories with
+    different workloads and harness commits.
+    """
+    url = (
+        f"{base_url.rstrip('/')}/{detector}/{platform}/{stack}/{sample}/"
+        f"{run_id}/run_info.json"
+    )
+    try:
+        resp = _get_session().get(url, timeout=_TIMEOUT)
+        resp.raise_for_status()
+        info = resp.json()
+    except (requests.RequestException, ValueError) as exc:
+        _log.debug("fetch_run_info: %s — %s", url, exc)
+        return None
+    return info if isinstance(info, dict) else None
+
+
 def fetch_run_commit(
     base_url: str, detector: str, platform: str, stack: str, sample: str,
     run_id: str,
@@ -380,16 +404,8 @@ def fetch_run_commit(
     ``None`` covers "no such run" and "that run predates the field" — the
     harness's position is unknown either way.
     """
-    url = (
-        f"{base_url.rstrip('/')}/{detector}/{platform}/{stack}/{sample}/"
-        f"{run_id}/run_info.json"
-    )
-    try:
-        resp = _get_session().get(url, timeout=_TIMEOUT)
-        resp.raise_for_status()
-        info = resp.json()
-    except (requests.RequestException, ValueError) as exc:
-        _log.debug("fetch_run_commit: %s — %s", url, exc)
+    info = fetch_run_info(base_url, detector, platform, stack, sample, run_id)
+    if info is None:
         return None
     sha = info.get("commit_sha")
     if sha:

@@ -8,7 +8,8 @@
 # (via its missing run) instead of vanishing.
 #
 # Required env vars (set by the workflow):
-#   K4BENCH_DATA_URL              — WebEOS base URL of the benchmark data
+#   K4BENCH_DATA_URL              — WebEOS base URL of the benchmark data (also
+#                                   the read base for the published recipes)
 #   X509_USER_CERT, X509_USER_KEY — EOS service certificate paths
 #   GITHUB_RUN_URL                — link back to this Actions run
 # Optional:
@@ -162,6 +163,12 @@ echo "::endgroup::"
 # pull request is first reviewed once against its whole change window, which is
 # why this step reads K4BENCH_LLM_* and GITHUB_TOKEN as well; with no model
 # configured the comments render from the sidecar's per-configuration scores.
+# It also publishes each comment's runnable recipe as a plain-text file under
+# {EOS_ROOT}/_reproducers/ — named for the measurement and window it
+# reproduces, so a re-run replaces the file a standing comment already links —
+# and it does so *before* posting, so a comment never carries a link that 404s.
+# The proxy from step 5 is still valid here; a failed upload costs the link
+# alone.
 # Gated on
 # .github/blame-comments.yml — an empty allowlist there makes this a no-op —
 # and on a write-scoped K4BENCH_PR_COMMENT_TOKEN; without one the
@@ -182,6 +189,7 @@ if [[ -f report/blame.json ]]; then
               --report report/report.json \
               --blame report/blame.json \
               --config .github/blame-comments.yml \
+              --reproducer-dir "root://${EOS_FQDN}/${EOS_ROOT}/_reproducers" \
               --dashboard-url "${K4BENCH_DASHBOARD_URL:-https://k4bench-dashboard.app.cern.ch}" \
           || echo "No pull-request comments this night (nothing attributed confidently, no enabled repo, missing PyYAML, timeout, or a failed write)." >&2
     } || echo "Pull-request comments step failed (best-effort; the report and email are unaffected)." >&2
