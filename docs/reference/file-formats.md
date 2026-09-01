@@ -141,14 +141,22 @@ every browse dimension in the path so discovery is just directory listing:
 _reports/{YYYY-MM-DD}/
     report.json
     blame.json   (only on nights with an attributable confirmed regression)
+_reproducers/
+    {detector}-{sample}-{config}-{metric}-{base}-{onset}-{digest}.txt
 ```
 
 This is the integration contract between CI and the dashboard
 ([data flow](../architecture/data-flow.md#nightly-eos-dashboard)).
-Underscore-prefixed top-level directories are reserved for non-detector data:
-`_reports/` holds the nightly regression report (written by the
-`regression-report` CI job, rendered by the dashboard's Regressions tab) and is
-skipped by detector discovery.
+Underscore-prefixed top-level directories are reserved for non-detector data
+and are skipped by detector discovery: `_reports/` holds the nightly regression
+report (written by the `regression-report` CI job, rendered by the dashboard's
+Regressions tab), and `_reproducers/` holds the runnable recipes the blame
+pull-request comments link to (written by the same job's comment step, read
+directly by whoever follows the link). A recipe is named for the measurement
+and change window it reproduces rather than for a night, so re-publishing the
+same window replaces the same file and a standing comment's link keeps working
+— see
+[PR comments → Reproducing the measurement](../user-guide/features/pr-comments.md#reproducing-the-measurement).
 
 ### Metric history on confirmed verdicts (`report.json`)
 

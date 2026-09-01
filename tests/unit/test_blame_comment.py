@@ -747,6 +747,50 @@ def test_a_single_window_needs_no_redundant_change_window_column():
     assert "| Change window |" not in comment.body
 
 
+def test_each_row_carries_its_own_tightest_change_window():
+    # A metric that settled later entered this comment's window on a narrower
+    # range of its own. The header names the containing window; each row names
+    # the pair that metric actually measured, which is what makes it checkable.
+    early = _verdict(metric="mean_time_s", base="2026-07-01", onset="2026-07-03")
+    outer = _verdict(metric="wall_time_s", base="2026-07-01", onset="2026-07-04")
+    # Settled two releases later, so it entered the window on its own base.
+    late = _verdict(metric="max_rss_kb", base="2026-07-03", onset="2026-07-04")
+    body = _comments(
+        _report(early, outer, late), _blame_of(
+            (early, [_candidate(score=95.0)]),
+            (outer, [_candidate(score=90.0)]),
+            (late, [_candidate(score=10.0)]),
+        ),
+        policy=_policy(min_score=70),
+    )[0].body
+    rows = _table_rows(body)
+
+    assert "**Change window** (Key4hep releases): `2026-07-01` → `2026-07-04`" in body
+    assert "| Change window |" in body
+    assert "`2026-07-01` → `2026-07-03`" in _row_of(rows, "mean_time_s")
+    assert "`2026-07-01` → `2026-07-04`" in _row_of(rows, "wall_time_s")
+    assert "`2026-07-03` → `2026-07-04`" in _row_of(rows, "max_rss_kb")
+
+
+def test_a_rows_own_base_moving_can_edit_a_standing_comment():
+    # The plan's window marker is unchanged, so only the digest can force the
+    # edit — and the row's base is now a visible cell.
+    early = _verdict(metric="mean_time_s", base="2026-07-01", onset="2026-07-04")
+    late = replace(
+        early, last_accepted_run_id="2026-07-03", last_accepted_run_date="2026-07-03",
+    )
+    outer = _verdict(metric="wall_time_s", base="2026-07-01", onset="2026-07-04")
+
+    def _digest(row):
+        return _comments(
+            _report(row, outer), _blame_of(
+                (row, [_candidate(score=95.0)]), (outer, [_candidate(score=90.0)]),
+            ),
+        )[0].facts_digest
+
+    assert _digest(early) != _digest(late)
+
+
 def test_an_open_window_bounds_representative_rows():
     verdicts = [
         _verdict(
@@ -1602,7 +1646,7 @@ def test_external_prose_cannot_carry_an_active_link():
 
 # ── Runnable reproducer ───────────────────────────────────────────────────────
 
-def test_the_reproducer_link_lands_on_the_row_it_reproduces():
+def test_every_shown_row_links_its_own_recipe():
     weak = _verdict(label="without_ECal", metric="wall_time_s", pct=0.4)
     strong = _verdict(label="without_TPC", metric="mean_time_s", pct=0.2)
     report = _report(weak, strong)
@@ -1616,16 +1660,37 @@ def test_the_reproducer_link_lands_on_the_row_it_reproduces():
         report, blame, run_info_for=fetch, reproducer_url_for=publish,
     )[0].body
 
-    # One recipe, published for the strongest row, linked on that row alone —
-    # and the commands themselves are in the artifact, not the comment.
-    assert len(published) == 1 and published[0].label == "without_TPC"
-    assert len(calls) == 2
+    # A recipe per shown row, each linked on its own line — the commands
+    # themselves live in the artifacts, not in the comment.
+    assert {facts.label for facts in published} == {"without_TPC", "without_ECal"}
+    assert len(calls) == 4
     assert "--sweep-detectors TPC" not in body
     assert "| Reproduce |" in body
-    url = f"https://data.test/_reproducers/{artifact_name(published[0])}"
-    assert body.count(url) == 1
-    assert f"[🔁 recipe ↗]({url})" in _row(body, "without_TPC")
-    assert "recipe" not in _row(body, "without_ECal")
+    for facts in published:
+        url = f"https://data.test/_reproducers/{artifact_name(facts)}"
+        assert body.count(url) == 1
+        assert f"[🔁 recipe ↗]({url})" in _row(body, facts.label)
+
+
+def test_a_row_whose_recipe_could_not_be_built_keeps_an_empty_cell():
+    # One row's run records are unreadable; it must not borrow another row's
+    # commands, and the rows that do have one keep their links.
+    weak = _verdict(label="without_ECal", metric="wall_time_s", pct=0.4)
+    strong = _verdict(label="without_TPC", metric="mean_time_s", pct=0.2)
+    fetch, _ = _run_info_for()
+    publish, published = _publish_reproducer(
+        url=lambda f: "" if f.label == "without_ECal" else
+        f"https://data.test/_reproducers/{artifact_name(f)}"
+    )
+    body = _comments(
+        _report(weak, strong),
+        _blame_of((weak, [_candidate(score=82)]), (strong, [_candidate(score=96)])),
+        run_info_for=fetch, reproducer_url_for=publish,
+    )[0].body
+
+    assert "| Reproduce |" in body
+    assert "recipe ↗" in _row(body, "without_TPC")
+    assert "recipe ↗" not in _row(body, "without_ECal")
 
 
 def test_no_reproducer_column_without_a_published_recipe():
@@ -1653,6 +1718,54 @@ def test_a_publisher_that_fails_costs_the_link_and_nothing_else():
 
     assert "| Reproduce |" not in body
     assert "📊 **Regressions in this window" in body
+
+
+def test_the_recipe_link_survives_the_write_boundary():
+    # materialize() re-renders the table from structured state, so the link has
+    # to travel with the comment — otherwise every *published* comment would
+    # lose the column that render time gave it.
+    verdict = _verdict(label="without_TPC")
+    publish, published = _publish_reproducer()
+    comment = _comments(
+        _report(verdict), _blame([verdict], [_candidate()]),
+        run_info_for=_run_info_for()[0], reproducer_url_for=publish,
+    )[0]
+
+    body = materialize(comment, []).body
+
+    assert "| Reproduce |" in body
+    assert f"https://data.test/_reproducers/{artifact_name(published[0])}" in body
+
+
+def test_a_retained_row_keeps_the_recipe_published_when_it_was_confirmed():
+    # A row that stops being confirmed keeps the link a reader was already
+    # given: the artifact is still on EOS, and rebuilding the name here would
+    # claim a file this night never published.
+    row_a, _ = _dd4hep_night_one()
+    publish, published = _publish_reproducer()
+    night_one = materialize(
+        _comments(
+            _report(row_a, night="2026-08-28"),
+            _blame([row_a], [_candidate(score=88.0)]),
+            run_info_for=_run_info_for()[0], reproducer_url_for=publish,
+        )[0],
+        [],
+    ).body
+    url = f"https://data.test/_reproducers/{artifact_name(published[0])}"
+    assert url in night_one
+
+    # Two nights on it is only WATCH, and a weaker row is confirmed instead.
+    watching = replace(row_a, severity=Severity.WATCH)
+    newer = _verdict(metric="wall_time_s", base="2026-08-27", onset="2026-08-29")
+    body = materialize(
+        _comments(
+            _report(watching, newer, night="2026-08-30"),
+            _blame([newer], [_candidate(score=82.0)]),
+        )[0],
+        [night_one],
+    ).body
+
+    assert url in _row(body, "mean_time_s")
 
 
 def test_reproducer_is_absent_when_either_run_record_is_missing():
@@ -3656,9 +3769,9 @@ def test_the_dd4hep_lifecycle_keeps_its_leading_finding_across_three_nights():
     A ``mean_time_s`` step on ``without_InnerTrackers`` is confirmed at +36.7%
     and attributed at 88% on 2026-08-28, then drops back to ``WATCH`` for two
     nights while weaker rows are confirmed around it. The reader who was shown
-    the 88% row must still see it — dated, with its current standing beside it —
-    rather than watch the strongest finding in the comment silently vanish under
-    a table of 82% rows.
+    the 88% row must still see it, at the evidence it was published with,
+    rather than watch the strongest finding in the comment silently vanish
+    under a table of 82% rows.
     """
     row_a = _verdict(
         metric="mean_time_s", label="without_InnerTrackers",

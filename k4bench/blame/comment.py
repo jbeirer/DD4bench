@@ -421,6 +421,11 @@ class RetainedRow:
     #: existed carry no such field; those fall back to ``base_release``, the
     #: window they were rendered under.
     base: str = ""
+    #: The recipe published for this row on the night it was last confirmed.
+    #: Carried rather than rebuilt: the file name is derivable from the fields
+    #: above, but only the night that actually published it can vouch for the
+    #: file being there, and a link that 404s is worse than no link.
+    recipe: str = ""
 
 
 @dataclass(frozen=True)
@@ -452,6 +457,10 @@ class PRComment:
     attribution: Attribution | None = None
     dashboard_url: str | None = None
     facts_payload: dict[str, Any] | None = None
+    #: The recipe published for this comment's strongest row, kept so the write
+    #: boundary re-renders the table with the same **Reproduce** cell the
+    #: render pass produced. Ephemeral like the fields above.
+    reproduce: "Reproducers | None" = None
     min_score: float = _DEFAULT_MIN_SCORE
 
     @property
@@ -912,13 +921,16 @@ def _with_details(
         ),
         key=_retained_sort_key,
     )
-    state = _retained_state(plan, comment.attribution, historical)
+    state = _retained_state(
+        plan, comment.attribution, historical, comment.reproduce,
+    )
     region, shown_past = _details_region(
         plan,
         comment.attribution,
         dashboard_url=comment.dashboard_url,
         historical=historical,
         retained_marker=_retained_marker(state),
+        reproduce=comment.reproduce,
     )
     head, _, rest = comment.body.partition(_DETAILS_START)
     _, _, tail = rest.partition(_DETAILS_END)
@@ -938,6 +950,7 @@ def _retained_state(
     plan: CommentPlan,
     attribution: Attribution | None,
     historical: list[RetainedRow],
+    reproduce: "Reproducers | None" = None,
 ) -> list[RetainedRow]:
     """The bounded snapshot list the next material version starts from: every
     current row at tonight's evidence, then the still-unconfirmed history,
@@ -946,13 +959,20 @@ def _retained_state(
     honestly labelled "last reported"."""
     state = list(historical)
     if plan.report_night:
-        state += [_snapshot(row, attribution, plan) for row in plan.rows]
+        urls = reproduce.urls if reproduce is not None else {}
+        state += [
+            _snapshot(row, attribution, plan, urls.get(_row_identity(row), ""))
+            for row in plan.rows
+        ]
     state.sort(key=_retained_sort_key)
     return state[:_MAX_RETAINED_ROWS]
 
 
 def _snapshot(
-    row: RegressionRow, attribution: Attribution | None, plan: CommentPlan
+    row: RegressionRow,
+    attribution: Attribution | None,
+    plan: CommentPlan,
+    recipe: str = "",
 ) -> RetainedRow:
     """One current row frozen at tonight's evidence — the form it would be
     resurfaced in if it stopped being confirmed tomorrow."""
@@ -971,6 +991,7 @@ def _snapshot(
         onset=v.onset_run_date or "",
         onset_run=v.onset_run_id or "",
         base=v.last_accepted_run_date or "",
+        recipe=recipe,
         base_release=plan.base_release,
         base_run=v.last_accepted_run_id or "",
         onset_release=plan.onset_release,
@@ -1097,6 +1118,12 @@ def _valid_retained(row: RetainedRow) -> bool:
         and (row.base_release is None or _iso_date(row.base_release))
         and (row.onset == "" or _iso_date(row.onset))
         and (row.base == "" or _iso_date(row.base))
+        # A link the table renders, decoded from a comment anyone can edit:
+        # bounded, and https or nothing at all.
+        and isinstance(row.recipe, str)
+        and len(row.recipe) <= 512
+        and (row.recipe == "" or row.recipe.startswith("https://"))
+        and not any(char.isspace() for char in row.recipe)
         and row.direction in _RETAINED_DIRECTIONS
         and row.state in _RETAINED_STATES
         and row.source in _RETAINED_SOURCES
@@ -1166,6 +1193,7 @@ def _retained_fact(row: RetainedRow) -> dict[str, Any]:
         "direction": row.direction,
         "onset": row.onset,
         "shown_window": list(_retained_window(row)),
+        "recipe": row.recipe,
         "window": [row.base_release or "", row.onset_release],
         "runs": [row.base_run, row.onset_run],
         "stack": row.stack,
@@ -1908,7 +1936,7 @@ def build_comments(
                 plan.target, attribution.assessment.reason or "no reason given",
             )
             continue
-        reproduce = _reproducer_link(
+        reproduce = _publish_reproducers(
             plan, attribution=attribution,
             run_info_for=run_info_for, reproducer_url_for=reproducer_url_for,
         )
@@ -1923,68 +1951,78 @@ def build_comments(
 
 
 @dataclass(frozen=True)
-class ReproducerLink:
-    """A published recipe and the table row it belongs to.
+class Reproducers:
+    """The recipes published for one comment, keyed by row identity.
 
-    ``identity`` is the row's, so the table can put the link on the one row the
-    recipe actually reproduces rather than under the whole comment; ``facts``
-    stays for the digest, which must change when the commands do."""
+    Every row the table shows gets its own recipe: a reader following a line
+    wants the commands for *that* configuration, and a single recipe under the
+    comment answers only one of them. ``facts`` keeps the published commands
+    for the digest, which must change when they do."""
 
-    identity: tuple
-    url: str
-    facts: ReproducerFacts
+    urls: dict[tuple, str]
+    facts: tuple[ReproducerFacts, ...]
 
 
-def _reproducer_link(
+def _publish_reproducers(
     plan: CommentPlan,
     *,
     attribution: Attribution | None,
     run_info_for: RunInfoFor | None,
     reproducer_url_for: ReproducerUrlFor | None,
-) -> ReproducerLink | None:
-    """Publish a reproducer for the strongest current row in *plan* and return
-    the link to it — best-effort at both steps.
+) -> Reproducers | None:
+    """Build and publish a recipe for each row the table will show.
 
-    The recipe is built *and published* before anything is rendered, so a
-    comment either carries a link that already resolves or carries none at all.
-    A publisher that fails costs the link and nothing else."""
-    facts = _reproducer_for(
-        plan, attribution=attribution, run_info_for=run_info_for,
+    Bounded by that selection rather than by the plan: a detector-removal sweep
+    confirms hundreds of near-identical rows and the table shows at most
+    :data:`_TARGET_TABLE_ROWS` of them, so this uploads a handful of files a
+    night, not a directory a night.
+
+    Everything happens *before* the comment is rendered, so a comment either
+    carries links that already resolve or carries none. Each row fails on its
+    own: a run record that cannot be read, or a publisher that refuses, costs
+    that row's link and leaves the rest of the table alone."""
+    if run_info_for is None or reproducer_url_for is None or not plan.rows:
+        return None
+    by_likelihood = sorted(
+        plan.rows, key=lambda row: _row_sort_key(row, attribution)
     )
-    if facts is None or reproducer_url_for is None:
+    shown = [
+        entry.current
+        for entry in _selected_rows(by_likelihood, [], attribution)
+        if entry.current is not None
+    ]
+    urls: dict[tuple, str] = {}
+    facts: list[ReproducerFacts] = []
+    for row in shown:
+        recipe = _reproducer_for(plan, row, run_info_for=run_info_for)
+        if recipe is None:
+            continue
+        try:
+            url = reproducer_url_for(recipe)
+        except Exception as exc:  # noqa: BLE001 — optional artifact, never fatal
+            _log.info("build_comments: reproducer not published for %s %s (%s)",
+                      plan.target, row.verdict.label, exc)
+            continue
+        if not url:
+            _log.info(
+                "build_comments: reproducer not published for %s %s — no link "
+                "to give", plan.target, row.verdict.label,
+            )
+            continue
+        urls[_row_identity(row)] = url
+        facts.append(recipe)
+    if not urls:
         return None
-    try:
-        url = reproducer_url_for(facts)
-    except Exception as exc:  # noqa: BLE001 — an optional artifact, never fatal
-        _log.info("build_comments: reproducer not published for %s (%s)",
-                  plan.target, exc)
-        return None
-    if not url:
-        _log.info(
-            "build_comments: reproducer not published for %s — no link to give",
-            plan.target,
-        )
-        return None
-    row = _strongest_row(plan, attribution)
-    return ReproducerLink(identity=_row_identity(row), url=url, facts=facts)
-
-
-def _strongest_row(
-    plan: CommentPlan, attribution: Attribution | None
-) -> RegressionRow:
-    return sorted(plan.rows, key=lambda item: _row_sort_key(item, attribution))[0]
+    return Reproducers(urls=urls, facts=tuple(facts))
 
 
 def _reproducer_for(
     plan: CommentPlan,
+    row: RegressionRow,
     *,
-    attribution: Attribution | None,
-    run_info_for: RunInfoFor | None,
+    run_info_for: RunInfoFor,
 ) -> ReproducerFacts | None:
-    """Best-effort reproducer for the strongest current row in *plan*."""
-    if run_info_for is None or not plan.rows:
-        return None
-    row = _strongest_row(plan, attribution)
+    """Best-effort reproducer facts for one row."""
     verdict = row.verdict
     if not verdict.last_accepted_run_id or not verdict.last_accepted_run_date \
             or not verdict.onset_run_id or not verdict.onset_run_date:
@@ -2002,12 +2040,13 @@ def _reproducer_for(
         )
         facts = reproducer_facts_from(row, base_info, onset_info)
     except Exception as exc:  # noqa: BLE001 — optional metadata must fail soft
-        _log.info("build_comments: no reproducer for %s (%s)", plan.target, exc)
+        _log.info("build_comments: no reproducer for %s %s (%s)",
+                  plan.target, verdict.label, exc)
         return None
     if facts is None:
         _log.info(
-            "build_comments: no reproducer for %s — run records were missing "
-            "or incompatible", plan.target,
+            "build_comments: no reproducer for %s %s — run records were "
+            "missing or incompatible", plan.target, verdict.label,
         )
     return facts
 
@@ -2231,7 +2270,7 @@ def _render(
     attribution: Attribution | None,
     request: AttributionRequest | None,
     *,
-    reproduce: ReproducerLink | None,
+    reproduce: Reproducers | None,
     dashboard_url: str | None,
     min_score: float,
 ) -> PRComment:
@@ -2301,6 +2340,7 @@ def _render(
         attribution=attribution,
         dashboard_url=dashboard_url,
         facts_payload=payload,
+        reproduce=reproduce,
         min_score=min_score,
     )
 
@@ -2312,7 +2352,7 @@ def _details_region(
     dashboard_url: str | None,
     historical: list[RetainedRow],
     retained_marker: str | None,
-    reproduce: ReproducerLink | None = None,
+    reproduce: Reproducers | None = None,
 ) -> tuple[str, list[RetainedRow]]:
     """The dynamic middle of a comment — assessment, regression table and its
     reference links — rendered from structured inputs alone.
@@ -2963,7 +3003,7 @@ def _row_line(
     links: dict[str, str],
     *,
     show_window: bool,
-    reproduce: ReproducerLink | None,
+    recipe: str,
 ) -> str:
     """One regression as a table row — the same cells whichever ordering placed
     it, so both tables read identically row for row.
@@ -2991,8 +3031,8 @@ def _row_line(
         cells.append(_window_cell(*_row_window(row)))
     cells.append(_change_cell(v.pct_change))
     cells.append(_likelihood_cell(row, attribution))
-    if reproduce is not None:
-        cells.append(_reproduce_cell(row, reproduce))
+    if recipe is not None:
+        cells.append(_recipe_cell(recipe))
     return "| " + " | ".join(cells) + " |"
 
 
@@ -3000,7 +3040,7 @@ def _past_row_line(
     row: RetainedRow,
     past_links: dict[tuple, tuple[str, str]],
     *,
-    reproduce: ReproducerLink | None,
+    recipe: str | None,
 ) -> str:
     """One retained row with its last published movement and likelihood."""
     metric = (
@@ -3021,23 +3061,21 @@ def _past_row_line(
         _change_cell(row.pct),
         _past_likelihood_cell(row),
     ]
-    if reproduce is not None:
-        # The recipe is always built from a *currently confirmed* row, so a
-        # retained one never carries it — but the cell still has to exist, or
-        # the row would be one short of the header.
-        cells.append("")
+    if recipe is not None:
+        # The recipe published on the night this row was last confirmed. It is
+        # carried in the snapshot rather than rebuilt, because only the night
+        # that published it can vouch for the file being there.
+        cells.append(_recipe_cell(recipe))
     return "| " + " | ".join(cells) + " |"
 
 
-def _reproduce_cell(row: RegressionRow, reproduce: ReproducerLink) -> str:
-    """The link to this row's published recipe, on the one row it reproduces.
+def _recipe_cell(url: str) -> str:
+    """The link to this row's own published recipe.
 
-    Empty on every other row, rather than a link that would send a reader to
-    commands for a different configuration than the one whose line they
+    Empty when nothing was published for the row, rather than a link to
+    commands for a different configuration than the one whose line the reader
     followed."""
-    if _row_identity(row) != reproduce.identity:
-        return ""
-    return f"[🔁 recipe ↗]({_cell(reproduce.url)})"
+    return f"[🔁 recipe ↗]({_cell(url)})" if url else ""
 
 
 def _past_likelihood_cell(row: RetainedRow) -> str:
@@ -3098,7 +3136,7 @@ def _table(
     links: dict[str, str],
     past_links: dict[tuple, tuple[str, str]],
     dashboard_url: str | None,
-    reproduce: ReproducerLink | None = None,
+    reproduce: Reproducers | None = None,
 ) -> str:
     """The selected rows of the window, most likely first — tonight's confirmed
     regressions and any retained rows that outrank them.
@@ -3127,9 +3165,22 @@ def _table(
     the overflow line below counts what was cut and links all of it
     (:func:`_overflow_line`).
 
-    A retained historical row keeps the movement and likelihood last published
-    for it; the cumulative alert uses the same newest-published rule."""
+    A retained historical row keeps the movement, likelihood and recipe last
+    published for it; the cumulative alert uses the same newest-published
+    rule."""
     has_retained = any(entry.past is not None for entry in shown)
+    urls = reproduce.urls if reproduce is not None else {}
+    recipes = {
+        id(entry): (
+            urls.get(_row_identity(entry.current), "")
+            if entry.current is not None
+            else entry.past.recipe
+        )
+        for entry in shown
+    }
+    # The column exists only when at least one shown row has somewhere to send
+    # the reader; an all-empty column is a header and nothing else.
+    show_recipe = any(recipes.values())
     # Shown whenever a row's own window is not simply the comment's — a
     # narrower base, a newer onset, or a retained row carrying a window of its
     # own. When every row measured exactly the window the header states, the
@@ -3145,17 +3196,18 @@ def _table(
         # the window that scopes it.
         "📊 **Regressions in this window, ranked by AI-based attribution likelihood**",
         "",
-        *_table_head(show_window=show_window, show_reproduce=reproduce is not None),
+        *_table_head(show_window=show_window, show_reproduce=show_recipe),
     ]
     for entry in shown:
+        recipe = recipes[id(entry)] if show_recipe else None
         if entry.current is not None:
             lines.append(_row_line(
                 entry.current, attribution, links,
-                show_window=show_window, reproduce=reproduce,
+                show_window=show_window, recipe=recipe,
             ))
         else:
             lines.append(_past_row_line(
-                entry.past, past_links, reproduce=reproduce,
+                entry.past, past_links, recipe=recipe,
             ))
     shown_current = sum(1 for entry in shown if entry.current is not None)
     overflow = _overflow_line(plan, rows, shown_current, dashboard_url=dashboard_url)
@@ -3359,7 +3411,7 @@ def _digest_from(
 
 def _facts_payload(
     plan: CommentPlan, request: AttributionRequest | None = None,
-    reproduce: ReproducerLink | None = None,
+    reproduce: Reproducers | None = None,
 ) -> dict[str, Any]:
     """The *benchmark facts* behind a comment, as the digest's canonical payload.
 
@@ -3483,13 +3535,18 @@ def _facts_payload(
             for ref in plan.historical_refs
         ],
         "evidence": _evidence_facts(request),
-        # Both halves of the recipe: the commands, so a changed workload edits
-        # the comment, and the URL, so a link that appeared (or moved) does
-        # too. A run of the same night that failed to publish renders no link,
-        # and must not share a digest with one that did.
+        # Both halves of every recipe: the commands, so a changed workload
+        # edits the comment, and the URL, so a link that appeared (or moved)
+        # does too. A run of the same night that failed to publish renders no
+        # link, and must not share a digest with one that did. In identity
+        # order, so the set is what is hashed and not the order it was
+        # published in.
         "reproduce": None if reproduce is None else {
-            "facts": reproduce.facts.payload(),
-            "url": reproduce.url,
+            "recipes": [facts.payload() for facts in reproduce.facts],
+            "urls": [
+                [list(identity), url]
+                for identity, url in sorted(reproduce.urls.items())
+            ],
         },
     }
     return payload
