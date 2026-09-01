@@ -54,6 +54,10 @@ class ReproducerFacts:
     onset_n_events: int
     base_ddsim_args: str
     onset_ddsim_args: str
+    base_verbose: bool
+    onset_verbose: bool
+    base_cpu_set: str
+    onset_cpu_set: str
     base_seed: int | None
     onset_seed: int | None
     base_input_files: tuple[str, ...]
@@ -215,6 +219,14 @@ def facts_from(
         return None
     base_seed = _integer(base_info.get("random_seed"))
     onset_seed = _integer(onset_info.get("random_seed"))
+    # Recorded from the nightly's own invocation. Both change what is measured:
+    # ``--verbose`` streams ddsim's output, and the runner pins the benchmark to
+    # a CPU set. Absent from records written before they were recorded, which
+    # reads as the off/unpinned default rather than as a mismatch.
+    base_verbose = bool(base_info.get("verbose"))
+    onset_verbose = bool(onset_info.get("verbose"))
+    base_cpu_set = str(base_info.get("runner_cpu_set") or "")
+    onset_cpu_set = str(onset_info.get("runner_cpu_set") or "")
     fallback_files = _files(input_files)
     base_files = _files(base_info.get("input_files")) or fallback_files
     onset_files = _files(onset_info.get("input_files")) or fallback_files
@@ -238,6 +250,7 @@ def facts_from(
         ("commit_sha", base_commit, onset_commit),
         ("input_files", base_files, onset_files),
         ("steering_file", base_steering, onset_steering),
+        ("verbose", base_verbose, onset_verbose),
     ):
         if before != after:
             parity.append(name)
@@ -274,6 +287,10 @@ def facts_from(
         onset_n_events=onset_events,
         base_ddsim_args=base_args,
         onset_ddsim_args=onset_args,
+        base_verbose=base_verbose,
+        onset_verbose=onset_verbose,
+        base_cpu_set=base_cpu_set,
+        onset_cpu_set=onset_cpu_set,
         base_seed=base_seed,
         onset_seed=onset_seed,
         base_input_files=base_files,
@@ -315,31 +332,38 @@ def _command(
     facts: ReproducerFacts,
     *,
     release: str,
-    commit: str,
     n_events: int,
     ddsim_args: str,
     xml_path: str,
     resolved_steering_file: str,
+    verbose: bool,
     output: str,
+    worktree: str,
     fetch: list[str],
 ) -> str:
-    """One half of the recipe, as a subshell.
+    """One half of the recipe, as a subshell over its own worktree.
 
     A subshell is a separate process holding a copy of the environment, so each
     half sources its own Key4hep release from a clean start: the release the
     other half sourced cannot leak into it, and neither reaches the shell the
     reader pasted into. That is what lets the two halves — which the Key4hep
     setup script forbids sourcing into one environment — run one after the other
-    in a single paste. The harness is cloned once outside; the halves are
-    sequential, so one checkout directory serves both and each opens by
-    checking out the commit its nightly ran.
+    in a single paste.
+
+    The worktree is what keeps the *filesystem* apart, and it is not optional:
+    ``setup.sh`` reuses an existing ``py-venv`` and ``plugin/build.sh`` reuses an
+    up-to-date ``.so``, so one shared checkout would hand the second half a
+    virtual environment and a timing plugin built against the first half's
+    release — measuring the two stacks with one stack's binaries, which is
+    precisely the difference the recipe exists to show. Both worktrees are
+    created from the one clone outside, each at the commit its nightly ran.
     """
     lines = [
         # Inside the subshell, never at the top: a failed setup would otherwise
         # benchmark a broken environment and report the difference as a result,
         # and an errexit set in the reader's own shell would outlive the paste.
         "set -e",
-        f"git checkout {_safe(commit)}",
+        f"cd {_safe(worktree)}",
         f"source {_safe(_NIGHTLY_REPO + '/key4hep/setup.sh')} -r {_safe(release)}",
         "source setup.sh",
         "pip install --no-build-isolation -e .",
@@ -353,6 +377,9 @@ def _command(
         f"k4bench --xml {_xml_arg(xml_path)} \\",
         f"        --events {_safe(n_events)}",
     ]
+    if verbose:
+        command[-1] += continuation
+        command.append("        --verbose")
     if facts.sweep_option and facts.sweep_value:
         command[-1] += continuation
         command.append(f"        {facts.sweep_option} {_safe(facts.sweep_value)}")
@@ -374,14 +401,19 @@ def artifact_name(facts: ReproducerFacts) -> str:
     before someone reads a script they are about to run, and suffixed with a
     digest of the full identity (platform and sub-detector included) so two
     measurements that differ only in a part the readable stem drops can never
-    land on one name. Nothing nightly is in it: re-publishing the same window
-    replaces the same file, so the link a standing comment already carries
-    keeps working rather than accumulating a copy a night.
+    land on one name. The two run ids are in that digest because the two
+    releases alone do not identify a window: k4Bench supports two changes
+    inside one release and tells those windows apart by their runs, and without
+    the ids both would publish over one recipe. Nothing nightly is in it — the
+    window's own endpoints do not move — so re-publishing the same window
+    replaces the same file and the link a standing comment already carries keeps
+    working rather than accumulating a copy a night.
     """
     identity = "|".join((
         facts.detector, facts.platform, facts.sample, facts.label,
         facts.metric, facts.sub_detector or "",
         facts.base_release, facts.onset_release,
+        facts.base_run_id, facts.onset_run_id,
     ))
     digest = hashlib.sha256(identity.encode()).hexdigest()[:12]
     stem = _slug("-".join(
@@ -409,8 +441,14 @@ def render_text(facts: ReproducerFacts) -> str:
     none of the surrounding comment's context, and closes with the two nightly
     runs it was derived from.
 
-    The harness is cloned once, and each half runs in a subshell that sources
-    its own Key4hep release (:func:`_command`).
+    The harness is cloned once, and each half runs in a subshell over its own
+    worktree, sourcing its own Key4hep release (:func:`_command`). Everything
+    executable sits inside one outer ``set -e`` subshell, so any stage failing —
+    the clone, a fetch, either half — ends the whole reproduction with a
+    non-zero status instead of letting a successful AFTER half report a run that
+    has nothing to be compared against. It is a subshell rather than a top-level
+    ``set -e`` for the same reason the halves are: nothing here may alter the
+    shell of a reader who pasted it, errexit and working directory alike.
     """
     heading = "k4Bench: reproduce this measurement"
     scope = " / ".join((facts.detector, facts.sample, facts.label))
@@ -434,6 +472,24 @@ def render_text(facts: ReproducerFacts) -> str:
             f"{facts.base_seed}."
         )
 
+    if facts.base_cpu_set and facts.base_cpu_set == facts.onset_cpu_set:
+        pinning = _note(
+            f"Both nightly runs were pinned to CPUs {facts.base_cpu_set} "
+            "(taskset -c) on the runner. The recipe does not pin: those cores "
+            "are the runner's, not yours. For timings as quiet as the "
+            "nightly's, run both halves pinned to one idle set of your own."
+        )
+    elif facts.base_cpu_set or facts.onset_cpu_set:
+        pinning = _note(
+            "WARNING: the two nightly runs were pinned to different CPU sets "
+            f"({facts.base_cpu_set or 'unpinned'} vs "
+            f"{facts.onset_cpu_set or 'unpinned'}), which moves a timing "
+            "measurement on its own. Pin both halves to one idle set of your "
+            "own and treat the nightly percentage as unconfirmed."
+        )
+    else:
+        pinning = ""
+
     # One fetch when both runs read the same sources, one per half when they do
     # not: differing inputs are a real workload difference (recorded in
     # ``parity_diffs``), and each half has to run against the sources its own
@@ -443,26 +499,37 @@ def render_text(facts: ReproducerFacts) -> str:
     # consumed.
     shared_input = facts.base_input_files == facts.onset_input_files
     shared_fetch = _fetch(facts.base_input_files) if shared_input else []
+    # Named for the runs, never for the releases: a window can begin and end
+    # inside one release, and two directories named after it would be one
+    # directory, with the AFTER half overwriting the results it is compared
+    # against.
+    before_dir, after_dir = (
+        f"logs/before-{_slug(facts.base_run_id)}",
+        f"logs/after-{_slug(facts.onset_run_id)}",
+    )
+    before_tree, after_tree = "../k4Bench-before", "../k4Bench-after"
     before = _command(
         facts,
         release=facts.base_release,
-        commit=facts.base_commit,
         n_events=facts.base_n_events,
         ddsim_args=facts.base_ddsim_args,
         xml_path=facts.base_xml_path,
         resolved_steering_file=facts.base_resolved_steering_file,
-        output=f"logs/{facts.base_release}",
+        verbose=facts.base_verbose,
+        output=before_dir,
+        worktree=before_tree,
         fetch=[] if shared_input else _fetch(facts.base_input_files),
     )
     after = _command(
         facts,
         release=facts.onset_release,
-        commit=facts.onset_commit,
         n_events=facts.onset_n_events,
         ddsim_args=facts.onset_ddsim_args,
         xml_path=facts.onset_xml_path,
         resolved_steering_file=facts.onset_resolved_steering_file,
-        output=f"logs/{facts.onset_release}",
+        verbose=facts.onset_verbose,
+        output=after_dir,
+        worktree=after_tree,
         fetch=[] if shared_input else _fetch(facts.onset_input_files),
     )
     check = max(1, min(100, facts.onset_n_events // 10))
@@ -482,16 +549,35 @@ def render_text(facts: ReproducerFacts) -> str:
         f"# Nightly measured:  {facts.pct_change}",
         "#",
         parity,
+        *([pinning, "#"] if pinning else []),
+        _note(
+            f"The nightly measured this on {facts.platform}, inside the "
+            "Key4hep container; the recipe runs on your host. Compare its two "
+            "halves against each other, not against the nightly's absolute "
+            "numbers."
+        ),
         "#",
         _note(
             "Run it with `bash <this file>`, or paste the whole thing into one "
-            "shell. Each half runs in a subshell, so the two Key4hep releases "
-            "never share an environment and neither reaches your own."
+            "shell. Everything runs inside subshells: the two Key4hep releases "
+            "never share an environment, any failed stage ends the whole "
+            "reproduction, and neither your shell nor your working directory "
+            "is touched."
         ),
         "",
-        _rule("harness (cloned once)"),
+        # The one place errexit can cover the stages between the halves — the
+        # clone, the worktrees, a shared fetch — as well as the halves.
+        "(",
+        "set -e",
+        "",
+        _rule("harness (one clone, one worktree per half)"),
         "git clone https://github.com/key4hep/k4Bench",
         "cd k4Bench",
+        # Detached, and per half: setup.sh reuses an existing py-venv and
+        # plugin/build.sh an up-to-date .so, so sharing one working copy would
+        # run the second release against the first release's build.
+        f"git worktree add --detach {before_tree} {_safe(facts.base_commit)}",
+        f"git worktree add --detach {after_tree} {_safe(facts.onset_commit)}",
         *([
             "",
             _rule("input (fetched once; both runs read the same sources)"),
@@ -503,10 +589,11 @@ def render_text(facts: ReproducerFacts) -> str:
         "",
         _rule(f"AFTER: Key4hep {facts.onset_release}"),
         after,
+        ")",
         "",
         _note(
             f"Then compare {facts.metric} for {facts.label} between "
-            f"logs/{facts.base_release} and logs/{facts.onset_release}: the "
+            f"k4Bench-before/{before_dir} and k4Bench-after/{after_dir}: the "
             f"nightly measured {facts.pct_change}."
         ),
         _note(
@@ -538,6 +625,12 @@ def _note(text: str, width: int = 78) -> str:
     """Soft-wrapped prose as shell comments, so it reads in a terminal as well
     as a browser and the file stays paste-safe end to end. Commands are never
     passed through here: a wrapped command is a broken one.
+
+    Hyphens and long words never break: the prose names directories and paths
+    (``k4Bench-before/logs/before-<run>``), and a reader who has to reassemble
+    one from two lines is being asked to guess whether the hyphen was ours.
     """
-    lines = textwrap.wrap(text, width=width - 2) or [text]
+    lines = textwrap.wrap(
+        text, width=width - 2, break_on_hyphens=False, break_long_words=False
+    ) or [text]
     return "\n".join(f"# {line}" for line in lines)

@@ -149,6 +149,14 @@ _CUMULATIVE_PREFIX = "<!-- k4bench-blame-cumulative:v1 "
 _CUMULATIVE_SUFFIX = " -->"
 _MAX_CUMULATIVE_IDENTITIES = 10_000
 _MAX_CUMULATIVE_BYTES = 256_000
+#: What the marker may take of GitHub's 65,536-byte comment body, measured on
+#: the encoded line that is actually written. The two caps above bound the JSON
+#: *before* compression, which is the guard the decoder needs against a hostile
+#: marker but says little about the size of the resulting line — a body over the
+#: limit is rejected outright by the API, so the written form has to be bounded
+#: in its own right. A quarter of the budget leaves the table, the assessment
+#: and the retained-row marker their share.
+_MAX_CUMULATIVE_MARKER_BYTES = 16_384
 _ALERT_START = "<!-- k4bench-blame-alert:start -->"
 _ALERT_END = "<!-- k4bench-blame-alert:end -->"
 
@@ -652,7 +660,13 @@ def _cumulative_marker(
     if len(raw) > _MAX_CUMULATIVE_BYTES:
         return ""
     encoded = urlsafe_b64encode(zlib.compress(raw, level=9)).decode()
-    return f"{_CUMULATIVE_PREFIX}{encoded}{_CUMULATIVE_SUFFIX}"
+    marker = f"{_CUMULATIVE_PREFIX}{encoded}{_CUMULATIVE_SUFFIX}"
+    # Compression normally makes this moot; when it does not, dropping the
+    # marker costs one night's merge — the state is still carried by the bodies
+    # this one merged — while writing it would cost the whole comment.
+    if len(marker.encode()) > _MAX_CUMULATIVE_MARKER_BYTES:
+        return ""
+    return marker
 
 
 def _decoded_cumulative(

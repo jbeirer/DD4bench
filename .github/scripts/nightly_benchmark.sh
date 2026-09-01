@@ -319,6 +319,12 @@ run_info = {
     "sweep":            sweep,
     "ddsim_args":       ddsim_args,
     "random_seed":      _random_seed(ddsim_args),
+    # How the benchmark was invoked, beyond its arguments.  Both move a timing
+    # measurement -- --verbose streams ddsim's output while it is being timed,
+    # and the runner pins the process to a fixed CPU set -- so a reproducer that
+    # does not know them cannot say it ran the same measurement.
+    "verbose":          os.environ.get("VERBOSE", "").lower() == "true",
+    "runner_cpu_set":   os.environ.get("RUNNER_CPU_SET", ""),
     # Preserve the configured source values.  DDSIM_ARGS above names the /tmp
     # copy actually read by ddsim; a reproducer also needs the xrootd URL from
     # which that ephemeral file was obtained.

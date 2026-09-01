@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import os
 import shlex
+import subprocess
 from dataclasses import replace
 from types import SimpleNamespace
 
+from k4bench.blame import reproduce
 from k4bench.blame.reproduce import (
     artifact_name,
     facts_from,
@@ -60,9 +63,23 @@ def _facts(**after_overrides):
 
 
 def _halves(body: str) -> list[str]:
-    """The two subshells of a rendered recipe, in order."""
-    halves = body.split("\n(\n")[1:]
+    """The two per-release subshells of a rendered recipe, in order.
+
+    The first subshell in the file is the outer fail-fast wrapper around every
+    stage, so the halves are the two after it.
+    """
+    halves = body.split("\n(\n")[2:]
     return [half.split("\n)\n", 1)[0] for half in halves]
+
+
+def _prose(body: str) -> str:
+    """The recipe's comment prose as one line: an assertion about what it says
+    should not also be an assertion about where textwrap broke a sentence."""
+    return " ".join(
+        line.lstrip("#").strip()
+        for line in body.splitlines()
+        if line.startswith("#")
+    )
 
 
 def _facts_with_inputs(before: list[str], after: list[str]):
@@ -202,11 +219,11 @@ def test_render_contains_two_full_commands_and_only_display_precision_pct():
     assert "0.3614" not in body
 
 
-def test_one_clone_serves_both_halves_and_each_checks_out_its_own_commit():
-    # One paste, one working copy: the halves are sequential, so a second clone
-    # would only abort with "destination path already exists". What keeps them
-    # apart is the subshell — a copy of the environment per half, which is what
-    # lets two Key4hep releases be sourced in a single shell at all.
+def test_one_clone_gives_each_half_its_own_worktree_at_its_own_commit():
+    # One clone (a second would only abort with "destination path already
+    # exists"), but never one working copy: setup.sh reuses an existing py-venv
+    # and plugin/build.sh an up-to-date .so, so a shared checkout would run the
+    # AFTER release against the BEFORE release's venv and timing plugin.
     facts = _facts()
     assert facts is not None
     body = render_text(replace(facts, onset_commit="a" * 40))
@@ -217,22 +234,30 @@ def test_one_clone_serves_both_halves_and_each_checks_out_its_own_commit():
         for line in lines
     ) == 1
     assert "cd k4Bench" in lines
-    assert lines.count("(") == 2 and lines.count(")") == 2
-    for commit in (facts.base_commit, "a" * 40):
-        assert f"  git checkout {commit}" in lines
+    # Two halves plus the outer fail-fast wrapper.
+    assert lines.count("(") == 3 and lines.count(")") == 3
+    assert (
+        f"git worktree add --detach ../k4Bench-before {facts.base_commit}" in lines
+    )
+    assert f"git worktree add --detach ../k4Bench-after {'a' * 40}" in lines
+    # Detached, so the common case of one k4Bench commit for both nightlies
+    # still yields two worktrees rather than a "already checked out" refusal.
+    same = render_text(facts).splitlines()
+    assert sum(line.startswith("git worktree add --detach") for line in same) == 2
 
 
-def test_command_checks_out_recorded_harness_before_setup_without_duplicate_build():
+def test_each_half_enters_its_own_worktree_before_setup_without_duplicate_build():
     facts = _facts()
     assert facts is not None
     body = render_text(facts)
-    for half in _halves(body):
-        checkout = half.index("git checkout")
+    for half, worktree in zip(_halves(body), ("before", "after")):
+        enter = half.index(f"cd ../k4Bench-{worktree}")
         nightly = half.index("source /cvmfs/sw-nightlies.hsf.org/key4hep/setup.sh")
         historical_setup = half.index("source setup.sh")
-        assert checkout < nightly < historical_setup
+        assert enter < nightly < historical_setup
     assert "KEY4HEP_REPO=" not in body
     assert "bash plugin/build.sh" not in body
+    assert "git checkout" not in body
 
 
 def test_a_shared_input_is_fetched_once_and_a_differing_one_per_half():
@@ -285,18 +310,100 @@ def test_the_recipe_is_pure_ascii():
     assert "single_e-_10GeV" in body
 
 
-def test_the_recipe_runs_as_a_script_and_fails_fast_inside_each_half():
+def test_the_recipe_runs_as_a_script_and_fails_fast_in_every_stage():
     # "Paste it" and "run it" should both work: a shebang costs a comment line
-    # in the paste, and errexit lives inside the subshells so a failed setup
-    # aborts that half without ever touching the reader's own shell.
+    # in the paste, and every errexit lives inside a subshell — the outer one
+    # covering the stages between the halves — so a failure aborts the whole
+    # reproduction without ever touching the reader's own shell.
     facts = _facts()
     assert facts is not None
     body = render_text(facts)
-    assert body.splitlines()[0] == "#!/usr/bin/env bash"
-    assert "\nset -e\n" not in body
+    lines = body.splitlines()
+    assert lines[0] == "#!/usr/bin/env bash"
+    # Every command is inside the outer subshell, which opens with errexit.
+    opened = lines.index("(")
+    assert lines[opened + 1] == "set -e"
+    assert all(
+        line.startswith("#") or not line.strip()
+        for line in lines[:opened]
+    )
     for half in _halves(body):
         assert half.splitlines()[0].strip() == "set -e"
-        assert half.index("set -e") < half.index("git checkout")
+        assert half.index("set -e") < half.index("cd ../k4Bench-")
+
+
+def test_a_failed_before_half_fails_the_whole_recipe(tmp_path, monkeypatch):
+    # The half that matters is the one that can be silently skipped: without an
+    # outer errexit, a BEFORE that never produced results is followed by an
+    # AFTER that succeeds, and `bash recipe.txt` exits 0 with nothing to compare.
+    facts = _facts()
+    assert facts is not None
+    # Point the halves at a release root that cannot exist, so the BEFORE half
+    # fails on its own first line rather than on whatever this machine has
+    # mounted under /cvmfs.
+    absent = tmp_path / "absent-nightlies"
+    monkeypatch.setattr(reproduce, "_NIGHTLY_REPO", str(absent))
+    recipe = tmp_path / "recipe.txt"
+    recipe.write_text(render_text(facts))
+
+    # git is stubbed so the test neither clones nor reaches the network; the
+    # BEFORE half then fails for real on the absent CVMFS nightly.
+    stub = tmp_path / "bin"
+    stub.mkdir()
+    (stub / "git").write_text(
+        "#!/bin/sh\n"
+        'case "$1" in\n'
+        "  clone) mkdir -p k4Bench ;;\n"
+        '  worktree) mkdir -p "$4" ;;\n'
+        "esac\n"
+    )
+    (stub / "git").chmod(0o755)
+
+    done = subprocess.run(
+        ["bash", str(recipe)],
+        cwd=tmp_path,
+        env={**os.environ, "PATH": f"{stub}:/usr/bin:/bin"},
+        capture_output=True, text=True,
+    )
+    assert done.returncode != 0
+    # Exactly one half attempted its release: the AFTER half never ran.
+    assert done.stderr.count(f"{absent}/key4hep/setup.sh") == 1
+
+
+def test_recorded_execution_settings_are_replayed_or_stated():
+    # A performance measurement is not defined by its ddsim arguments alone:
+    # --verbose streams output while the run is being timed, and the nightly
+    # pins the benchmark to a CPU set.
+    facts = facts_from(
+        _row(),
+        _info("2026-08-27", "1", verbose=True, runner_cpu_set="2-5"),
+        _info("2026-08-28", "2", verbose=True, runner_cpu_set="2-5"),
+    )
+    assert facts is not None
+    assert facts.parity_diffs == ()
+    body = render_text(facts)
+    assert body.count("--verbose") == 2
+    # Stated rather than replayed: the runner's cores are not the reader's, and
+    # a taskset over CPUs they do not have would only fail the recipe.
+    assert "pinned to CPUs 2-5" in _prose(body)
+    assert "taskset -c 2-5" not in body
+
+    # An unpinned, non-verbose nightly says neither.
+    quiet = render_text(_facts())
+    assert "--verbose" not in quiet and "pinned to CPUs" not in quiet
+
+
+def test_settings_that_differed_between_the_runs_are_flagged_not_hidden():
+    facts = facts_from(
+        _row(),
+        _info("2026-08-27", "1", verbose=True, runner_cpu_set="2-5"),
+        _info("2026-08-28", "2", verbose=False, runner_cpu_set="6-9"),
+    )
+    assert facts is not None
+    assert facts.parity_diffs == ("verbose",)
+    body = render_text(facts)
+    assert body.count("--verbose") == 1
+    assert "different CPU sets (2-5 vs 6-9)" in _prose(body)
 
 
 def test_artifact_name_is_stable_per_measurement_and_window():
@@ -313,6 +420,24 @@ def test_artifact_name_is_stable_per_measurement_and_window():
         artifact_name(facts)
     assert artifact_name(replace(facts, platform="aarch64-el9-gcc14-opt")) != \
         artifact_name(facts)
+    # Two changes inside one release are two windows, told apart only by their
+    # runs — without the run ids in the digest they would publish over one file.
+    same_release = replace(facts, base_release="2026-08-28")
+    assert artifact_name(replace(same_release, base_run_id="x", onset_run_id="y")) \
+        != artifact_name(replace(same_release, base_run_id="w", onset_run_id="z"))
+
+
+def test_a_same_release_window_writes_its_halves_to_separate_directories():
+    # The releases are equal here, so anything named after them collides — and
+    # a colliding output directory means AFTER overwrites the results BEFORE is
+    # supposed to be compared against.
+    facts = _facts()
+    assert facts is not None
+    body = render_text(replace(facts, base_release="2026-08-28"))
+    assert "--output-dir logs/before-run-before" in body
+    assert "--output-dir logs/after-run-after" in body
+    assert "k4Bench-before/logs/before-run-before" in body
+    assert "k4Bench-after/logs/after-run-after" in body
 
 
 def test_artifact_name_never_leaves_the_published_directory():
