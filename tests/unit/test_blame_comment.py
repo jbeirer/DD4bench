@@ -1082,7 +1082,7 @@ def test_a_partial_review_says_how_much_of_the_table_it_speaks_for():
     blame = _blame_of((a, [_candidate(score=91.0)]), (b, [_candidate(score=88.0)]))
     attributor = _FakeAttributor({"r2": 20.0}, summary="This PR does not fit.")
     body = _comments(_report(a, b), blame, attributor=attributor)[0].body
-    assert "This assessment covers 1 regression of the 2 shown" in body
+    assert "This assessment covers 1 regression of the 2 current regressions shown" in body
     assert "keeps its first-pass state" in body
 
 
@@ -2340,6 +2340,28 @@ def test_a_step_the_ranker_calls_noise_produces_no_comment():
     v = _verdict()
     blame = _noisy_blame([v], [_candidate(number=607, score=95.0)])
     assert _plans(_report(v), blame) == []
+
+
+def test_a_same_release_window_produces_no_comment():
+    # This layer names a comment by its release pair alone, so it cannot tell
+    # two windows inside one release apart — and the half-open row predicate
+    # cannot even place the verdict that formed such a window. Selecting one
+    # would post a rowless comment under a colliding key, so it is gated here
+    # rather than left to the emptiness of a same-release package diff.
+    v = _verdict(base="2026-07-04", onset="2026-07-04")
+    blame = _blame([v], [_candidate(number=607, score=95.0)])
+
+    assert blame.entries[0].base_release == blame.entries[0].onset_release
+    assert _plans(_report(v), blame) == []
+
+
+def test_a_cross_release_window_one_day_wide_still_comments():
+    # The guard above keys on the releases being equal, not on the window being
+    # narrow: the tightest real window there is must still be commented on.
+    v = _verdict(base="2026-07-03", onset="2026-07-04")
+    blame = _blame([v], [_candidate(number=607, score=95.0)])
+
+    assert [p.target for p in _plans(_report(v), blame)] == ["key4hep/k4geo#607"]
 
 
 def test_an_assessed_real_change_comments_as_usual():

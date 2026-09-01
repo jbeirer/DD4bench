@@ -322,8 +322,19 @@ collected at the end of the body, one per rendered row and none for a row that
 did not survive the caps. A retained row's link is rebuilt from its stored
 identity, window, run ids, stack and last-reported night through the same link
 helpers — no URL is ever stored in the snapshot — and lands on the archived
-dashboard view for that night. The run ids matter for a same-release window,
-which its releases alone cannot tell apart from the others in that release.
+dashboard view for that night. The run ids are carried so a same-release window
+would resolve, though no comment names one today — see below.
+
+!!! note "Same-release windows are not commented on"
+
+    A change window whose two ends are the same Key4hep release is reported and
+    ranked like any other, but never produces a pull-request comment. A comment
+    is keyed by its release pair alone, which cannot tell two windows inside one
+    release apart, and the row predicate reads that pair as half-open, so such a
+    window cannot even hold the regression that formed it. Nothing is withheld
+    in practice: a same-release window's package diff is empty by construction,
+    so its only candidates are k4Bench's own commits, and k4Bench is not a
+    repository comments are posted to.
 
 Two rules run through the rendering:
 

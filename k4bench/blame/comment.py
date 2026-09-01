@@ -1385,6 +1385,29 @@ def _targets(
     for _verdict, _stack, entry in confirmed:
         if entry is None or entry.discovery_incomplete:
             continue
+        if entry.base_release == entry.onset_release:
+            # A same-release window, which this layer cannot name. Every
+            # identity here is the release pair alone: :func:`marker_for` keys
+            # a comment on ``window_token(base, onset)`` without the run ids
+            # that tell two windows inside one release apart, and
+            # :func:`~k4bench.blame.evidence.steps_in_window` reads the pair as
+            # half-open, so ``(D, D]`` cannot even hold the verdict that formed
+            # it. Selecting one would post a comment with no rows under a key
+            # a second window of that release would collide with.
+            #
+            # Nothing is lost today: a same-release window's upstream diff is
+            # empty by construction, so its only candidates are k4Bench's own
+            # commits, and this repository is not one a comment may be posted
+            # to. Supporting these means run-qualifying the marker, the
+            # containment algebra and the row predicate together — a change to
+            # the comment identity, not a filter — so the gate is explicit
+            # rather than left to that emptiness.
+            _log.info(
+                "select: %s/%s %s — same-release window %s; the comment "
+                "identity cannot name one window inside a release",
+                entry.detector, entry.sample, entry.metric, entry.onset_release,
+            )
+            continue
         if entry.assessment is not None and entry.assessment.likely_noise:
             # The ranker scored these candidates *and* concluded the movement
             # itself is most likely this series' own noise. Those two statements
@@ -2584,8 +2607,13 @@ def _coverage_note(
 ) -> str:
     """What the assessment above does *not* cover, when it covers less than all.
 
-    Measured over the rows this comment actually *renders*, not over the whole
-    window. A row goes unreviewed either because the window carried more
+    Measured over the *current* rows this comment renders, not over the whole
+    window — and the wording says "current", because a table carrying rows
+    retained from earlier versions shows more rows than this count covers and a
+    bare "of the four shown" would not add up for the reader counting them. A
+    retained row is outside the count for the same reason it is outside the
+    review: it is not part of tonight's evidence. A row goes unreviewed either
+    because the window carried more
     regressions than the prompt offers or because the reply simply skipped it,
     and it then keeps whatever the first pass left it with — a score, or one of
     the states that has none (:func:`_likelihood`). That only misleads a reader
@@ -2600,8 +2628,8 @@ def _coverage_note(
     return (
         f"\n>\n> <sub>This assessment covers "
         f"{_count(len(rows) - unreviewed, 'regression')} of the {len(rows)} "
-        "shown; anything it did not answer keeps its first-pass state, and its "
-        "score where there is one.</sub>"
+        "current regressions shown; anything it did not answer keeps its "
+        "first-pass state, and its score where there is one.</sub>"
     )
 
 
