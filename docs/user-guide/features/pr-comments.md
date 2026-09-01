@@ -317,9 +317,15 @@ whose steering file imports a sibling module. Since nightlies expire from CVMFS
 after roughly three weeks, old recipes also say when they can no longer be
 executed.
 
-**The whole file is one paste.** The harness is cloned once, and each half runs
-inside a **subshell** `( … )` that checks out its own commit and sources its own
-Key4hep release. A subshell holds a copy of the environment, so neither release
+**The whole file runs.** It opens with a shebang, so it can be saved and run
+with `bash <file>` as readily as pasted into a shell, and it is written in pure
+ASCII — it is served as plain text with no declared charset, and a browser
+guessing latin-1 turns any multi-byte character into mojibake. The harness is
+cloned once, and each half runs inside a **subshell** `( … )` that sets `set -e`,
+checks out its own commit and sources its own Key4hep release. Errexit lives
+inside the subshells rather than at the top: a failed setup aborts that half
+instead of benchmarking a broken environment, and never leaves errexit behind in
+the shell of a reader who pasted the file. A subshell holds a copy of the environment, so neither release
 leaks into the other or into the shell the reader pasted into — which is what
 satisfies the Key4hep setup script's refusal to be sourced twice without asking
 anyone to open a second terminal. Every word of commentary is carried as a `#`

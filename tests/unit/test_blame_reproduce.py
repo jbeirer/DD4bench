@@ -266,12 +266,37 @@ def test_the_recipe_names_the_measurement_it_reproduces():
     facts = _facts()
     assert facts is not None
     body = render_text(facts)
-    assert body.startswith("# k4Bench — reproduce this measurement")
+    assert body.startswith("#!/usr/bin/env bash\n# k4Bench: reproduce this measurement")
     assert "ILD_FCCee_v01" in body and "without_TPC" in body
     assert "2026-08-27 -> 2026-08-28" in body
     # Read on its own, it still says which runs it came from.
     assert "https://github.test/actions/runs/1" in body
     assert "https://github.test/actions/runs/2" in body
+
+
+def test_the_recipe_is_pure_ascii():
+    # The file is served as plain text with no charset declared, so a browser
+    # guessing latin-1 renders every multi-byte character as mojibake — which is
+    # what an em dash in a section rule and a prettified sample name produced.
+    facts = _facts()
+    assert facts is not None
+    body = render_text(facts)
+    assert body.isascii()
+    assert "single_e-_10GeV" in body
+
+
+def test_the_recipe_runs_as_a_script_and_fails_fast_inside_each_half():
+    # "Paste it" and "run it" should both work: a shebang costs a comment line
+    # in the paste, and errexit lives inside the subshells so a failed setup
+    # aborts that half without ever touching the reader's own shell.
+    facts = _facts()
+    assert facts is not None
+    body = render_text(facts)
+    assert body.splitlines()[0] == "#!/usr/bin/env bash"
+    assert "\nset -e\n" not in body
+    for half in _halves(body):
+        assert half.splitlines()[0].strip() == "set -e"
+        assert half.index("set -e") < half.index("git checkout")
 
 
 def test_artifact_name_is_stable_per_measurement_and_window():

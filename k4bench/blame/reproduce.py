@@ -21,8 +21,6 @@ import textwrap
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from k4bench.labels import pretty_sample
-
 #: The rendered recipe is an uploaded artifact rather than comment body, so the
 #: cap is only there to bound what a malformed run record can produce.
 _MAX_BYTES = 65536
@@ -337,6 +335,10 @@ def _command(
     checking out the commit its nightly ran.
     """
     lines = [
+        # Inside the subshell, never at the top: a failed setup would otherwise
+        # benchmark a broken environment and report the difference as a result,
+        # and an errexit set in the reader's own shell would outlive the paste.
+        "set -e",
         f"git checkout {_safe(commit)}",
         f"source {_safe(_NIGHTLY_REPO + '/key4hep/setup.sh')} -r {_safe(release)}",
         "source setup.sh",
@@ -410,10 +412,8 @@ def render_text(facts: ReproducerFacts) -> str:
     The harness is cloned once, and each half runs in a subshell that sources
     its own Key4hep release (:func:`_command`).
     """
-    heading = "k4Bench — reproduce this measurement"
-    scope = " / ".join(
-        (facts.detector, pretty_sample(facts.sample), facts.label)
-    )
+    heading = "k4Bench: reproduce this measurement"
+    scope = " / ".join((facts.detector, facts.sample, facts.label))
     if facts.parity_diffs:
         parity = _note(
             "WARNING: these runs did NOT measure the same workload; the "
@@ -470,6 +470,7 @@ def render_text(facts: ReproducerFacts) -> str:
         f" ({facts.sub_detector})" if facts.sub_detector else ""
     )
     text = "\n".join((
+        "#!/usr/bin/env bash",
         f"# {heading}",
         "# " + "=" * len(heading),
         "#",
@@ -483,9 +484,9 @@ def render_text(facts: ReproducerFacts) -> str:
         parity,
         "#",
         _note(
-            "Paste this whole file into one shell. Each half runs in a "
-            "subshell, so the two Key4hep releases never share an environment "
-            "and neither reaches your own."
+            "Run it with `bash <this file>`, or paste the whole thing into one "
+            "shell. Each half runs in a subshell, so the two Key4hep releases "
+            "never share an environment and neither reaches your own."
         ),
         "",
         _rule("harness (cloned once)"),
@@ -497,10 +498,10 @@ def render_text(facts: ReproducerFacts) -> str:
             *shared_fetch,
         ] if shared_fetch else []),
         "",
-        _rule(f"BEFORE — Key4hep {facts.base_release}"),
+        _rule(f"BEFORE: Key4hep {facts.base_release}"),
         before,
         "",
-        _rule(f"AFTER — Key4hep {facts.onset_release}"),
+        _rule(f"AFTER: Key4hep {facts.onset_release}"),
         after,
         "",
         _note(
