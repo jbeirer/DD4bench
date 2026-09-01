@@ -65,10 +65,12 @@ def _facts(**after_overrides):
 def _halves(body: str) -> list[str]:
     """The two per-release subshells of a rendered recipe, in order.
 
-    The first subshell in the file is the outer fail-fast wrapper around every
-    stage, so the halves are the two after it.
+    They are the last two subshells in the file: the outer fail-fast wrapper
+    around every stage opens first, and a shared input fetch — itself a
+    subshell, since it has to source a release for ``xrdcp`` — comes between
+    that wrapper and the halves whenever both runs read the same sources.
     """
-    halves = body.split("\n(\n")[2:]
+    halves = body.split("\n(\n")[-2:]
     return [half.split("\n)\n", 1)[0] for half in halves]
 
 
@@ -268,6 +270,12 @@ def test_a_shared_input_is_fetched_once_and_a_differing_one_per_half():
     assert shared.count("xrdcp --force") == 1
     # Fetched outside both subshells, since both runs read the same file.
     assert all("xrdcp" not in half for half in _halves(shared))
+    # xrdcp is a Key4hep tool, so the shared fetch sources a release of its
+    # own before reaching for it — in a subshell, so that release cannot
+    # follow it into either half.
+    fetch = shared.split("\n(\n")[2].split("\n)\n", 1)[0]
+    setup = "source /cvmfs/sw-nightlies.hsf.org/key4hep/setup.sh -r 2026-08-27"
+    assert fetch.index(setup) < fetch.index("xrdcp --force")
 
     # Differing sources are a workload difference, and each half has to run
     # against the one its own nightly used.
