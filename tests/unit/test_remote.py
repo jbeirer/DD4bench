@@ -389,6 +389,17 @@ def test_shared_adapter_blocks_rather_than_opening_extra_connections():
 # ---------------------------------------------------------------------------
 
 
+def test_fetch_run_info_reads_and_returns_the_exact_record(monkeypatch):
+    det, plat, stack, sample = "DET", "PLAT", "key4hep-2026-05-20", "single_e"
+    url = f"{BASE}/{det}/{plat}/{stack}/{sample}/run-17/run_info.json"
+    fake = FakeWeb({url: b'{"commit_sha":"abc","n_events":100}'})
+    _use_session(monkeypatch, fake.get)
+    assert remote.fetch_run_info(
+        BASE, det, plat, stack, sample, "run-17"
+    ) == {"commit_sha": "abc", "n_events": 100}
+    assert fake.requested == [url]
+
+
 def test_fetch_run_commit_reads_exactly_one_run_info(monkeypatch):
     det, plat, stack, sample = "DET", "PLAT", "key4hep-2026-05-20", "single_e"
     run_url = "https://github.com/key4hep/k4Bench/actions/runs/9"

@@ -241,6 +241,28 @@ onset summary above the table describes exactly the onsets the table shows. A
 row nobody scored — a regression this pull request was not even a candidate for
 — says "not scored" rather than 0%, which would claim a judgement no model made.
 
+### Reproducing the measurement
+
+A collapsed **Reproduce this measurement** section follows the current-detail
+region. It belongs only to the strongest row in tonight's plan; retained rows
+are historical evidence and never receive a newly constructed recipe. The two
+commands are built from the exact before/after `run_info.json` records: geometry,
+event count, ddsim arguments, seed, harness commit, Key4hep release and Actions
+run. HepMC recipes also download the source xrootd input recorded by the run;
+for older records, the checked-in benchmark YAML supplies that URL.
+
+The block compares event count, ddsim arguments, seed and harness commit. If
+they differ it says so explicitly instead of describing the two measurements as
+the same workload. Each half starts in a fresh shell and asks `setup.sh` for the
+recorded nightly repository and release. Since nightlies expire from CVMFS after
+roughly three weeks, old recipes also say when they can no longer be executed.
+
+No absolute timing or memory value is quoted. Those values are remeasured and
+move nightly; the recipe names only the percentage at the same one-decimal
+precision already visible in the table. Its immutable command facts are part of
+the comment digest, so a newly readable run record can improve a standing
+comment without turning normal nightly measurement noise into edit churn.
+
 ### Current rows and retained rows
 
 The table is **not** rebuilt from tonight's confirmed rows alone. A row can be

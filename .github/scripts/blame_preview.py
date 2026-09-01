@@ -309,6 +309,7 @@ def main(argv: list[str] | None = None) -> int:
         plans,
         attributor=attributor,
         **_blame_comment._review_inputs(args.read_token, attributor),
+        run_info_for=_blame_comment._run_info_source(args.data_url),
         dashboard_url=args.dashboard_url,
         min_score=policy.min_score,
     )

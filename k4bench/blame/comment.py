@@ -99,6 +99,9 @@ from k4bench.blame.models import (
     CandidatePR,
     HistoricalRef,
 )
+from k4bench.blame.reproduce import ReproducerFacts
+from k4bench.blame.reproduce import facts_from as reproducer_facts_from
+from k4bench.blame.reproduce import render as render_reproducer
 from k4bench.labels import pretty_platform, pretty_sample
 from k4bench.regression.models import MetricVerdict, NightlyReport
 from k4bench.regression.render import (
@@ -1643,6 +1646,11 @@ PatchFor = Callable[[str, int], str]
 #: whose prompts carry none.
 BodyFor = Callable[[str, int], str]
 
+#: How a caller supplies one exact run's immutable metadata —
+#: ``(detector, platform, stack, sample, run_id) -> run_info``. Like the diff
+#: seams above it is injected so this module remains free of network I/O.
+RunInfoFor = Callable[[str, str, str, str, str], dict | None]
+
 
 def build_comments(
     plans: list[CommentPlan],
@@ -1650,6 +1658,7 @@ def build_comments(
     attributor: Attributor | None = None,
     patch_for: PatchFor | None = None,
     body_for: BodyFor | None = None,
+    run_info_for: RunInfoFor | None = None,
     dashboard_url: str | None = None,
     min_score: float = _DEFAULT_MIN_SCORE,
 ) -> list[PRComment]:
@@ -1748,13 +1757,54 @@ def build_comments(
                 plan.target, attribution.assessment.reason or "no reason given",
             )
             continue
+        reproduce = _reproducer_for(
+            plan, attribution=attribution, run_info_for=run_info_for,
+        )
         comments.append(
             _render(
                 plan, attribution, request,
+                reproduce=reproduce,
                 dashboard_url=dashboard_url, min_score=min_score,
             )
         )
     return comments
+
+
+def _reproducer_for(
+    plan: CommentPlan,
+    *,
+    attribution: Attribution | None,
+    run_info_for: RunInfoFor | None,
+) -> ReproducerFacts | None:
+    """Best-effort reproducer for the strongest current row in *plan*."""
+    if run_info_for is None or not plan.rows:
+        return None
+    row = sorted(plan.rows, key=lambda item: _row_sort_key(item, attribution))[0]
+    verdict = row.verdict
+    if not verdict.last_accepted_run_id or not verdict.last_accepted_run_date \
+            or not verdict.onset_run_id or not verdict.onset_run_date:
+        return None
+    try:
+        base_info = run_info_for(
+            verdict.detector, verdict.platform,
+            f"key4hep-{verdict.last_accepted_run_date}", verdict.sample,
+            verdict.last_accepted_run_id,
+        )
+        onset_info = run_info_for(
+            verdict.detector, verdict.platform,
+            f"key4hep-{verdict.onset_run_date}", verdict.sample,
+            verdict.onset_run_id,
+        )
+        facts = reproducer_facts_from(row, base_info, onset_info)
+    except Exception as exc:  # noqa: BLE001 — optional metadata must fail soft
+        _log.info("build_comments: no reproducer for %s (%s)", plan.target, exc)
+        return None
+    if facts is None:
+        _log.info(
+            "build_comments: no reproducer for %s — run records were missing "
+            "or incompatible", plan.target,
+        )
+    return facts
 
 
 def _review(
@@ -1976,6 +2026,7 @@ def _render(
     attribution: Attribution | None,
     request: AttributionRequest | None,
     *,
+    reproduce: ReproducerFacts | None,
     dashboard_url: str | None,
     min_score: float,
 ) -> PRComment:
@@ -1989,7 +2040,7 @@ def _render(
     by_likelihood = sorted(
         plan.rows, key=lambda row: _row_sort_key(row, attribution)
     )
-    payload = _facts_payload(plan, request)
+    payload = _facts_payload(plan, request, reproduce)
     digest = _digest_from(payload, [])
     # The details region renders current-only here — the retained rows live in
     # the prior owned body, which only the publisher reads — and is re-rendered
@@ -2000,6 +2051,12 @@ def _render(
         historical=[], retained_marker=None,
     )
     observation = _observation_for(plan, by_likelihood, dashboard_url)
+    reproduce_block = render_reproducer(reproduce) if reproduce is not None else ""
+    if reproduce is not None and not reproduce_block:
+        # Rendering can decline an oversized block. Its unseen facts must not
+        # churn the digest of a comment that does not actually carry it.
+        payload = _facts_payload(plan, request, None)
+        digest = _digest_from(payload, [])
 
     body = "\n".join(
         part for part in (
@@ -2013,6 +2070,7 @@ def _render(
             _DETAILS_START,
             region,
             _DETAILS_END,
+            reproduce_block or None,
             _HISTORY_PLACEHOLDER,
             _others_section(plan),
             "",
@@ -3115,7 +3173,8 @@ def _digest_from(
 
 
 def _facts_payload(
-    plan: CommentPlan, request: AttributionRequest | None = None
+    plan: CommentPlan, request: AttributionRequest | None = None,
+    reproduce: ReproducerFacts | None = None,
 ) -> dict[str, Any]:
     """The *benchmark facts* behind a comment, as the digest's canonical payload.
 
@@ -3235,6 +3294,7 @@ def _facts_payload(
             for ref in plan.historical_refs
         ],
         "evidence": _evidence_facts(request),
+        "reproduce": reproduce.payload() if reproduce is not None else None,
     }
     return payload
 

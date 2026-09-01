@@ -253,7 +253,8 @@ fi
 
 # run_info.json
 python3 - "${DETECTOR}" "${SAMPLE}" "${DATE}" "${K4H_PLATFORM}" "${K4H_RELEASE}" \
-          "${N_EVENTS}" "${SWEEP}" "${XML_PATH}" "${DDSIM_ARGS}" <<PYEOF
+          "${N_EVENTS}" "${SWEEP}" "${XML_PATH}" "${DDSIM_ARGS}" \
+          "${INPUT_FILES}" "${STEERING_FILE}" <<PYEOF
 import json, os, shlex, sys
 
 detector, sample, date, platform, k4h_rel = sys.argv[1:6]
@@ -264,6 +265,8 @@ sweep    = sys.argv[7] == "true"
 # geometry this run actually reads, instead of inferring it from path names.
 xml_path = sys.argv[8] if len(sys.argv) > 8 else ""
 ddsim_args = sys.argv[9] if len(sys.argv) > 9 else ""
+input_files = shlex.split(sys.argv[10]) if len(sys.argv) > 10 and sys.argv[10] else []
+steering_file = sys.argv[11] if len(sys.argv) > 11 else ""
 
 # The Monte-Carlo workload this run actually measured. Timing is a function of
 # which events were simulated, so a report comparing two nights is only
@@ -310,6 +313,11 @@ run_info = {
     "sweep":            sweep,
     "ddsim_args":       ddsim_args,
     "random_seed":      _random_seed(ddsim_args),
+    # Preserve the configured source values.  DDSIM_ARGS above names the /tmp
+    # copy actually read by ddsim; a reproducer also needs the xrootd URL from
+    # which that ephemeral file was obtained.
+    "input_files":      input_files,
+    "steering_file":    steering_file,
     "configs":          ${CONFIGS_JSON},
     "configured_labels": ${CONFIGURED_LABELS_JSON},
 }

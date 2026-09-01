@@ -58,6 +58,55 @@ sys.path.insert(0, str(_REPO_ROOT))
 _log = logging.getLogger(__name__)
 
 
+def _benchmark_inputs(root: Path = _REPO_ROOT / ".github" / "benchmarks") -> dict:
+    """Legacy run-info supplements keyed by ``(detector, sample)``."""
+    import yaml
+
+    inputs = {}
+    for path in sorted(root.glob("*.yml")):
+        try:
+            data = yaml.safe_load(path.read_text()) or {}
+        except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+            _log.info("blame_comment: could not read input fallback %s (%s)", path, exc)
+            continue
+        detector = Path(str(data.get("xml") or path.stem)).stem
+        for sample in data.get("samples") or ():
+            if not isinstance(sample, dict) or not sample.get("name"):
+                continue
+            inputs[(detector, str(sample["name"]))] = {
+                "input_files": sample.get("input_files", data.get("input_files")),
+                "steering_file": sample.get("steering_file", data.get("steering_file")),
+            }
+    return inputs
+
+
+def _run_info_source(data_url: str | None):
+    """Memoized exact-run reader, enriched for pre-metadata HepMC runs."""
+    if not data_url:
+        return None
+    from k4bench.remote import fetch_run_info
+
+    fallback = _benchmark_inputs()
+    cache: dict[tuple[str, str, str, str, str], dict | None] = {}
+
+    def run_info_for(
+        detector: str, platform: str, stack: str, sample: str, run_id: str,
+    ) -> dict | None:
+        key = (detector, platform, stack, sample, run_id)
+        if key not in cache:
+            info = fetch_run_info(data_url, *key)
+            if info is not None:
+                info = dict(info)
+                legacy = fallback.get((detector, sample), {})
+                for name in ("input_files", "steering_file"):
+                    if name not in info and legacy.get(name) is not None:
+                        info[name] = legacy[name]
+            cache[key] = info
+        return cache[key]
+
+    return run_info_for
+
+
 def _load_policy(path: Path, overrides: dict):
     """The comment policy from *path*, with any CLI *overrides* applied.
 
@@ -170,6 +219,11 @@ def main(argv: list[str] | None = None) -> int:
              "(default: .github/blame-comments.yml)",
     )
     parser.add_argument("--dashboard-url", default=os.environ.get("K4BENCH_DASHBOARD_URL"))
+    parser.add_argument(
+        "--data-url", default=os.environ.get("K4BENCH_DATA_URL"),
+        help="WebEOS base URL used to read exact run_info.json records "
+             "(default: $K4BENCH_DATA_URL)",
+    )
     parser.add_argument(
         "--token", default=os.environ.get("K4BENCH_PR_COMMENT_TOKEN"),
         help="GitHub token with pull-requests:write on the allowlisted repos "
@@ -296,6 +350,7 @@ def main(argv: list[str] | None = None) -> int:
         plans,
         attributor=attributor,
         **_review_inputs(args.read_token, attributor),
+        run_info_for=_run_info_source(args.data_url),
         dashboard_url=args.dashboard_url,
         min_score=policy.min_score,
     )

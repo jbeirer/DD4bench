@@ -191,11 +191,12 @@ def _plans(report, blame, policy=None):
 
 
 def _comments(report, blame, policy=None, *, attributor=None, patch_for=None,
-              body_for=None, dashboard_url=_DASH):
+              body_for=None, run_info_for=None, dashboard_url=_DASH):
     policy = policy or _policy()
     return build_comments(
         _plans(report, blame, policy),
         attributor=attributor, patch_for=patch_for, body_for=body_for,
+        run_info_for=run_info_for,
         dashboard_url=dashboard_url, min_score=policy.min_score,
     )
 
@@ -217,6 +218,31 @@ def _table_rows(body: str) -> list[str]:
         line for line in body.splitlines()
         if line.startswith("| `") or line.startswith("| [`")
     ]
+
+
+def _run_info_for(*, args="--random.seed 42 --enableGun", missing=False):
+    calls = []
+
+    def fetch(detector, platform, stack, sample, run_id):
+        calls.append((detector, platform, stack, sample, run_id))
+        if missing and len(calls) == 1:
+            return None
+        return {
+            "detector": detector,
+            "platform": platform,
+            "sample": sample,
+            "k4h_release": stack,
+            "xml_path": f"FCCee/{detector}/compact/{detector}.xml",
+            "github_run_url": f"https://github.test/actions/runs/{run_id}",
+            "commit_sha": "c" * 40,
+            "n_events": 1000,
+            "ddsim_args": args,
+            "random_seed": 42,
+            "input_files": [],
+            "steering_file": "",
+        }
+
+    return fetch, calls
 
 
 # ── The policy ────────────────────────────────────────────────────────────────
@@ -1542,6 +1568,57 @@ def test_external_prose_cannot_carry_an_active_link():
     # details sentinels and the history slot; the one smuggled into the reason
     # is broken by the same zero-width space.
     assert body.count("<!--") == 5 and body.startswith("<!--")
+
+
+# ── Runnable reproducer ───────────────────────────────────────────────────────
+
+def test_reproducer_renders_for_the_strongest_current_row_only():
+    weak = _verdict(label="without_ECal", metric="wall_time_s", pct=0.4)
+    strong = _verdict(label="without_TPC", metric="mean_time_s", pct=0.2)
+    report = _report(weak, strong)
+    blame = _blame_of(
+        (weak, [_candidate(score=82)]),
+        (strong, [_candidate(score=96)]),
+    )
+    fetch, calls = _run_info_for()
+    body = _comments(report, blame, run_info_for=fetch)[0].body
+    assert "<b>🔁 Reproduce this measurement</b>" in body
+    assert body.count("Reproduce this measurement") == 1
+    assert "without_TPC</summary>" in body
+    assert "--sweep-detectors TPC" in body
+    assert "--sweep-detectors ECal" not in body
+    assert len(calls) == 2
+    assert body.index(comment_mod._DETAILS_END) < body.index("Reproduce this measurement")
+    assert body.index("Reproduce this measurement") < body.index(comment_mod._HISTORY_PLACEHOLDER)
+
+
+def test_reproducer_is_absent_when_either_run_record_is_missing():
+    verdict = _verdict(label="baseline_all")
+    fetch, calls = _run_info_for(missing=True)
+    body = _comments(_report(verdict), _blame([verdict], [_candidate()]),
+                     run_info_for=fetch)[0].body
+    assert "Reproduce this measurement" not in body
+    assert len(calls) == 2
+
+
+def test_reproducer_command_changes_digest_but_tonights_value_does_not():
+    verdict = _verdict(label="baseline_all", pct=0.204)
+    report = _report(verdict)
+    blame = _blame([verdict], [_candidate()])
+    fetch_a, _ = _run_info_for(args="--random.seed 42 --enableGun")
+    original = _comments(report, blame, run_info_for=fetch_a)[0]
+
+    # Values excluded by the digest can move without changing the command or
+    # the visible one-decimal percentage.
+    moved = replace(verdict, value=999.0, baseline_median=888.0, z_score=22.0)
+    fetch_b, _ = _run_info_for(args="--random.seed 42 --enableGun")
+    same = _comments(_report(moved), _blame([moved], [_candidate()]),
+                     run_info_for=fetch_b)[0]
+    assert same.facts_digest == original.facts_digest
+
+    fetch_c, _ = _run_info_for(args="--random.seed 42 --enableGun --foo changed")
+    changed = _comments(report, blame, run_info_for=fetch_c)[0]
+    assert changed.facts_digest != original.facts_digest
 
 
 # ── Stability, and the facts digest ───────────────────────────────────────────
