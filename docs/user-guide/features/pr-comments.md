@@ -264,22 +264,28 @@ commands for *that* configuration, and one recipe under the whole comment
 answers only one of them — so each link points at the row it actually
 reproduces and can never land on commands for a different configuration.
 
-Which rows get one is decided **without any model score**: one row reserved per
-step onset, then the largest movements, ties broken by identity, capped at
-twice the table's height. The table is ranked by attribution likelihood, but
-the recipes must not be — the published set and its URLs are hashed into the
-facts digest, and a digest that moved when two model scores swapped places
-would edit standing comments, re-notifying every subscriber on nothing but
-model drift. The cap also bounds the cost: a detector-removal sweep confirms
-hundreds of near-identical rows, and a night still uploads ten small files
+Two sets are published, and their union is what gets uploaded: **the rows the
+table shows**, so every rendered row can link its own commands, and a
+**model-independent set** that is the only part the facts digest hashes. The
+second is ranked on benchmark facts alone — one row reserved per step onset,
+then the largest movements, ties broken by identity, capped at twice the
+table's height.
+
+The split is what lets two properties hold at once. The table is ranked by
+attribution likelihood, so hashing every published recipe would let two model
+scores swapping places edit a standing comment and re-notify every subscriber
+on nothing but model drift — the one thing the digest exists to prevent.
+Hashing only the model-independent subset keeps the digest a statement about
+benchmark facts, while the rendered table still links a recipe on every row it
+shows. A link that appears because the ranking moved therefore surfaces on the
+next edit some real change earns, exactly as a row that entered the table the
+same way already does. Both sets are bounded, so a detector-removal sweep that
+confirms hundreds of near-identical rows still uploads a handful of small files
 rather than a directory.
 
-The split means a row the table shows can fall outside the published set and
-render an empty cell. That is the safe direction to fail — a missing link is a
-smaller harm than a nightly edit storm — and at twice the table's height the
-overlap is near-total in practice. A row whose run records cannot be read keeps
-an empty cell too, rather than borrowing a neighbour's commands, and the column
-is dropped entirely when no shown row has a link.
+A row whose run records cannot be read keeps an empty cell rather than
+borrowing a neighbour's commands, and the column is dropped entirely when no
+shown row has a link.
 
 A retained row keeps the recipe published on the night it was last confirmed —
 carried in its snapshot rather than rebuilt. The file name is derivable from
