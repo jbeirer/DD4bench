@@ -5,14 +5,24 @@ performs the write, and nothing else in the pipeline does. Keeping the write in
 one small module means every rule about not spamming someone else's repository
 lives in one readable place:
 
-* **Upsert, never append.** A comment is identified by its hidden marker, so a
-  regression that stands for a week is one comment edited nightly, not seven.
+* **Upsert, never append.** A comment is identified by its hidden window marker.
+  An exact window edits in place, and a strictly expanding or contracting window
+  adopts its nearest comparable version, so a changing finding is still one
+  comment. When formerly separate lineages converge into one containing window,
+  the most recently updated one becomes the survivor.
 * **No pointless edits.** An unchanged comment performs *no* request at all — an
   edit re-surfaces the comment for everyone watching the PR, so it must mean
   something changed. "Unchanged" is judged on the hidden *facts* digest, not on
   the body: part of the body is model prose regenerated every night, and a
   reworded sentence about the same regression is not a change anyone wants a
   notification for.
+* **Keep the observations an edit replaces.** Before a material edit, the new
+  body carries forward a compact history of earlier versions, each linked to its
+  archived report, and the retained-row state that lets a row confirmed in an
+  earlier version stay visible after it stops being confirmed
+  (:func:`~k4bench.blame.comment.materialize`). The renderer keeps tonight's
+  observation outside its stable body until this boundary decides a write is
+  already warranted.
 * **Never post blind.** If the existing comments could not be read
   (:func:`~k4bench.blame.github.list_issue_comments` returning ``None``), the PR
   is skipped: a duplicate comment is worse than a missing one.
@@ -27,8 +37,10 @@ lives in one readable place:
   one exception is :class:`~k4bench.blame.github.RateLimitError`, which stops
   the run — past that point nothing will succeed anyway.
 
-``dry_run`` short-circuits every write and logs the exact body instead, which is
-how the bot is verified before a repository is added to the allowlist.
+``dry_run`` short-circuits every read and write and logs the standalone body
+instead. Existing observation history is necessarily absent because the thread
+is deliberately untouched; everything newly rendered remains reviewable before
+a repository is added to the allowlist.
 """
 
 from __future__ import annotations
@@ -36,7 +48,13 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-from k4bench.blame.comment import PRComment, facts_digest_of
+from k4bench.blame.comment import (
+    PRComment,
+    facts_digest_of,
+    materialize,
+    window_contains,
+    window_from_marker,
+)
 from k4bench.blame.github import (
     GitHubClient,
     RateLimitError,
@@ -126,6 +144,7 @@ def publish(
             return result
     for comment in comments:
         if dry_run:
+            comment = materialize(comment)
             _log.info(
                 "publish: [dry run] would comment on %s (likelihood %d%%):\n%s",
                 comment.target, round(comment.score), comment.body,
@@ -150,35 +169,33 @@ def _upsert(
     *,
     login: str,
 ) -> None:
-    """Create, edit, or leave alone the one comment the bot owns for this window.
+    """Create, edit, or leave alone the bot's comment for this window lineage.
 
     A comment counts as the bot's own only when its *first line* is the marker
     (the shape :func:`~k4bench.blame.comment._render` always produces) **and** it
     was written by *login* — a marker quoted inside someone else's comment
-    matches neither test, so it cannot divert the edit. Finding *several* is a
-    broken invariant rather than a choice to make: the pull request is skipped
-    and the duplicate ids logged, since editing one of them would leave the rest
-    standing with reasoning nobody updates.
+    matches neither test, so it cannot divert the edit. An exact marker wins;
+    otherwise the nearest containing or contained window is migrated by replacing
+    its body, including its first-line marker. If formerly separate lineages are
+    equally near, the most recently updated is the deterministic survivor; the
+    others remain as dated historical comments. Duplicate exact markers still
+    fail closed because they already violate the marker's uniqueness invariant,
+    as do duplicates *at the nearest lineage window* — but duplicates at a more
+    distant comparable window, with one unique nearest candidate standing
+    between them and the current window, are logged and ignored rather than
+    allowed to hold the pull request unwritable.
 
     Whether it needs rewriting is decided on the hidden facts digest
     (:func:`~k4bench.blame.comment.facts_digest_of`) rather than the body, so a
-    freshly-worded summary of the same regressions is left alone. Every comment
-    this module writes carries one; a standing comment whose digest line cannot
-    be read falls back to comparing whole bodies, which errs towards an edit
-    rather than towards leaving a stale body in place."""
-    if len(comment.body.encode()) > _MAX_COMMENT_BYTES:
-        # The renderer's caps are meant to keep every body well inside this, so
-        # reaching it means a cap was mis-sized. GitHub would reject the write
-        # anyway; failing here names the comment and the size in our own log
-        # instead of leaving an opaque 422 to be read backwards.
-        _log.warning(
-            "publish: %s's body is %d bytes, over GitHub's %d-byte comment "
-            "limit — not written", comment.target,
-            len(comment.body.encode()), _MAX_COMMENT_BYTES,
-        )
-        result.failed.append(comment.target)
-        return
-
+    freshly-worded summary of the same regressions is left alone. Before that
+    comparison, the body is materialised
+    (:func:`~k4bench.blame.comment.materialize`) with its current and prior
+    observations, and with the retained rows the comparable prior bodies carry;
+    the digest — finalized by that same step — still wins when available, so an
+    unchanged new report date alone performs no edit. Every comment this module
+    writes carries a digest; a standing comment whose digest line cannot be read
+    falls back to comparing whole bodies, which errs towards an edit rather than
+    towards leaving a stale body in place."""
     existing = list_issue_comments(client, comment.repo, comment.number)
     if existing is None:
         _log.warning(
@@ -188,12 +205,11 @@ def _upsert(
         result.failed.append(comment.target)
         return
 
-    marker_line = comment.marker + "\n"
-    mine = [
-        c for c in existing
-        if c.body.startswith(marker_line) and c.author == login
+    owned = [c for c in existing if c.author == login]
+    exact = [
+        c for c in owned if c.body.partition("\n")[0] == comment.marker
     ]
-    if len(mine) > 1:
+    if len(exact) > 1:
         # Two comments the bot owns for one window: the upsert's identity
         # assumption is broken, and editing an arbitrary one leaves the other
         # standing with stale reasoning. Neither writing nor guessing is safe,
@@ -203,11 +219,126 @@ def _upsert(
             "publish: %s carries %d comments with this window's marker "
             "(ids %s) — editing an arbitrary one would leave the others "
             "stale; skipping",
-            comment.target, len(mine), ", ".join(str(c.id) for c in mine),
+            comment.target, len(exact), ", ".join(str(c.id) for c in exact),
         )
         result.failed.append(comment.target)
         return
-    if not mine:
+
+    existing_comment = exact[0] if exact else None
+    migrating = False
+    lineage_bodies: list[str] = []
+    current_window = window_from_marker(comment.marker)
+    if existing_comment is None and current_window is not None:
+        lineage = [
+            (c, window)
+            for c in owned
+            if (window := window_from_marker(c.body.partition("\n")[0])) is not None
+            and window != current_window
+            and (
+                window_contains(current_window, window)
+                or window_contains(window, current_window)
+            )
+        ]
+        nearest = [
+            (candidate, window)
+            for candidate, window in lineage
+            if not any(
+                other_window != window
+                and (
+                    (
+                        window_contains(current_window, other_window)
+                        and window_contains(other_window, window)
+                    )
+                    or (
+                        window_contains(window, other_window)
+                        and window_contains(other_window, current_window)
+                    )
+                )
+                for _, other_window in lineage
+            )
+        ]
+        # The duplicate-window invariant is enforced on the *nearest* set, not
+        # the whole lineage: two comments at the nearest window make the
+        # migration target genuinely ambiguous, while duplicates at a more
+        # distant comparable window — already superseded by a unique nearer
+        # comment — are an anomaly for a human to clean up, not a reason to
+        # leave this pull request permanently unwritable.
+        duplicate_nearest = [
+            candidate
+            for candidate, window in nearest
+            if sum(other_window == window for _, other_window in nearest) > 1
+        ]
+        if duplicate_nearest:
+            _log.error(
+                "publish: %s carries duplicate comments at its nearest lineage "
+                "window (ids %s) — editing an arbitrary one would leave the "
+                "others stale; skipping",
+                comment.target,
+                ", ".join(str(candidate.id) for candidate in duplicate_nearest),
+            )
+            result.failed.append(comment.target)
+            return
+        duplicated_windows = {
+            window
+            for _, window in lineage
+            if sum(other_window == window for _, other_window in lineage) > 1
+        }
+        if duplicated_windows:
+            _log.warning(
+                "publish: %s carries duplicate comments at distant lineage "
+                "window(s) (ids %s) — ignoring them and migrating the unique "
+                "nearest comment; the duplicates need a human to remove",
+                comment.target,
+                ", ".join(
+                    str(candidate.id)
+                    for candidate, window in lineage
+                    if window in duplicated_windows
+                ),
+            )
+        if nearest:
+            existing_comment = max(
+                (candidate for candidate, _ in nearest),
+                key=lambda candidate: (candidate.updated_at, candidate.id),
+            )
+            migrating = True
+            if len(nearest) > 1:
+                _log.warning(
+                    "publish: %s has %d equally near lineage comments (ids %s); "
+                    "migrating most recently updated id %s and leaving the "
+                    "others as historical comments",
+                    comment.target,
+                    len(nearest),
+                    ", ".join(str(candidate.id) for candidate, _ in nearest),
+                    existing_comment.id,
+                )
+            # Converging lineages hand their retained rows to the survivor: the
+            # survivor's body first, then every other comparable body whose
+            # window is unique (the flagged duplicates stay out — which copy of
+            # an anomaly to trust is not a call worth guessing). Only the new
+            # body is written; the other comments stand untouched, so no marker
+            # is ever duplicated by the merge.
+            lineage_bodies = [existing_comment.body] + [
+                candidate.body
+                for candidate, window in lineage
+                if candidate.id != existing_comment.id
+                and window not in duplicated_windows
+            ]
+
+    if not lineage_bodies and existing_comment is not None:
+        lineage_bodies = [existing_comment.body]
+    comment = materialize(comment, lineage_bodies)
+    if len(comment.body.encode()) > _MAX_COMMENT_BYTES:
+        # Measure only after carrying the existing observation history forward:
+        # that is the actual body GitHub would receive.
+        _log.warning(
+            "publish: %s's body is %d bytes, over GitHub's %d-byte comment "
+            "limit — not written", comment.target,
+            len(comment.body.encode()), _MAX_COMMENT_BYTES,
+        )
+        result.failed.append(comment.target)
+        return
+
+    if existing_comment is None:
         url = create_issue_comment(client, comment.repo, comment.number, comment.body)
         if url is None:
             result.failed.append(comment.target)
@@ -216,9 +347,8 @@ def _upsert(
         result.created.append(comment.target)
         return
 
-    existing_comment = mine[0]
     posted_digest = facts_digest_of(existing_comment.body)
-    if (
+    if not migrating and (
         posted_digest == comment.facts_digest
         if posted_digest and comment.facts_digest
         else existing_comment.body == comment.body

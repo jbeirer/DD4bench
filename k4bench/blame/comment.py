@@ -35,17 +35,20 @@ must pass:
 * and, when a cross-configuration review ran, it did not acquit the pull request
   outright (:func:`build_comments`'s withdrawal gate).
 
-One comment covers one ``(pull request, change window)`` pair — the reader's
-question is "did my change do this?", asked once — and :func:`marker_for` gives
-that pair a stable hidden key so a later night edits the existing comment
-instead of posting a second one. Everything the window regressed goes into one
-table ordered by attribution likelihood, across every detector, sample, platform
-and benchmark configuration: which configurations moved *and which did not* is
-the substance of the claim, so it is one table a reader can scan rather than one
-configuration in full and the rest in a footnote. That table shows only its top
-few rows, and one line under it counts the window's regressions and links all of
-them in the dashboard, which is where any other reading of the night — by step
-size, by configuration, over time — already lives.
+One comment covers one pull request and one change-window lineage — the reader's
+question is "did my change do this?", asked once. A strictly expanding or
+contracting window is a newer view of the same finding, while non-containing
+windows remain distinct. :func:`marker_for` names the current window, and the
+publisher migrates the nearest comparable marker. A containing window keeps its
+newest steps distinct in an onset summary, and its bounded detail table reserves
+the globally strongest row and one row for each represented onset before filling
+the remaining places by attribution likelihood. Rows that stopped being
+confirmed are not simply dropped: each material version carries a bounded,
+validated snapshot of its strongest rows (:class:`RetainedRow`), and the next
+version's table resurfaces the ones that still outrank tonight's evidence —
+dated, annotated with their current report standing, and never rescored. A
+collapsed observation history retains the newest material reports behind
+immutable dashboard links. The dashboard remains the complete view.
 
 A comment is written once and thereafter only *edited*, never retracted: when
 the regression resolves, or the candidate drops below ``min_score``, tonight's
@@ -62,9 +65,14 @@ import hashlib
 import json
 import logging
 import math
-from collections.abc import Callable, Iterator
-from dataclasses import dataclass, field
+from base64 import b64decode, urlsafe_b64encode
+from binascii import Error as BinasciiError
+from collections import Counter
+from collections.abc import Callable, Iterator, Sequence
+from dataclasses import asdict, dataclass, field, replace
+from datetime import date
 from typing import Any
+from urllib.parse import urlsplit
 
 from k4bench.blame.attribute import (
     MAX_COMPETITORS,
@@ -108,13 +116,45 @@ _log = logging.getLogger(__name__)
 MARKER_VERSION = "v1"
 
 #: Regression rows shown in the table, and candidate rows shown for the rest of
-#: the window. Both are display caps: the selection above them is complete, and
-#: every row is still scored — only the rendering is bounded. A sweep can confirm
-#: three hundred near-identical rows and a comment over GitHub's 65,536-character
-#: limit is rejected outright, so everything past a cap is counted in one line
-#: pointing at the dashboard.
-_MAX_TABLE_ROWS = 5
+#: the window. Every other row is still scored and linked through the dashboard.
+#: A sweep can confirm three hundred near-identical rows and a comment over
+#: GitHub's 65,536-character limit is rejected outright, so these hard bounds
+#: are part of the write contract rather than only a presentation preference.
+_TARGET_TABLE_ROWS = 5
 _MAX_OTHER_CANDIDATES = 5
+_UNKNOWN_ONSET = "unknown"
+
+#: Material versions retained in one comment. Each carries an archived report
+#: link twice (visible and in its machine-readable marker), so an unbounded list
+#: would eventually cross GitHub's body limit and make the lineage unwritable.
+_MAX_OBSERVATIONS = 20
+
+#: Stable insertion point for the compact observation history. The renderer
+#: leaves it empty so a standing comment remains byte-identical on an unchanged
+#: night; the publisher fills it only when a create or material edit will
+#: actually happen.
+_HISTORY_PLACEHOLDER = "<!-- k4bench-blame-history -->"
+_OBSERVATION_PREFIX = "<!-- k4bench-blame-observation:v1 "
+_OBSERVATION_SUFFIX = " -->"
+_OMITTED_OBSERVATIONS_PREFIX = "<!-- k4bench-blame-observations-omitted:v1 "
+
+#: Retained-row snapshots carried in one comment's single hidden state marker —
+#: the strongest candidates for the table, current and historical alike. The cap
+#: bounds the marker (and so the body) however wide a night is; anything past it
+#: is dropped strongest-last, and the dashboard remains the complete view.
+_MAX_RETAINED_ROWS = 20
+
+#: The write-boundary region between these two hidden lines — the onset summary,
+#: the assessment, and the regression table — is re-rendered by
+#: :func:`materialize` once the publisher knows the prior owned bodies, so rows
+#: retained from earlier material versions can join the table from structured
+#: state rather than from parsing any presentation Markdown. The rendered body
+#: between the sentinels carries nothing that varies night to night, so a
+#: standing comment still renders byte-identically until something changes.
+_DETAILS_START = "<!-- k4bench-blame-details:start -->"
+_DETAILS_END = "<!-- k4bench-blame-details:end -->"
+_RETAINED_PREFIX = "<!-- k4bench-blame-retained:v1 "
+_RETAINED_SUFFIX = " -->"
 
 #: Likelihood points between this PR and the closest other candidate at or
 #: under which the ranking is called a weak preference in words. Wide enough to
@@ -295,13 +335,78 @@ def _positive_int(value: object, name: str) -> int:
 
 
 @dataclass(frozen=True)
+class CommentObservation:
+    """One materially different report snapshot retained in a PR comment."""
+
+    report_night: str
+    base_release: str | None
+    onset_release: str
+    regressions: int
+    scopes: int
+    up: int
+    down: int
+    none: int
+    url: str | None = None
+
+
+@dataclass(frozen=True)
+class RetainedRow:
+    """One regression row's snapshot as a comment's hidden state retains it.
+
+    A row that stops being confirmed disappears from tonight's report, and with
+    it from the plan — but a reader who was shown "``mean_time_s`` +36.7%, 88%"
+    two nights ago deserves to keep seeing that finding, dated, rather than have
+    it silently vanish under weaker rows. So every material comment version
+    carries a bounded list of these snapshots in one versioned marker, and the
+    next version's table can resurface the ones no longer confirmed.
+
+    Every field is frozen at the row's **last confirmation**: the movement and
+    likelihood are what that night's review recorded — never rescored after the
+    row stopped being confirmed — and ``source`` says which model produced the
+    number. ``state`` is the pull request's scope standing on that night
+    (:data:`~k4bench.blame.attribute.ScopeCandidateState`), kept so a
+    ``not_candidate`` row can never be resurrected wearing a percentage. The
+    window, ``stack``, ``onset`` and ``last_confirmed`` are exactly the fields a
+    dashboard deep link needs, so no URL is ever stored. Decoded state is
+    validated as strictly as the observation markers; a marker that fails any
+    check is ignored whole and the current rows render on their own.
+    """
+
+    detector: str
+    platform: str
+    sample: str
+    label: str
+    metric: str
+    sub_detector: str
+    direction: str
+    pct: float | None
+    onset: str
+    onset_run: str
+    base_release: str | None
+    onset_release: str
+    stack: str
+    last_confirmed: str
+    likelihood: float | None
+    source: str
+    state: str
+
+
+@dataclass(frozen=True)
 class PRComment:
     """One rendered comment and where it goes.
 
     ``marker`` is the hidden key the upsert recognises and ``facts_digest``
     fingerprints the benchmark facts behind the body; both are hidden lines at
     the top of ``body``, so a comment always carries the keys that identify it
-    and the state it was rendered from.
+    and the state it was rendered from. ``observation`` stays outside the stable
+    rendered body until the publisher knows a write is warranted, so retaining
+    report dates cannot turn an unchanged night into an edit.
+
+    ``plan``, ``attribution``, ``dashboard_url`` and ``facts_payload`` are
+    **ephemeral materialization inputs**, never serialized anywhere: they let
+    :func:`materialize` re-render the region between the details sentinels — and
+    finalize the digest — once the publisher has read the prior owned bodies and
+    knows which retained rows are still worth showing.
     """
 
     repo: str
@@ -310,6 +415,11 @@ class PRComment:
     body: str
     score: float
     facts_digest: str = ""
+    observation: CommentObservation | None = None
+    plan: "CommentPlan | None" = None
+    attribution: Attribution | None = None
+    dashboard_url: str | None = None
+    facts_payload: dict[str, Any] | None = None
 
     @property
     def target(self) -> str:
@@ -318,18 +428,49 @@ class PRComment:
 
 
 def marker_for(base_release: str | None, onset_release: str | None) -> str:
-    """The hidden HTML key identifying a comment about one change window.
+    """The hidden HTML key naming a comment's current change window.
 
-    The window is the identity because it is what the comment is *about*: the
-    same PR implicated in a genuinely different window gets its own comment,
-    while tonight's re-confirmation of the same window edits the one already
-    there. Reuses :func:`~k4bench.regression.render.window_token` so the key and
-    the dashboard link it carries name the window identically.
+    A re-confirmation matches this exact key; a strictly expanding or contracting
+    window adopts and rewrites the nearest comparable key at publish time.
+    Non-containing windows stay separate. Reuses
+    :func:`~k4bench.regression.render.window_token` so the key and the dashboard
+    link it carries name the window identically.
     """
     return (
         f"<!-- k4bench-blame-comment:{MARKER_VERSION} "
         f"window={window_token(base_release, onset_release)} -->"
     )
+
+
+ChangeWindow = tuple[str | None, str]
+
+
+def window_contains(outer: ChangeWindow, inner: ChangeWindow) -> bool:
+    """Whether half-open *outer* fully contains half-open *inner*.
+
+    ``None`` is an unbounded base, so only another unbounded window can contain
+    it. Release identifiers are ISO dates in report data and therefore sort in
+    their chronological order as strings.
+    """
+    outer_base, outer_onset = outer
+    inner_base, inner_onset = inner
+    base_contains = outer_base is None or (
+        inner_base is not None and outer_base <= inner_base
+    )
+    return base_contains and outer_onset >= inner_onset
+
+
+def window_from_marker(marker: str) -> ChangeWindow | None:
+    """Parse one current-version marker, rejecting anything not emitted here."""
+    prefix = f"<!-- k4bench-blame-comment:{MARKER_VERSION} window="
+    suffix = " -->"
+    if "\n" in marker or not marker.startswith(prefix) or not marker.endswith(suffix):
+        return None
+    token = marker[len(prefix):-len(suffix)]
+    base, separator, onset = token.partition("..")
+    if not separator or not onset or ".." in onset or any(c.isspace() for c in token):
+        return None
+    return (base or None, onset)
 
 
 #: Prefix of the second hidden line — see :func:`_facts_digest` and
@@ -349,6 +490,521 @@ def facts_digest_of(body: str) -> str:
         if line.startswith(_FACTS_MARKER_PREFIX) and line.endswith("-->"):
             return line[len(_FACTS_MARKER_PREFIX):-3].strip()
     return ""
+
+
+def materialize(
+    comment: PRComment, previous_bodies: Sequence[str] = ()
+) -> PRComment:
+    """Fill *comment*'s write-boundary sections from the prior owned bodies.
+
+    This runs at the write boundary, not during rendering: report dates are
+    intentionally absent from the stable rendered body and must not make an
+    unchanged regression re-notify a pull request every night. The publisher
+    calls this only for the body it is about to compare or write, with the
+    comparable bodies it found — the survivor of this comment's lineage first,
+    then any other comparable lineage comments a converging window is absorbing.
+
+    Three things are materialized, all from structured hidden state rather than
+    from any presentation Markdown:
+
+    * the **regression table region** between the details sentinels is
+      re-rendered so rows retained from earlier material versions
+      (:class:`RetainedRow`) can rejoin the selection pool beside tonight's
+      confirmed rows, and a fresh bounded state marker is written for the next
+      version — merged across every comparable body, deduplicated by row
+      identity with the newest confirmation winning;
+    * the **facts digest** is finalized over that table: which historical rows
+      render, their frozen facts, and their standing in tonight's report are all
+      deterministic inputs a reader can see, so they belong in the digest — while
+      a retained row's mere heartbeat (tonight's date) still does not;
+    * the **observation history** is carried forward from the survivor's body,
+      exactly as before.
+
+    A comment built without materialization inputs (no plan), or whose body
+    carries no sentinels, keeps its region and digest untouched — only the
+    history slot is filled.
+    """
+    comment = _with_details(comment, previous_bodies)
+    return _with_history(
+        comment, previous_bodies[0] if previous_bodies else ""
+    )
+
+
+def _with_history(comment: PRComment, previous_body: str = "") -> PRComment:
+    """Fill *comment*'s history slot, carrying observations from *previous_body*.
+
+    Observations are keyed by report night. Re-running a changed report for the
+    same night replaces that night's entry; a later material change appends one.
+    Each entry is also carried in a base64-encoded hidden marker so the next edit
+    can rebuild the table without parsing presentation Markdown.
+    """
+    current = comment.observation
+    if current is None or _HISTORY_PLACEHOLDER not in comment.body:
+        return comment
+    previous, omitted = _observations(previous_body)
+    observations = {item.report_night: item for item in previous}
+    observations[current.report_night] = current
+    ordered = sorted(
+        observations.values(), key=lambda item: item.report_night, reverse=True
+    )
+    if len(ordered) > _MAX_OBSERVATIONS:
+        omitted += len(ordered) - _MAX_OBSERVATIONS
+        ordered = ordered[:_MAX_OBSERVATIONS]
+    history = _observation_history(ordered, omitted=omitted)
+    return replace(
+        comment,
+        body=comment.body.replace(_HISTORY_PLACEHOLDER, history, 1),
+    )
+
+
+def _observation_marker(observation: CommentObservation) -> str:
+    payload = {
+        "report_night": observation.report_night,
+        "base_release": observation.base_release,
+        "onset_release": observation.onset_release,
+        "regressions": observation.regressions,
+        "scopes": observation.scopes,
+        "up": observation.up,
+        "down": observation.down,
+        "none": observation.none,
+        "url": observation.url,
+    }
+    encoded = urlsafe_b64encode(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).decode().rstrip("=")
+    return f"{_OBSERVATION_PREFIX}{encoded}{_OBSERVATION_SUFFIX}"
+
+
+def _observations(body: str) -> tuple[list[CommentObservation], int]:
+    observations = []
+    omitted = 0
+    for raw_line in body.splitlines():
+        line = raw_line.strip()
+        if line.startswith(_OMITTED_OBSERVATIONS_PREFIX) and line.endswith(
+            _OBSERVATION_SUFFIX
+        ):
+            value = line[
+                len(_OMITTED_OBSERVATIONS_PREFIX):-len(_OBSERVATION_SUFFIX)
+            ]
+            if len(value) <= 9 and value.isascii() and value.isdigit():
+                omitted = max(omitted, int(value))
+            continue
+        if not line.startswith(_OBSERVATION_PREFIX) or not line.endswith(
+            _OBSERVATION_SUFFIX
+        ):
+            continue
+        encoded = line[len(_OBSERVATION_PREFIX):-len(_OBSERVATION_SUFFIX)]
+        try:
+            payload = json.loads(
+                b64decode(
+                    encoded + "=" * (-len(encoded) % 4),
+                    altchars=b"-_",
+                    validate=True,
+                )
+            )
+            observation = CommentObservation(**payload)
+        except (BinasciiError, TypeError, ValueError, UnicodeDecodeError):
+            continue
+        if not _valid_observation(observation):
+            continue
+        observations.append(observation)
+    return observations, omitted
+
+
+def _valid_observation(observation: CommentObservation) -> bool:
+    counts = (
+        observation.regressions,
+        observation.scopes,
+        observation.up,
+        observation.down,
+        observation.none,
+    )
+    return (
+        _iso_date(observation.report_night)
+        and _iso_date(observation.onset_release)
+        and (
+            observation.base_release is None
+            or _iso_date(observation.base_release)
+        )
+        and all(
+            not isinstance(value, bool) and isinstance(value, int) and value >= 0
+            for value in counts
+        )
+        and observation.regressions > 0
+        and 0 < observation.scopes <= observation.regressions
+        and observation.up + observation.down + observation.none
+        == observation.regressions
+        and _safe_observation_url(observation.url)
+    )
+
+
+def _iso_date(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        return date.fromisoformat(value).isoformat() == value
+    except ValueError:
+        return False
+
+
+def _safe_observation_url(value: object) -> bool:
+    if value is None:
+        return True
+    if not isinstance(value, str) or not value or len(value) > 4096:
+        return False
+    if any(char.isspace() or char in "<>()\\\"'" for char in value):
+        return False
+    try:
+        split = urlsplit(value)
+        return (
+            split.scheme in {"http", "https"}
+            and bool(split.netloc)
+            and split.username is None
+            and split.password is None
+            and not split.fragment
+        )
+    except ValueError:
+        return False
+
+
+def _observation_history(
+    observations: list[CommentObservation], *, omitted: int
+) -> str:
+    count = _count(len(observations), "material update")
+    summary = count + (
+        f" · {_count(omitted, 'earlier update')} omitted" if omitted else ""
+    )
+    omitted_marker = (
+        f"{_OMITTED_OBSERVATIONS_PREFIX}{omitted}{_OBSERVATION_SUFFIX}"
+        if omitted else None
+    )
+    lines = [
+        "<details>",
+        f"<summary><b>🕘 Observation history</b> — {summary}</summary>",
+        "",
+        *([omitted_marker] if omitted_marker else []),
+        *(_observation_marker(item) for item in observations),
+        "| Report | Change window | Regressions | Scopes | Directions |",
+        "|:---|:---|---:|---:|:---|",
+    ]
+    for item in observations:
+        report = f"[{item.report_night}]({item.url})" if item.url else item.report_night
+        base = item.base_release or "…"
+        lines.append(
+            f"| {report} | `{base}` → `{item.onset_release}` | "
+            f"{item.regressions} | {item.scopes} | "
+            f"{_direction_text(item.up, item.down, item.none)} |"
+        )
+    if omitted:
+        lines += [
+            "",
+            f"_{_count(omitted, 'earlier material update')} omitted to keep this "
+            "comment within GitHub's size limit._",
+        ]
+    return "\n".join([*lines, "", "</details>"])
+
+
+# ── Retained rows ─────────────────────────────────────────────────────────────
+
+def _with_details(
+    comment: PRComment, previous_bodies: Sequence[str]
+) -> PRComment:
+    """Re-render the details region with the retained rows the prior bodies
+    carry, and finalize the digest over what actually renders.
+
+    The rows retained in the comparable bodies are merged by identity (newest
+    confirmation wins), and any identity confirmed in tonight's report is
+    superseded by its current evidence — including a current ``not_candidate``
+    or unscored standing, which must not be papered over by an old score. What
+    remains is the historical half of the selection pool."""
+    plan = comment.plan
+    if (
+        plan is None
+        or comment.facts_payload is None
+        or _DETAILS_START not in comment.body
+        or _DETAILS_END not in comment.body
+    ):
+        return comment
+    current_identities = {_row_identity(row) for row in plan.rows}
+    historical = sorted(
+        (
+            row
+            for row in _merged_retained(previous_bodies)
+            if _retained_identity(row) not in current_identities
+        ),
+        key=_retained_sort_key,
+    )
+    state = _retained_state(plan, comment.attribution, historical)
+    region, shown_past = _details_region(
+        plan,
+        comment.attribution,
+        dashboard_url=comment.dashboard_url,
+        historical=historical,
+        retained_marker=_retained_marker(state),
+    )
+    head, _, rest = comment.body.partition(_DETAILS_START)
+    _, _, tail = rest.partition(_DETAILS_END)
+    body = f"{head}{_DETAILS_START}\n{region}\n{_DETAILS_END}{tail}"
+    digest = _digest_from(
+        comment.facts_payload,
+        [_retained_fact(row, plan) for row in shown_past],
+    )
+    return replace(
+        comment,
+        body=_replace_facts_line(body, digest),
+        facts_digest=digest,
+    )
+
+
+def _retained_state(
+    plan: CommentPlan,
+    attribution: Attribution | None,
+    historical: list[RetainedRow],
+) -> list[RetainedRow]:
+    """The bounded snapshot list the next material version starts from: every
+    current row at tonight's evidence, then the still-unconfirmed history,
+    strongest first and cut at the cap. A report with no night to date the
+    snapshots by contributes none — an undatable confirmation could never be
+    honestly labelled "last confirmed"."""
+    state = list(historical)
+    if plan.report_night:
+        state += [_snapshot(row, attribution, plan) for row in plan.rows]
+    state.sort(key=_retained_sort_key)
+    return state[:_MAX_RETAINED_ROWS]
+
+
+def _snapshot(
+    row: RegressionRow, attribution: Attribution | None, plan: CommentPlan
+) -> RetainedRow:
+    """One current row frozen at tonight's evidence — the form it would be
+    resurfaced in if it stopped being confirmed tomorrow."""
+    v = row.verdict
+    likelihood = _likelihood(row, attribution)
+    if likelihood is not None and not (
+        math.isfinite(likelihood) and 0 <= likelihood <= 100
+    ):
+        likelihood = None
+    source = ""
+    if likelihood is not None:
+        reviewed = attribution is not None and row.fact_id in attribution.likelihoods
+        source = "reviewer" if reviewed else "ranker"
+    pct = v.pct_change
+    return RetainedRow(
+        detector=v.detector,
+        platform=v.platform,
+        sample=v.sample,
+        label=v.label,
+        metric=v.metric,
+        sub_detector=v.sub_detector or "",
+        direction=str(getattr(v.direction, "value", v.direction)),
+        pct=pct if pct is not None and math.isfinite(pct) else None,
+        onset=v.onset_run_date or "",
+        onset_run=v.onset_run_id or "",
+        base_release=plan.base_release,
+        onset_release=plan.onset_release,
+        stack=row.stack,
+        last_confirmed=plan.report_night,
+        likelihood=likelihood,
+        source=source,
+        state=row.scope_state,
+    )
+
+
+def _retained_marker(rows: list[RetainedRow]) -> str | None:
+    """The whole retained state as one compact hidden line — one marker per
+    comment, never one per row per report."""
+    if not rows:
+        return None
+    payload = {"rows": [asdict(row) for row in rows]}
+    encoded = urlsafe_b64encode(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).decode().rstrip("=")
+    return f"{_RETAINED_PREFIX}{encoded}{_RETAINED_SUFFIX}"
+
+
+def _merged_retained(bodies: Sequence[str]) -> list[RetainedRow]:
+    """Every valid retained row across *bodies*, one per identity.
+
+    When converging lineages carry the same identity, the snapshot with the
+    newest confirmation is the truer record of what was last claimed."""
+    merged: dict[tuple, RetainedRow] = {}
+    for body in bodies:
+        for row in _decoded_retained(body):
+            key = _retained_identity(row)
+            kept = merged.get(key)
+            if kept is None or row.last_confirmed > kept.last_confirmed:
+                merged[key] = row
+    return list(merged.values())
+
+
+def _decoded_retained(body: str) -> list[RetainedRow]:
+    """The retained rows a posted body carries — or nothing for a marker that
+    fails a single check, because rendering tonight's rows without history is
+    safe and rendering forged or garbled history is not."""
+    rows: list[RetainedRow] = []
+    for raw_line in body.splitlines():
+        line = raw_line.strip()
+        if not line.startswith(_RETAINED_PREFIX) or not line.endswith(
+            _RETAINED_SUFFIX
+        ):
+            continue
+        encoded = line[len(_RETAINED_PREFIX):-len(_RETAINED_SUFFIX)]
+        try:
+            payload = json.loads(
+                b64decode(
+                    encoded + "=" * (-len(encoded) % 4),
+                    altchars=b"-_",
+                    validate=True,
+                )
+            )
+        except (BinasciiError, ValueError, UnicodeDecodeError):
+            continue
+        decoded = _validated_retained(payload)
+        if decoded is not None:
+            rows.extend(decoded)
+    return rows
+
+
+def _validated_retained(payload: object) -> list[RetainedRow] | None:
+    """*payload* as retained rows, or ``None`` unless every check passes: the
+    exact schema, the row-count cap, and every field bound of
+    :func:`_valid_retained`."""
+    if not isinstance(payload, dict) or set(payload) != {"rows"}:
+        return None
+    items = payload["rows"]
+    if not isinstance(items, list) or len(items) > _MAX_RETAINED_ROWS:
+        return None
+    rows = []
+    for item in items:
+        if not isinstance(item, dict) or not all(
+            isinstance(key, str) for key in item
+        ):
+            return None
+        try:
+            row = RetainedRow(**item)
+        except TypeError:
+            return None
+        if not _valid_retained(row):
+            return None
+        rows.append(row)
+    return rows
+
+
+_RETAINED_DIRECTIONS = frozenset({"UP", "DOWN", "NONE"})
+_RETAINED_STATES = frozenset({
+    "ranked", "unranked", "not_candidate", "discovery_incomplete",
+})
+_RETAINED_SOURCES = frozenset({"reviewer", "ranker", ""})
+_MAX_RETAINED_FIELD_CHARS = 200
+
+
+def _bounded_name(value: object, *, required: bool = True) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) <= _MAX_RETAINED_FIELD_CHARS
+        and (bool(value) or not required)
+        and (not value or value.isprintable())
+    )
+
+
+def _valid_retained(row: RetainedRow) -> bool:
+    names = (row.detector, row.platform, row.sample, row.label, row.metric)
+    likelihood = row.likelihood
+    return (
+        all(_bounded_name(value) for value in names)
+        and _bounded_name(row.sub_detector, required=False)
+        # A run group with no recorded release is a link that falls back to the
+        # unscoped window, not a reason to discard a whole marker of valid rows.
+        and _bounded_name(row.stack, required=False)
+        and _bounded_name(row.onset_run, required=False)
+        and not any(char.isspace() for char in row.onset_run)
+        and _iso_date(row.last_confirmed)
+        and _iso_date(row.onset_release)
+        and (row.base_release is None or _iso_date(row.base_release))
+        and (row.onset == "" or _iso_date(row.onset))
+        and row.direction in _RETAINED_DIRECTIONS
+        and row.state in _RETAINED_STATES
+        and row.source in _RETAINED_SOURCES
+        and (
+            likelihood is None
+            or (
+                not isinstance(likelihood, bool)
+                and isinstance(likelihood, int | float)
+                and math.isfinite(likelihood)
+                and 0 <= likelihood <= 100
+            )
+        )
+        # A missing number and a missing producer must agree, and the state the
+        # pipeline *knows* has no number can never be smuggled one.
+        and (likelihood is None) == (row.source == "")
+        and not (row.state == "not_candidate" and likelihood is not None)
+        and (
+            row.pct is None
+            or (
+                not isinstance(row.pct, bool)
+                and isinstance(row.pct, int | float)
+                and math.isfinite(row.pct)
+            )
+        )
+    )
+
+
+def _retained_identity(row: RetainedRow) -> tuple:
+    return (
+        row.detector, row.platform, row.sample, row.label, row.metric,
+        row.sub_detector,
+    )
+
+
+def _retained_sort_key(row: RetainedRow) -> tuple:
+    """The same shape :func:`_row_sort_key` produces, so current and retained
+    rows rank in one pool: likelihood first, movement second, identity last."""
+    likelihood = row.likelihood
+    movement = (
+        abs(row.pct)
+        if row.pct is not None and math.isfinite(row.pct)
+        else 0.0
+    )
+    return (
+        likelihood is None,
+        -(likelihood if likelihood is not None else 0.0),
+        -movement,
+        *_retained_identity(row),
+    )
+
+
+def _retained_fact(row: RetainedRow, plan: CommentPlan) -> dict[str, Any]:
+    """One rendered historical row as the digest hashes it: its frozen snapshot
+    — identity, movement, window, link-routing fields, confirmation night, and
+    the recorded likelihood at the precision the table displays it — plus its
+    standing in the report behind this version, which is the one cell of the row
+    tonight's data still moves."""
+    state_now = plan.report_states.get(_retained_identity(row))
+    return {
+        "id": list(_retained_identity(row)),
+        "moved": _canonical_pct(row.pct),
+        "direction": row.direction,
+        "onset": [row.onset, row.onset_run],
+        "window": [row.base_release or "", row.onset_release],
+        "stack": row.stack,
+        "night": row.last_confirmed,
+        "likelihood": None if row.likelihood is None else _pct(row.likelihood),
+        "source": row.source,
+        "state": row.state,
+        "now": state_now or "not reported",
+    }
+
+
+def _replace_facts_line(body: str, digest: str) -> str:
+    """The body with its hidden facts line carrying *digest* — the write half of
+    :func:`facts_digest_of`, and bounded to the same first three lines."""
+    lines = body.split("\n")
+    for index, line in enumerate(lines[:3]):
+        stripped = line.strip()
+        if stripped.startswith(_FACTS_MARKER_PREFIX) and stripped.endswith("-->"):
+            lines[index] = f"{_FACTS_MARKER_PREFIX}{digest} -->"
+            break
+    return "\n".join(lines)
 
 
 # ── Selection ─────────────────────────────────────────────────────────────────
@@ -414,6 +1070,8 @@ class CommentPlan:
     can come from several build platforms at once. The release diff is therefore
     kept per platform in ``package_facts`` and ``unchanged``, and handed to the
     review that way: two platforms' diffs are two measurements, not one.
+    ``report_night`` is presentation metadata for an archived history link; it
+    is deliberately not part of the facts digest.
     """
 
     repo: str
@@ -421,6 +1079,7 @@ class CommentPlan:
     subject: CandidatePR
     base_release: str | None
     onset_release: str
+    report_night: str = ""
     rows: list[RegressionRow] = field(default_factory=list)
     #: ``(repo, number) -> (candidate, scope label)`` — the strongest sighting
     #: of each competing pull request, and which run scope judged it that way.
@@ -453,11 +1112,21 @@ class CommentPlan:
     #: the cross-configuration review, so that both passes weigh the same
     #: material.
     historical: dict[tuple[str, int], HistoricalRef] = field(default_factory=dict)
+    #: ``row identity -> severity`` for every verdict in tonight's report — how
+    #: a retained historical row is annotated with its *current* standing at the
+    #: write boundary (``WATCH``, ``OK``, …; an absent identity renders as "not
+    #: reported", never inferred as OK). Built once per night by :func:`select`
+    #: and shared read-only across its plans; ephemeral, never serialized.
+    report_states: dict[tuple, str] = field(default_factory=dict)
     selected: bool = False
 
     @property
     def target(self) -> str:
         return f"{self.repo}#{self.number}"
+
+    @property
+    def window(self) -> ChangeWindow:
+        return (self.base_release, self.onset_release)
 
     @property
     def historical_refs(self) -> tuple[HistoricalRef, ...]:
@@ -590,7 +1259,20 @@ def select(
         for verdict, stack in _confirmed_rows(report)
     ]
     plans = _targets(confirmed, policy)
+    # One severity map for the whole night, shared by every plan: the write
+    # boundary annotates rows retained from earlier versions with what tonight's
+    # report says about them, and only the report — in hand here, gone by
+    # build/publish time — can answer that for an identity no longer confirmed.
+    report_states = {
+        _verdict_identity(verdict): str(
+            getattr(verdict.severity, "value", verdict.severity)
+        )
+        for group in report.groups
+        for verdict in group.verdicts
+    }
     for plan in plans:
+        plan.report_night = report.report_night
+        plan.report_states = report_states
         _collect_window(confirmed, plan)
         plan.outcomes = _outcomes_for(report, plan)
 
@@ -624,39 +1306,13 @@ def _confirmed_rows(report: NightlyReport) -> Iterator[tuple[MetricVerdict, str]
 _Confirmed = tuple[MetricVerdict, str, "BlameEntry | None"]
 
 
-def _tighter(base: str | None, than: str | None) -> bool:
-    """Is *base* a tighter lower bound on a window than *than*? ``None`` is not
-    a bound at all, so any date beats it and it never beats anything."""
-    if base is None:
-        return False
-    return than is None or base > than
-
-
 def _collapse_nested_windows(plans: list[CommentPlan]) -> list[CommentPlan]:
-    """One comment per ``(pull request, onset)``, bounded as tightly as the
-    night can bound it.
+    """Collapse one pull request's nested windows into one target.
 
-    A window's *base* is inferred per metric series — the newest release that
-    series' own values ruled the change out on — so one step can still be
-    reported against several bases: a series that never settled has no bound at
-    all, and two run groups stepping on one release need not reach back equally
-    far (:func:`~k4bench.blame.evidence.steps_in_window` documents why the base
-    therefore cannot be part of the match). Those are not several findings:
-    evidence is collected by onset alone (:func:`_collect_window`), so plans
-    sharing a pull request and an onset are filled with the *identical* rows and
-    can differ only in how far back their bound reaches.
-
-    This is the last check before a comment is published on a repository
-    k4Bench does not own, so it deduplicates on the pull request and the onset
-    alone — deliberately coarser than the engine's own per-direction bound and
-    than :func:`~k4bench.blame.models.rank_group_key`, both of which key on the
-    run group as well.
-
-    Left alone they publish as separate comments — the marker is the window
-    (:func:`marker_for`) — so one finding notifies a pull request twice, in a
-    repository k4Bench does not own. The tightest base survives: it is the most
-    informative bound, and the widest one is the likeliest to span some
-    unrelated change and invite the reader to look for it.
+    Equal-onset windows describe one step with per-series lower bounds, so the
+    tightest base survives. When onsets differ, a strictly containing plan
+    survives because its evidence includes the narrower plan plus any newer
+    steps. Non-containing windows remain separate findings.
     """
     best: dict[tuple[str, int, str], CommentPlan] = {}
     for plan in plans:
@@ -664,16 +1320,35 @@ def _collapse_nested_windows(plans: list[CommentPlan]) -> list[CommentPlan]:
         kept = best.get(key)
         if kept is None:
             best[key] = plan
-        elif _tighter(plan.base_release, kept.base_release):
-            # The collapsed windows share their rows, so the identity rendered
-            # must not depend on which of them was walked first: carry the
-            # strongest first-pass judgement onto the surviving plan.
+        elif window_contains(kept.window, plan.window):
             if kept.subject.score > plan.subject.score:
                 plan.subject = kept.subject
             best[key] = plan
         elif plan.subject.score > kept.subject.score:
             kept.subject = plan.subject
-    return list(best.values())
+
+    by_onset = list(best.values())
+    survivors = [
+        plan
+        for plan in by_onset
+        if not any(
+            other.repo.lower() == plan.repo.lower()
+            and other.number == plan.number
+            and other.onset_release != plan.onset_release
+            and window_contains(other.window, plan.window)
+            for other in by_onset
+        )
+    ]
+    for survivor in survivors:
+        subjects = (
+            plan.subject
+            for plan in by_onset
+            if plan.repo.lower() == survivor.repo.lower()
+            and plan.number == survivor.number
+            and window_contains(survivor.window, plan.window)
+        )
+        survivor.subject = max(subjects, key=lambda subject: subject.score)
+    return survivors
 
 
 def _targets(
@@ -688,8 +1363,8 @@ def _targets(
     read as noise. Evidence is gathered afterwards (:func:`_collect_window`), so
     no row can widen or narrow the field here.
 
-    Windows nested inside one another are one target, not several — see
-    :func:`_collapse_nested_windows`."""
+    Windows nested inside one another are one target, not several; independent
+    non-containing windows remain separate — see :func:`_collapse_nested_windows`."""
     plans: dict[tuple[str, int, str | None, str], CommentPlan] = {}
     for _verdict, _stack, entry in confirmed:
         if entry is None or entry.discovery_incomplete:
@@ -980,10 +1655,11 @@ def build_comments(
     withdrawal on the review's scores alone would let one low answer about one
     row acquit a pull request the review never disputed on the others.
 
-    The rendered body carries nothing that varies from night to night (no run
-    URL, no report-night query param): a regression that stands for a week is
-    one comment, and the upsert must see unchanged *facts* so it edits nothing
-    and re-notifies no one.
+    The stable rendered body carries nothing that varies from night to night (no
+    run URL, no report-night query parameter). Its observation is separate until
+    the publisher has already decided a material write is warranted; only then
+    is the archived report link inserted. A regression that stands unchanged for
+    a week therefore remains one untouched comment.
     """
     comments = []
     for plan in plans:
@@ -1274,12 +1950,17 @@ def _render(
     by_likelihood = sorted(
         plan.rows, key=lambda row: _row_sort_key(row, attribution)
     )
-    digest = _facts_digest(plan, request)
-    # The rows the body actually renders: they get the reference links (a link
-    # nothing references is dead weight against the comment-size limit), and
-    # they are what the coverage caveat is measured against.
-    rendered = by_likelihood[:_MAX_TABLE_ROWS]
-    links = _row_links(plan, rendered, dashboard_url)
+    payload = _facts_payload(plan, request)
+    digest = _digest_from(payload, [])
+    # The details region renders current-only here — the retained rows live in
+    # the prior owned body, which only the publisher reads — and is re-rendered
+    # by :func:`materialize` at the write boundary. Nothing in it varies from
+    # night to night, so a standing comment still renders byte-identically.
+    region, _shown_past = _details_region(
+        plan, attribution, dashboard_url=dashboard_url,
+        historical=[], retained_marker=None,
+    )
+    observation = _observation_for(plan, by_likelihood, dashboard_url)
 
     body = "\n".join(
         part for part in (
@@ -1290,14 +1971,11 @@ def _render(
             _alert(plan, by_likelihood, attribution, min_score=min_score),
             "",
             _window_line(plan),
-            _assessment(plan, by_likelihood, attribution, rendered=rendered),
-            _crowded_note(plan),
-            _table(
-                plan, by_likelihood, attribution,
-                links=links, dashboard_url=dashboard_url,
-            ),
+            _DETAILS_START,
+            region,
+            _DETAILS_END,
+            _HISTORY_PLACEHOLDER,
             _others_section(plan),
-            _link_definitions(links),
             "",
             "---",
             "",
@@ -1320,7 +1998,54 @@ def _render(
         body=body,
         score=plan.top_score,
         facts_digest=digest,
+        observation=observation,
+        plan=plan,
+        attribution=attribution,
+        dashboard_url=dashboard_url,
+        facts_payload=payload,
     )
+
+
+def _details_region(
+    plan: CommentPlan,
+    attribution: Attribution | None,
+    *,
+    dashboard_url: str | None,
+    historical: list[RetainedRow],
+    retained_marker: str | None,
+) -> tuple[str, list[RetainedRow]]:
+    """The dynamic middle of a comment — onset summary, assessment, regression
+    table and its reference links — rendered from structured inputs alone.
+
+    One function serves both render time (``historical=[]``, no state marker)
+    and the write boundary, so the two can never disagree about how a row is
+    selected, ordered or drawn. Returns the region and the historical rows it
+    actually rendered, which are what the finalized digest must cover."""
+    by_likelihood = sorted(
+        plan.rows, key=lambda row: _row_sort_key(row, attribution)
+    )
+    shown, visible_onsets = _selected_rows(by_likelihood, historical, attribution)
+    shown_current = [entry.current for entry in shown if entry.current is not None]
+    shown_past = [entry.past for entry in shown if entry.past is not None]
+    links = _row_links(plan, shown_current, dashboard_url)
+    past_links = _past_links(shown_past, dashboard_url)
+    definitions = dict(links)
+    definitions.update(dict(past_links.values()))
+    region = "\n".join(
+        part for part in (
+            retained_marker,
+            _onset_breakdown(plan, visible_onsets),
+            _assessment(plan, by_likelihood, attribution, rendered=shown_current),
+            _crowded_note(plan),
+            _table(
+                plan, by_likelihood, attribution,
+                shown=shown, links=links, past_links=past_links,
+                dashboard_url=dashboard_url,
+            ),
+            _link_definitions(definitions),
+        ) if part is not None
+    )
+    return region, shown_past
 
 
 def _likelihood(row: RegressionRow, attribution: Attribution | None) -> float | None:
@@ -1362,8 +2087,89 @@ def _row_sort_key(row: RegressionRow, attribution: Attribution | None) -> tuple:
     )
 
 
+@dataclass(frozen=True)
+class _PoolRow:
+    """One candidate table row — tonight's evidence or a retained snapshot —
+    with the sort key both kinds share, so a single ranked pool orders them."""
+
+    key: tuple
+    current: RegressionRow | None = None
+    past: RetainedRow | None = None
+
+
+def _selected_rows(
+    current: list[RegressionRow],
+    historical: list[RetainedRow],
+    attribution: Attribution | None,
+) -> tuple[list[_PoolRow], set[str]]:
+    """The rows the table shows, in ranked order, and the current onsets they
+    cover — the one onset set the summary must agree with.
+
+    The pool is every currently confirmed row plus every retained historical
+    row, ranked by the shared likelihood/movement/identity key. Selection then
+    reserves, in order: the pool's **globally strongest row** — the alert quotes
+    the strongest evidence, so the table must never hide it, however old its
+    onset; the strongest *current* row, for the same reason when a historical
+    row leads; one representative per current onset — an undated group before
+    the dated ones, newest dated first — so a newer step cannot vanish behind
+    five rows of an older one; and finally the strongest remaining rows, all
+    inside the hard cap."""
+    pool = [
+        _PoolRow(key=_row_sort_key(row, attribution), current=row)
+        for row in current
+    ] + [
+        _PoolRow(key=_retained_sort_key(row), past=row) for row in historical
+    ]
+    pool.sort(key=lambda entry: entry.key)
+    current_pool = [entry for entry in pool if entry.current is not None]
+
+    chosen: dict[tuple, _PoolRow] = {}
+
+    def _reserve(entry: _PoolRow) -> None:
+        if len(chosen) < _TARGET_TABLE_ROWS:
+            chosen.setdefault(entry.key, entry)
+
+    if pool:
+        _reserve(pool[0])
+    if current_pool:
+        _reserve(current_pool[0])
+    strongest_per_onset: dict[str, _PoolRow] = {}
+    for entry in current_pool:
+        strongest_per_onset.setdefault(_onset_label(entry.current), entry)
+    covered = {
+        _onset_label(entry.current)
+        for entry in chosen.values()
+        if entry.current is not None
+    }
+    dated = sorted(set(strongest_per_onset) - {_UNKNOWN_ONSET}, reverse=True)
+    undated = [_UNKNOWN_ONSET] if _UNKNOWN_ONSET in strongest_per_onset else []
+    for onset in undated + dated:
+        if onset not in covered:
+            _reserve(strongest_per_onset[onset])
+    for entry in pool:
+        _reserve(entry)
+    shown = sorted(chosen.values(), key=lambda entry: entry.key)
+    visible_onsets = {
+        _onset_label(entry.current)
+        for entry in shown
+        if entry.current is not None
+    }
+    return shown, visible_onsets
+
+
+def _onset_label(row: RegressionRow) -> str:
+    """The one display and grouping key used for a row's step onset."""
+    return row.verdict.onset_run_date or _UNKNOWN_ONSET
+
+
 def _row_identity(row: RegressionRow) -> tuple:
-    v = row.verdict
+    return _verdict_identity(row.verdict)
+
+
+def _verdict_identity(v: MetricVerdict) -> tuple:
+    """The six-field identity every table, digest and retained-state structure
+    keys a row on — one definition, so a current row and its retained snapshot
+    can never disagree about which regression they are."""
     return (
         v.detector, v.platform, v.sample, v.label, v.metric, v.sub_detector or "",
     )
@@ -1572,6 +2378,107 @@ def _window_line(plan: CommentPlan) -> str:
     return f"**Change window** (Key4hep releases): {window}"
 
 
+def _direction_counts(rows: list[RegressionRow]) -> Counter[str]:
+    return Counter(
+        str(getattr(row.verdict.direction, "value", row.verdict.direction))
+        for row in rows
+    )
+
+
+def _direction_text(up: int, down: int, none: int = 0) -> str:
+    parts = [f"{up} UP", f"{down} DOWN"]
+    if none:
+        parts.append(f"{none} NONE")
+    return " · ".join(parts)
+
+
+def _onset_breakdown(
+    plan: CommentPlan, visible_onsets: set[str]
+) -> str | None:
+    """Summarise the distinct steps the table represents inside a containing
+    comment window.
+
+    *visible_onsets* is the exact onset set the selected rows cover
+    (:func:`_selected_rows`), so summary and table can never disagree. Because
+    the globally strongest row's onset is always kept, the omitted groups are
+    not necessarily a contiguous older tail — they are counted as "additional",
+    never as "earlier"."""
+    groups: dict[str, list[RegressionRow]] = {}
+    for row in plan.rows:
+        groups.setdefault(_onset_label(row), []).append(row)
+    if len(groups) < 2:
+        return None
+
+    shown_onsets = sorted(
+        visible_onsets, key=lambda onset: (onset == _UNKNOWN_ONSET, onset)
+    )
+    omitted = len(groups) - len(visible_onsets)
+
+    lines = [
+        "",
+        "**Steps represented inside this window**",
+        "",
+        "| Step onset | Regressions | Scopes | Directions |",
+        "|:---|---:|---:|:---|",
+    ]
+    for onset in shown_onsets:
+        rows = groups[onset]
+        directions = _direction_counts(rows)
+        lines.append(
+            f"| `{onset}` | {len(rows)} | {len({row.scope for row in rows})} | "
+            f"{_direction_text(directions['UP'], directions['DOWN'], directions['NONE'])} |"
+        )
+    if omitted:
+        lines += [
+            "",
+            f"_{_count(omitted, 'additional onset')} also included in the total; "
+            "open the dashboard for those rows._",
+        ]
+    return "\n".join(lines)
+
+
+def _observation_for(
+    plan: CommentPlan,
+    rows: list[RegressionRow],
+    dashboard_url: str | None,
+) -> CommentObservation | None:
+    if not plan.report_night:
+        return None
+    directions = _direction_counts(rows)
+    return CommentObservation(
+        report_night=plan.report_night,
+        base_release=plan.base_release,
+        onset_release=plan.onset_release,
+        regressions=len(rows),
+        scopes=len(plan.scopes),
+        up=directions["UP"],
+        down=directions["DOWN"],
+        none=directions["NONE"],
+        url=_report_href(plan, rows, dashboard_url),
+    )
+
+
+def _report_href(
+    plan: CommentPlan,
+    rows: list[RegressionRow],
+    dashboard_url: str | None,
+) -> str | None:
+    """An archived dashboard view pinned to this observation's report night."""
+    if not rows or not plan.report_night:
+        return None
+    lead = rows[0]
+    return window_href(
+        dashboard_url,
+        detector=lead.verdict.detector,
+        platform=lead.verdict.platform,
+        sample=lead.verdict.sample,
+        base_release=plan.base_release,
+        onset_release=plan.onset_release,
+        stack=lead.stack,
+        report_night=plan.report_night,
+    )
+
+
 def _assessment(
     plan: CommentPlan,
     rows: list[RegressionRow],
@@ -1729,16 +2636,28 @@ def _link_definitions(links: dict[str, str]) -> str | None:
     )
 
 
-def _table_head() -> list[str]:
+def _table_head(*, show_onset: bool, show_history: bool) -> list[str]:
     """The header and alignment rows both tables share. The **Platform** column
-    follows :data:`_SHOW_PLATFORM_COLUMN`, which is a rendering choice only."""
+    follows :data:`_SHOW_PLATFORM_COLUMN`, which is a rendering choice only;
+    the **Last confirmed**/**Current state** pair appears only when a retained
+    historical row renders, so an all-current table keeps its familiar shape."""
     header = ["Metric", "Detector"]
     align = [":---", ":---"]
     if _SHOW_PLATFORM_COLUMN:
         header.append("Platform")
         align.append(":---")
-    header += ["Sample", "Config", "Change", "Attribution"]
-    align += [":---", ":---", "---:", "---:"]
+    header += ["Sample", "Config"]
+    align += [":---", ":---"]
+    if show_onset:
+        header.append("Onset")
+        align.append(":---")
+    header.append("Change")
+    align.append("---:")
+    if show_history:
+        header += ["Last confirmed", "Current state"]
+        align += [":---", ":---"]
+    header.append("Attribution")
+    align.append("---:")
     return [
         "| " + " | ".join(header) + " |",
         "|" + "|".join(align) + "|",
@@ -1746,7 +2665,12 @@ def _table_head() -> list[str]:
 
 
 def _row_line(
-    row: RegressionRow, attribution: Attribution | None, links: dict[str, str]
+    row: RegressionRow,
+    attribution: Attribution | None,
+    links: dict[str, str],
+    *,
+    show_onset: bool,
+    show_history: bool,
 ) -> str:
     """One regression as a table row — the same cells whichever ordering placed
     it, so both tables read identically row for row.
@@ -1754,7 +2678,9 @@ def _row_line(
     The dashboard link hangs off the **metric** cell because that is what it
     opens, and only when :func:`_row_links` emitted a definition for this row.
     Metric and configuration keep their raw names: those are what the dashboard
-    labels the series with."""
+    labels the series with. In a table that also carries retained rows, a
+    current row says **current**/`CONFIRMED` in the history columns — the cells
+    that make the two kinds tellable apart without a footnote."""
     v = row.verdict
     metric = (
         f"`{_cell(v.metric)}`"
@@ -1769,10 +2695,97 @@ def _row_line(
     cells += [
         _cell(pretty_sample(v.sample)),
         f"`{_cell(v.label)}`",
-        _change_cell(v.pct_change),
-        _likelihood_cell(row, attribution),
+    ]
+    if show_onset:
+        cells.append(f"`{_cell(_onset_label(row))}`")
+    cells.append(_change_cell(v.pct_change))
+    if show_history:
+        cells += ["**current**", "`CONFIRMED`"]
+    cells.append(_likelihood_cell(row, attribution))
+    return "| " + " | ".join(cells) + " |"
+
+
+def _past_row_line(
+    row: RetainedRow,
+    plan: CommentPlan,
+    past_links: dict[tuple, tuple[str, str]],
+) -> str:
+    """One retained historical row — its identity, the movement and likelihood
+    recorded when it was last confirmed, that report's date, and its standing in
+    the report behind this version. Only rendered in a table whose onset and
+    history columns are on, so the cell count always matches the header."""
+    metric = (
+        f"`{_cell(row.metric)}`"
+        + (f" · {_cell(row.sub_detector)}" if row.sub_detector else "")
+    )
+    reference = past_links.get(_retained_identity(row))
+    cells = [
+        f"[{metric}][{reference[0]}]" if reference else metric,
+        _cell(row.detector),
+    ]
+    if _SHOW_PLATFORM_COLUMN:
+        cells.append(_cell(pretty_platform(row.platform)))
+    cells += [
+        _cell(pretty_sample(row.sample)),
+        f"`{_cell(row.label)}`",
+        f"`{_cell(row.onset or _UNKNOWN_ONSET)}`",
+        _change_cell(row.pct),
+        f"`{row.last_confirmed}`",
+        _current_state_cell(row, plan),
+        _past_likelihood_cell(row),
     ]
     return "| " + " | ".join(cells) + " |"
+
+
+def _current_state_cell(row: RetainedRow, plan: CommentPlan) -> str:
+    """What tonight's report says about a retained row — read from the report
+    behind this material version, never from the historical marker. An identity
+    the report no longer carries says "not reported"; inferring OK from absence
+    would claim a measurement nobody made."""
+    state = plan.report_states.get(_retained_identity(row))
+    return f"`{_cell(state)}`" if state else "_not reported_"
+
+
+def _past_likelihood_cell(row: RetainedRow) -> str:
+    """The likelihood recorded at the row's last confirmation — the same three
+    shapes a current cell has, so an unscored or not-a-candidate snapshot can
+    never resurface wearing a number."""
+    if row.state == "not_candidate":
+        return _NOT_A_CANDIDATE
+    if row.likelihood is None:
+        return _UNSCORED
+    return _pct(row.likelihood)
+
+
+def _past_links(
+    rows: list[RetainedRow], dashboard_url: str | None
+) -> dict[tuple, tuple[str, str]]:
+    """``{identity: (label, href)}`` for the retained rows the table renders.
+
+    Reconstructed from the snapshot's validated structured fields through the
+    shared link helper — never from a stored URL. The link pins the archived
+    Regressions view for the row's own window, stack and last-confirmed report,
+    which is where a regression that tonight's report no longer confirms can
+    still be read. Labels are ``h1``, ``h2``, … in identity order, disjoint from
+    the current rows' fact ids."""
+    if not dashboard_url:
+        return {}
+    links: dict[tuple, tuple[str, str]] = {}
+    ordered = sorted(rows, key=_retained_identity)
+    for index, row in enumerate(ordered, start=1):
+        href = window_href(
+            dashboard_url,
+            detector=row.detector,
+            platform=row.platform,
+            sample=row.sample,
+            base_release=row.base_release,
+            onset_release=row.onset_release,
+            stack=row.stack or None,
+            report_night=row.last_confirmed,
+        )
+        if href:
+            links[_retained_identity(row)] = (f"h{index}", href)
+    return links
 
 
 def _table(
@@ -1780,28 +2793,43 @@ def _table(
     rows: list[RegressionRow],
     attribution: Attribution | None,
     *,
+    shown: list[_PoolRow],
     links: dict[str, str],
+    past_links: dict[tuple, tuple[str, str]],
     dashboard_url: str | None,
 ) -> str:
-    """Every regression in the window, most likely first.
+    """The selected rows of the window, most likely first — tonight's confirmed
+    regressions and any retained rows that outrank them.
 
     One table rather than one section per configuration: which configurations
     moved — and, read against the review's summary, which did not — is the
     substance of the claim, and a reader weighing it needs to see the pattern at
-    once. The first rows are shown and a night wider than that says how many more
-    there are in one line rather than pasting or folding them: a detector-removal
-    sweep can confirm three hundred near-identical rows, which no one reads and
-    GitHub will not accept. Every shown row links to its own regression in the
-    dashboard, which is where the complete set — and any re-sorting, by step size
-    or otherwise — lives.
+    once. Selection reserves the strongest evidence and one row per represented
+    onset (:func:`_selected_rows`); a night wider than the cap says
+    how many more there are in one line rather than pasting or folding them: a detector-removal sweep
+    can confirm three hundred near-identical rows, which no one reads and GitHub
+    will not accept — and a collapsed ``<details>`` block would not help, since
+    collapsed Markdown still counts against the body limit. Every shown row
+    links into the dashboard, which is where the complete set — and any
+    re-sorting — lives.
 
     Rows are ordered by attribution likelihood, not claimed as attributed: the
     table deliberately keeps rows the review scored *down*, and a 20% row under a
     heading claiming attribution would read as an accusation the numbers next to
     it deny. That ordering can push the window's largest movement past the cap;
     the overflow line below counts what was cut and links all of it
-    (:func:`_overflow_line`)."""
-    shown = rows[:_MAX_TABLE_ROWS]
+    (:func:`_overflow_line`).
+
+    A retained historical row is a **confirmed benchmark regression that was
+    probabilistically attributed to this pull request by an earlier material
+    version**, not a claim tonight's review made: its date and current standing
+    are their own columns, and the note under the table says its numbers were
+    never rescored — so a historical 88% leading current 82%s cannot read as
+    contradicting the alert, which summarises tonight alone."""
+    show_history = any(entry.past is not None for entry in shown)
+    show_onset = (
+        len({row.verdict.onset_run_date for row in rows}) > 1 or show_history
+    )
     lines = [
         "",
         # A bold caption, not a Markdown heading: it reads at the same size as the
@@ -1810,10 +2838,28 @@ def _table(
         # the window that scopes it.
         "📊 **Regressions in this window, ranked by AI-based attribution likelihood**",
         "",
-        *_table_head(),
-        *(_row_line(row, attribution, links) for row in shown),
+        *_table_head(show_onset=show_onset, show_history=show_history),
     ]
-    overflow = _overflow_line(plan, rows, len(shown), dashboard_url=dashboard_url)
+    for entry in shown:
+        if entry.current is not None:
+            lines.append(_row_line(
+                entry.current, attribution, links,
+                show_onset=show_onset, show_history=show_history,
+            ))
+        else:
+            lines.append(_past_row_line(entry.past, plan, past_links))
+    if show_history:
+        lines += [
+            "",
+            "_Rows with a dated **Last confirmed** entry are retained from an "
+            "earlier version of this comment: their change and likelihood are "
+            "what that report's review recorded and were not rescored after "
+            "the row stopped being confirmed. **Current state** is their "
+            "standing in the report behind this update; `not reported` means "
+            "that report no longer carries the metric._",
+        ]
+    shown_current = sum(1 for entry in shown if entry.current is not None)
+    overflow = _overflow_line(plan, rows, shown_current, dashboard_url=dashboard_url)
     if overflow:
         lines += ["", overflow]
     return "\n".join(lines)
@@ -1994,20 +3040,40 @@ def _window_href(
     )
 
 
-def _facts_digest(
-    plan: CommentPlan, request: AttributionRequest | None = None
+def _digest_from(
+    payload: dict[str, Any], retained: list[dict[str, Any]]
 ) -> str:
-    """A fingerprint of the *benchmark facts* behind a comment.
+    """The facts digest over *payload* plus the rendered retained rows.
 
-    The publisher edits a standing comment only when this changes
-    (:func:`k4bench.blame.publish._upsert`), and an edit re-notifies everyone
-    subscribed to the pull request. So the rule is two-sided, and both sides
-    matter: a fact that changes what the comment claims must be in, and a number
-    that moves on its own every night must be out.
+    The retained half joins at the write boundary (:func:`_with_details`), once
+    the prior bodies say which historical rows actually render: their frozen
+    facts and their standing in tonight's report are deterministic inputs a
+    reader can see, so a change in them must be able to edit a standing comment
+    — while a retained row's snapshot never rescores, so no model drift comes
+    back in through this door. At render time the list is empty, which is also
+    exactly what a comment with no surviving history hashes."""
+    data = dict(payload)
+    data["retained"] = retained
+    canonical = json.dumps(data, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()[:16]
+
+
+def _facts_payload(
+    plan: CommentPlan, request: AttributionRequest | None = None
+) -> dict[str, Any]:
+    """The *benchmark facts* behind a comment, as the digest's canonical payload.
+
+    The publisher edits a standing comment only when the digest over this
+    changes (:func:`k4bench.blame.publish._upsert`), and an edit re-notifies
+    everyone subscribed to the pull request. So the rule is two-sided, and both
+    sides matter: a fact that changes what the comment claims must be in, and a
+    number that moves on its own every night must be out.
 
     **In**: the window; every regression row's identity — platform included —
-    and how far it moved; what the first pass knew about this pull request in
-    each of those scopes; the clean and watch outcomes with their watched
+    how far it moved, and its own step onset (the Onset column and each row's
+    deep link route through it, and a row's onset can move while the plan's
+    outer window stands still); what the first pass knew about this pull request
+    in each of those scopes; the clean and watch outcomes with their watched
     metrics and unjudged counts; the per-platform package diff and unchanged
     counts; which pull requests were in the field and whether each was judged;
     which older-boundary pull requests the first pass read before scoring
@@ -2051,6 +3117,14 @@ def _facts_digest(
                 "id": list(_row_identity(row)),
                 "moved": _canonical_pct(row.verdict.pct_change),
                 "state": row.scope_state,
+                # Both halves of the onset identity: the date is the visible
+                # Onset cell and grouping key, the run id is what the row's
+                # ``reg_onset`` deep link pins. Fixed once a change is
+                # confirmed, so neither is nightly churn.
+                "onset": [
+                    row.verdict.onset_run_date or "",
+                    row.verdict.onset_run_id or "",
+                ],
             }
             for row in sorted(plan.rows, key=_row_identity)
         ],
@@ -2106,8 +3180,7 @@ def _facts_digest(
         ],
         "evidence": _evidence_facts(request),
     }
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode()).hexdigest()[:16]
+    return payload
 
 
 def _evidence_facts(request: AttributionRequest | None) -> dict[str, Any] | None:
