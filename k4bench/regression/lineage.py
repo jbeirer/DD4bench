@@ -39,7 +39,9 @@ def baseline_predecessor(platform: str) -> str | None:
     """The platform *platform* may seed its baseline from, or ``None``.
 
     One hop: a predecessor's own predecessor is not reached, since a seed has
-    to be a series measured on comparable software.
+    to be a series measured on comparable software. A chain in the map is
+    legal and expected — ``gcc17 → gcc16 → gcc14`` resolves gcc17 to gcc16 and
+    stops, and the older entry stays for backfills of gcc16's own early nights.
     """
     predecessor = BASELINE_PREDECESSORS.get(platform)
     return None if predecessor == platform else predecessor

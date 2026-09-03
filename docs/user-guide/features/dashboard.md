@@ -272,7 +272,8 @@ step-change detector (`k4bench/regression/`):
   migration is therefore reported as one ordinary step, watch then regression,
   and the report notes which platform the baseline came from. A platform can
   separately be marked **retired** from a given date, after which its absence
-  is silence rather than a *no run uploaded* failure.
+  is silence rather than a *no run uploaded* failure, and it sorts to the end
+  of the sidebar's platform list so a fresh visit lands on one still running.
 - **Direction** (faster/slower, more/less memory) is shown but not treated as
   good or bad — a regression is simply any confirmed step beyond the baseline in
   either direction.
