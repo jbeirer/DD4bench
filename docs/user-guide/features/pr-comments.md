@@ -313,9 +313,13 @@ not create false differences. Each half checks out the recorded k4Bench commit,
 sources the dated nightly stack directly, and then runs that checkout's
 `setup.sh`; its plugin build is not repeated separately. For steering files, the
 recorded directory is restored in `PYTHONPATH`, including CLD configurations
-whose steering file imports a sibling module. Since nightlies expire from CVMFS
-after roughly three weeks, old recipes also say when they can no longer be
-executed.
+whose steering file imports a sibling module. LCG reuses weekday slots after
+roughly a week; each recipe verifies the setup's generated date and stops
+instead of silently reproducing with a newer stack after its slot rotates.
+Legacy Spack nightlies have their longer dated-release retention.
+
+Recipes require a Linux host with CVMFS and GNU coreutils, matching the
+platforms on which the Key4hep LCG views are published.
 
 **The whole file runs.** It opens with a shebang, so it can be saved and run
 with `bash <file>` as readily as pasted into a shell, and it is written in pure

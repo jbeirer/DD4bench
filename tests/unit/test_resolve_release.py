@@ -10,13 +10,13 @@ from pathlib import Path
 import pytest
 
 SCRIPT = Path(__file__).resolve().parents[2] / ".github/scripts/resolve_release.sh"
-PLATFORM = "x86_64-el9-gcc16-opt"
+PLATFORM = "test-platform"
 LATEST = "latest"
 
 
 class Gate:
     def __init__(self, tmp_path: Path):
-        self.root = tmp_path / "views/devkey-head"
+        self.root = tmp_path / "views/test-view"
         now = datetime.now(timezone.utc)
         self.today = now.strftime("%Y-%m-%d")
         self.yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
@@ -50,11 +50,15 @@ class Gate:
 
     def run(self, **env: str) -> subprocess.CompletedProcess:
         return subprocess.run(
-            ["bash", str(SCRIPT)], capture_output=True, text=True,
+            ["bash", str(SCRIPT)],
+            capture_output=True,
+            text=True,
             env={
                 **os.environ,
                 "PATH": f"{self._bin}:{os.environ['PATH']}",
                 "VIEWS_ROOT": str(self.root),
+                "PLATFORM_DIR": PLATFORM,
+                "LATEST_DIR": LATEST,
                 "GITHUB_OUTPUT": str(self._out),
                 "GITHUB_STEP_SUMMARY": str(self._summary),
                 **env,
@@ -102,7 +106,9 @@ def test_release_published_during_the_wait_is_picked_up(gate: Gate):
     )
     assert proc.returncode == 0
     assert gate.outputs == {
-        "release": gate.today, "is_today": "true", "setup": str(setup.resolve())
+        "release": gate.today,
+        "is_today": "true",
+        "setup": str(setup.resolve()),
     }
     assert gate.waits == 1
 

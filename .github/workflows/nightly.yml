@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       release:
-        description: 'Key4hep release to benchmark, e.g. 2026-07-28 (empty: resolve automatically)'
+        description: 'Retained LCG publication date, e.g. 2026-07-28 (empty: resolve automatically)'
         required: false
         type: string
         default: ''

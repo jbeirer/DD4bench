@@ -76,7 +76,7 @@ Written by the nightly CI and read by the dashboard.
   (`steering_file`, `resolved_steering_file`). Keeping both forms lets a
   reproducer compare the logical workload while executing the exact path each
   release used. The record also carries the stack's git provenance
-  (`k4h_stack_root`, `k4h_packages`; see below).
+  (`k4h_stack_setup`, `k4h_stack_manifest`, `k4h_packages`; see below).
 - **`machine_info.json`** — the benchmark host and its state *around* the run:
   CPU model/cores, RAM/swap totals, and `_start`/`_end` snapshots of load,
   available memory, CPU frequency, and thermal throttling. The pairs let the
@@ -85,28 +85,31 @@ Written by the nightly CI and read by the dashboard.
 
 ### Stack provenance (`k4h_packages`)
 
-`run_info.json` records the upstream commit of every package the Key4hep stack
-built from git (~63 per nightly, ~11 KB), read off CVMFS as the benchmark runs:
+`run_info.json` records the upstream commit of every HEAD package in the
+Key4hep LCG view, read off CVMFS as the benchmark runs:
 
 ```json
-"k4h_stack_root": "/cvmfs/sw-nightlies.hsf.org/key4hep/releases/2026-07-10/x86_64-almalinux9-gcc14.2.0-opt",
+"k4h_stack_setup": "/cvmfs/sft-nightlies.cern.ch/lcg/views/devkey-head/Thu/x86_64-el9-gcc16-opt/setup.sh",
+"k4h_stack_manifest": "/cvmfs/sft-nightlies.cern.ch/lcg/nightlies/devkey-head/Thu/LCG_externals_x86_64-el9-gcc16-opt.txt",
 "k4h_packages": {
-  "k4geo":      {"commit": "0f226a98…", "version": "develop", "repo_url": "https://github.com/key4hep/k4geo.git"},
-  "fcc-config": {"commit": "21647280…", "version": "develop", "repo_url": "https://github.com/HEP-FCC/FCC-config"}
+  "k4geo":      {"commit": "9e2047a", "version": "HEAD", "repo_url": "https://github.com/key4hep/k4geo.git"},
+  "fcc_config": {"commit": "1312733", "version": "HEAD", "repo_url": "https://github.com/HEP-FCC/FCC-config.git"}
 }
 ```
 
 This is what lets a regression be traced to the commits that could have caused
 it: diffing two nights' maps gives the exact set of upstream changes between
-them. It is captured at run time because it cannot be recovered later — the
-CVMFS nightlies area keeps only about a month of releases, so the stack behind
-an older run no longer exists to be read.
+them. It is captured at run time because it cannot be recovered later. LCG's
+weekday slots rotate after roughly a week, so the setup and manifest paths are
+identifiers only while their generated date still matches the recorded release.
+Legacy Spack records use `k4h_stack_root` instead of `k4h_stack_manifest`.
 
-`repo_url` is the Spack recipe's URL verbatim, so it is `None` for the rare
-package whose recipe ships no `git` attribute, and non-GitHub for packages
-hosted elsewhere. Every field is best-effort: `k4h_packages` is absent for runs
-predating provenance capture, and an empty map means *unknown*, never
-*unchanged*.
+LCG build metadata does not carry source URLs, so `repo_url` is read from the
+exact LCGCMake toolchain revision that built the view (including its inherited
+`heptools-*` files). That lookup is best-effort: if GitLab is unavailable the
+commits are still recorded, but their repository links are `None`.
+`k4h_packages` is absent for runs predating provenance capture, and an empty
+map means *unknown*, never *unchanged*.
 
 ## Benchmark YAML
 

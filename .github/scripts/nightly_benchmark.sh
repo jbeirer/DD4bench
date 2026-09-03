@@ -71,19 +71,19 @@ source "${K4H_STACK_SETUP}"
 set -u
 [[ -n "${KEY4HEP_STACK:-}" ]] || { echo "ERROR: KEY4HEP_STACK not set after sourcing Key4hep setup" >&2; exit 1; }
 IFS='|' read -r K4H_RELEASE K4H_PLATFORM < <(
-    python3 -c 'import sys; from k4bench.provenance.stack import stack_identity; print("|".join(stack_identity(sys.argv[1])))' "${KEY4HEP_STACK}"
+    python3 -c 'import sys; from k4bench.provenance.stack import stack_identity; print("|".join(stack_identity(sys.argv[1])))' "${K4H_STACK_SETUP}"
 )
-[[ -n "${K4H_RELEASE}" ]] || { echo "ERROR: Failed to read Key4hep publication date from KEY4HEP_STACK" >&2; exit 1; }
-# KEY4HEP_STACK is the single source of truth for the label and the EOS path, so
+[[ -n "${K4H_RELEASE}" ]] || { echo "ERROR: Failed to read Key4hep publication date from K4H_STACK_SETUP" >&2; exit 1; }
+# The resolved LCG setup is the source of truth for the label and the EOS path, so
 # a pinned source that lands somewhere else would file results under a release
 # that never produced them. Mislabelled results outlive a red job.
 if [[ -n "${K4H_RELEASE_REQUESTED:-}" && "${K4H_RELEASE}" != "${K4H_RELEASE_REQUESTED}" ]]; then
-    echo "ERROR: requested Key4hep release ${K4H_RELEASE_REQUESTED} but sourced ${K4H_RELEASE} (${KEY4HEP_STACK})" >&2
+    echo "ERROR: requested Key4hep release ${K4H_RELEASE_REQUESTED} but sourced ${K4H_RELEASE} (${K4H_STACK_SETUP})" >&2
     exit 1
 fi
 echo "Release : key4hep-${K4H_RELEASE}"
 echo "Platform: ${K4H_PLATFORM}"
-echo "Stack   : ${KEY4HEP_STACK}"
+echo "View    : ${K4H_STACK_SETUP}"
 echo "::endgroup::"
 
 # Outside the log group: which release produced these numbers is the first thing
@@ -298,7 +298,7 @@ run_info = {
     "platform":         platform,
     "k4h_release":      f"key4hep-{k4h_rel}",
     "k4h_release_date": k4h_rel,
-    "k4h_stack_setup":  os.environ["KEY4HEP_STACK"],
+    "k4h_stack_setup":  os.environ["K4H_STACK_SETUP"],
     "detector":         detector,
     "sample":           sample,
     "xml_path":         xml_path,
@@ -337,11 +337,11 @@ run_info = {
 # fatal — the measurements are the deliverable, provenance is metadata.
 try:
     from k4bench.provenance.stack import read_stack
-    release_root, packages = read_stack(os.environ["KEY4HEP_STACK"])
-    if release_root is None:
+    manifest, packages = read_stack(os.environ["K4H_STACK_SETUP"])
+    if manifest is None:
         print("WARNING: no stack provenance metadata found")
     else:
-        run_info["k4h_stack_root"] = str(release_root)
+        run_info["k4h_stack_manifest"] = str(manifest)
         run_info["k4h_packages"] = packages
         print(f"Stack provenance: {len(packages)} git-built package(s)")
 except Exception as exc:

@@ -13,28 +13,26 @@ import re
 from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
 from pathlib import Path
+from urllib.parse import quote
+from urllib.request import urlopen
 
 _log = logging.getLogger(__name__)
 _GENERATED_RE = re.compile(r"^#\s*Generated:\s*(.+)$", re.M)
 _REVISION_RE = re.compile(r"\bREVISION:\s*'?([0-9a-f]{7,40})(?:\|\d+)?", re.I)
-_URL_RE = re.compile(
-    r"^(?:https?://(?:www\.)?|git@)(?P<host>[^/:]+)[:/](?P<slug>.+?)(?:\.git)?/?$"
+_GITHASH_RE = re.compile(r"\bGITHASH:\s*'([0-9a-f]{7,40})'", re.I)
+_EXTERNAL_RE = re.compile(
+    r"^\s*(?:LCG_external_package|LCG_AA_project)\(\s*(\S+)\s+HEAD\s+"
+    r"GIT=([^\s)]+)",
+    re.M,
 )
+_INCLUDE_RE = re.compile(r"^\s*include\((heptools-[A-Za-z0-9_-]+)\)", re.M)
+_URL_RE = re.compile(r"^(?:https?://(?:www\.)?|git@)(?P<host>[^/:]+)[:/](?P<slug>.+?)(?:\.git)?/?$")
 _FORGE_INFIX = {"github": "", "gitlab": "/-"}
-
-# LCG build metadata has revisions but no source URLs. These are the only repos
-# the bot may currently comment in, so a full package catalogue would be dead
-# data rather than additional functionality.
-_LCG_REPOS = {
-    "dd4hep": "https://github.com/AIDASoft/DD4hep.git",
-    "fcc_config": "https://github.com/HEP-FCC/FCC-config.git",
-    "k4geo": "https://github.com/key4hep/k4geo.git",
-}
 
 
 def stack_identity(stack_setup: str | Path) -> tuple[str, str]:
     """Return ``(publication_date, platform)`` from an LCG view setup."""
-    path = Path(stack_setup)
+    path = Path(stack_setup).resolve()
     try:
         match = _GENERATED_RE.search(path.read_text())
         if match:
@@ -93,9 +91,36 @@ def _manifest(stack_setup: Path) -> Path | None:
     return views.parent / "nightlies" / version / slot / f"LCG_externals_{platform}.txt"
 
 
+def _repository_urls(view: str, lcgcmake_commit: str) -> dict[str, str]:
+    """Read HEAD URLs from the exact, recursively included LCGCMake toolchain."""
+    if not lcgcmake_commit:
+        return {}
+    pending, seen, repos = [f"heptools-{view}"], set(), {}
+    while pending:
+        toolchain = pending.pop()
+        if toolchain in seen:
+            continue
+        seen.add(toolchain)
+        url = (
+            "https://gitlab.cern.ch/sft/stacks/lcgcmake/-/raw/"
+            f"{lcgcmake_commit}/cmake/toolchain/{quote(toolchain, safe='')}.cmake"
+        )
+        try:
+            with urlopen(url, timeout=10) as response:  # noqa: S310 - fixed HTTPS host
+                source = response.read().decode()
+        except (OSError, UnicodeError) as exc:
+            _log.warning("cannot read LCGCMake repository metadata (%s)", exc)
+            continue
+        for name, repo in _EXTERNAL_RE.findall(source):
+            repos.setdefault(name.lower(), repo)  # the including view is the override
+        pending.extend(_INCLUDE_RE.findall(source))
+    return repos
+
+
 def read_stack(stack_setup: str | Path) -> tuple[Path | None, dict[str, dict]]:
     """Return the LCG manifest and git-built HEAD packages for a view setup."""
-    manifest = _manifest(Path(stack_setup))
+    setup = Path(stack_setup).resolve()
+    manifest = _manifest(setup)
     if manifest is None:
         return None, {}
     try:
@@ -105,6 +130,7 @@ def read_stack(stack_setup: str | Path) -> tuple[Path | None, dict[str, dict]]:
         return None, {}
 
     packages: dict[str, dict] = {}
+    lcgcmake_commit = ""
     for row in rows:
         fields = [field.strip() for field in row.split(";")]
         if len(fields) < 4 or fields[2] != "HEAD":
@@ -114,11 +140,17 @@ def read_stack(stack_setup: str | Path) -> tuple[Path | None, dict[str, dict]]:
             buildinfo = next(install.glob(".buildinfo_*.txt")).read_text()
         except (OSError, StopIteration):
             continue
+        config = _GITHASH_RE.search(buildinfo)
+        if config:
+            lcgcmake_commit = config.group(1)
         revision = _REVISION_RE.search(buildinfo)
         if revision:
             packages[name] = {
                 "commit": revision.group(1),
                 "version": "HEAD",
-                "repo_url": _LCG_REPOS.get(name.lower()),
+                "repo_url": None,
             }
+    repos = _repository_urls(setup.parents[2].name, lcgcmake_commit)
+    for name, package in packages.items():
+        package["repo_url"] = repos.get(name.lower())
     return manifest, packages
