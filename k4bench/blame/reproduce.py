@@ -44,6 +44,8 @@ class ReproducerFacts:
     pct_change: str
     base_release: str
     onset_release: str
+    base_stack_setup: str
+    onset_stack_setup: str
     base_run_id: str
     onset_run_id: str
     base_actions_url: str
@@ -277,6 +279,8 @@ def facts_from(
         pct_change=_pct(getattr(verdict, "pct_change", None)),
         base_release=base_release,
         onset_release=onset_release,
+        base_stack_setup=str(base_info.get("k4h_stack_setup") or ""),
+        onset_stack_setup=str(onset_info.get("k4h_stack_setup") or ""),
         base_run_id=base_run,
         onset_run_id=onset_run,
         base_actions_url=base_url,
@@ -328,7 +332,20 @@ def _fetch(input_files: tuple[str, ...]) -> list[str]:
     ]
 
 
-def _shared_fetch(release: str, input_files: tuple[str, ...]) -> str:
+def _stack_source(release: str, setup: str) -> list[str]:
+    """Source a recorded LCG view, or the dated legacy Spack release."""
+    if not setup:
+        return [f"source {_safe(_NIGHTLY_REPO + '/key4hep/setup.sh')} -r {_safe(release)}"]
+    return [
+        f"stack_setup={_safe(setup)}",
+        'stack_generated="$(sed -n \'s/^# *Generated: *//p\' "$stack_setup" | head -1)"',
+        f'[[ "$(date -u -d "$stack_generated" +%F)" == {_safe(release)} ]] || '
+        '{ echo "Recorded LCG view is no longer available" >&2; exit 1; }',
+        'source "$stack_setup"',
+    ]
+
+
+def _shared_fetch(release: str, setup: str, input_files: tuple[str, ...]) -> str:
     """The one fetch both halves read from, as a subshell of its own.
 
     ``xrdcp`` comes from the Key4hep stack rather than from the host, so a
@@ -341,7 +358,7 @@ def _shared_fetch(release: str, input_files: tuple[str, ...]) -> str:
     """
     lines = [
         "set -e",
-        f"source {_safe(_NIGHTLY_REPO + '/key4hep/setup.sh')} -r {_safe(release)}",
+        *_stack_source(release, setup),
         *_fetch(input_files),
     ]
     body = "\n".join(f"  {line}" for line in lines)
@@ -352,6 +369,7 @@ def _command(
     facts: ReproducerFacts,
     *,
     release: str,
+    stack_setup: str,
     n_events: int,
     ddsim_args: str,
     xml_path: str,
@@ -384,7 +402,7 @@ def _command(
         # and an errexit set in the reader's own shell would outlive the paste.
         "set -e",
         f"cd {_safe(worktree)}",
-        f"source {_safe(_NIGHTLY_REPO + '/key4hep/setup.sh')} -r {_safe(release)}",
+        *_stack_source(release, stack_setup),
         "source setup.sh",
         "pip install --no-build-isolation -e .",
     ]
@@ -519,7 +537,7 @@ def render_text(facts: ReproducerFacts) -> str:
     # consumed.
     shared_input = facts.base_input_files == facts.onset_input_files
     shared_fetch = (
-        _shared_fetch(facts.base_release, facts.base_input_files)
+        _shared_fetch(facts.base_release, facts.base_stack_setup, facts.base_input_files)
         if shared_input and facts.base_input_files
         else ""
     )
@@ -535,6 +553,7 @@ def render_text(facts: ReproducerFacts) -> str:
     before = _command(
         facts,
         release=facts.base_release,
+        stack_setup=facts.base_stack_setup,
         n_events=facts.base_n_events,
         ddsim_args=facts.base_ddsim_args,
         xml_path=facts.base_xml_path,
@@ -547,6 +566,7 @@ def render_text(facts: ReproducerFacts) -> str:
     after = _command(
         facts,
         release=facts.onset_release,
+        stack_setup=facts.onset_stack_setup,
         n_events=facts.onset_n_events,
         ddsim_args=facts.onset_ddsim_args,
         xml_path=facts.onset_xml_path,

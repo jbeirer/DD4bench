@@ -262,6 +262,21 @@ def test_each_half_enters_its_own_worktree_before_setup_without_duplicate_build(
     assert "git checkout" not in body
 
 
+def test_lcg_reproducer_sources_recorded_views_and_guards_rotating_slots():
+    before = "/cvmfs/sft-nightlies.cern.ch/lcg/views/devkey-head/Wed/platform/setup.sh"
+    after = "/cvmfs/sft-nightlies.cern.ch/lcg/views/devkey-head/Thu/platform/setup.sh"
+    facts = facts_from(
+        _row(),
+        _info("2026-08-27", "1", k4h_stack_setup=before),
+        _info("2026-08-28", "2", k4h_stack_setup=after),
+    )
+    assert facts is not None
+    body = render_text(facts)
+    assert before in body and after in body
+    assert body.count("Recorded LCG view is no longer available") == 2
+    assert "/key4hep/setup.sh -r" not in body
+
+
 def test_a_shared_input_is_fetched_once_and_a_differing_one_per_half():
     source = "root://example/events.hepmc"
     shared = render_text(

@@ -16,10 +16,13 @@ on:
         required: true
         type: string
       release:
-        description: Key4hep nightly release every job sources, e.g. "2026-07-28" (empty = latest)
-        required: false
+        description: Key4hep nightly publication date, e.g. "2026-07-28"
+        required: true
         type: string
-        default: ''
+      stack_setup:
+        description: Exact LCG view setup.sh resolved by the nightly gate
+        required: true
+        type: string
 
 env:
   CONTAINER_IMAGE: ghcr.io/key4hep/key4hep-images/alma9
@@ -65,7 +68,7 @@ jobs:
         # are flagged but don't fail the step — the downstream stage that
         # actually needs the repo will produce a more useful error.
         run: |
-          for repo in sw-nightlies.hsf.org sw.hsf.org grid.cern.ch; do
+          for repo in sw-nightlies.hsf.org sft-nightlies.cern.ch sw.hsf.org grid.cern.ch; do
               if ls "/cvmfs/$repo/" > /dev/null 2>&1; then
                   echo "ok       /cvmfs/$repo"
               else
@@ -83,6 +86,7 @@ jobs:
       - name: Benchmark ${{ matrix.sample }}
         env:
           K4H_RELEASE_REQUESTED: ${{ inputs.release }}
+          K4H_STACK_SETUP: ${{ inputs.stack_setup }}
           BENCHMARK_CONFIG: ${{ inputs.detector }}
           BENCHMARK_SAMPLE: ${{ matrix.sample }}
           XML_PATH:         ${{ matrix.xml }}
@@ -119,6 +123,7 @@ jobs:
             -e X509_USER_CERT=/tmp/eos-auth/usercert.pem \
             -e X509_USER_KEY=/tmp/eos-auth/userkey.pem \
             -e K4H_RELEASE_REQUESTED \
+            -e K4H_STACK_SETUP \
             -e BENCHMARK_CONFIG -e BENCHMARK_SAMPLE \
             -e XML_PATH -e N_EVENTS -e DDSIM_ARGS -e INPUT_FILES -e STEERING_FILE \
             -e SWEEP -e SWEEP_DETECTORS -e VERBOSE -e INCLUDE_ONLY -e EXCLUDE_ONLY \

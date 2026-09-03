@@ -48,6 +48,7 @@ jobs:
     outputs:
       release:  ${{ steps.resolve.outputs.release }}
       is_today: ${{ steps.resolve.outputs.is_today }}
+      setup:    ${{ steps.resolve.outputs.setup }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -72,6 +73,7 @@ jobs:
       detector:     ${{ matrix.group.detector }}
       samples_json: ${{ toJson(matrix.group.samples) }}
       release:      ${{ needs.resolve-release.outputs.release }}
+      stack_setup:  ${{ needs.resolve-release.outputs.setup }}
     secrets: inherit
 
   # ── Nightly regression report over the full EOS history ────────────────────
