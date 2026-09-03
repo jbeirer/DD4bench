@@ -93,7 +93,12 @@ def pretty_release(stack: str) -> str:
 
 
 #: LCG/Spack-style platform triplet vocabulary for :func:`describe_platform`.
-_OS_LABELS = {"almalinux": "AlmaLinux", "centos": "CentOS", "ubuntu": "Ubuntu"}
+_OS_LABELS = {
+    "almalinux": "AlmaLinux", "centos": "CentOS", "ubuntu": "Ubuntu",
+    # LCG spells the enterprise-Linux family as a bare "el"; the generic
+    # capitalize() fallback would render the initialism as "El".
+    "el": "EL",
+}
 _COMPILER_LABELS = {"gcc": "GCC", "clang": "Clang", "icc": "ICC"}
 _BUILD_TYPE_LABELS = {"opt": "optimized", "dbg": "debug", "reldbg": "release+debug"}
 _VERSIONED_TOKEN_RE = re.compile(r"^([a-zA-Z]+)(\d.*)$")
