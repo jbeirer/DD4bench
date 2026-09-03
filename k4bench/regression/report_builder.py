@@ -36,7 +36,6 @@ from k4bench.analysis.trend import (
 )
 from k4bench.regression.engine import (
     BASELINE_WINDOW_RUNS,
-    MIN_BASELINE_RUNS,
     evaluate_series,
     release_key,
 )
@@ -792,9 +791,9 @@ def _group_report_from_frames(
         if v.baseline_inherited_from
     }):
         group.notes.append(
-            f"baseline seeded from {', '.join(inherited)} — this platform has "
-            f"fewer than {MIN_BASELINE_RUNS} reliable runs of its own, so its "
-            "metrics are judged against the platform it replaced until it does"
+            f"baseline seeded from {', '.join(inherited)} — this platform's "
+            "baseline window still holds measurements of the platform it "
+            "replaced; its own runs replace them one at a time"
         )
 
     if reliability.get(tonight) is False:

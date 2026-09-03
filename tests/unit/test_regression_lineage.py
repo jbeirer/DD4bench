@@ -25,22 +25,18 @@ def test_an_unmapped_platform_has_no_predecessor():
     assert baseline_predecessor("aarch64-el9-gcc16-opt") is None
 
 
-def test_inheritance_is_one_hop():
-    """A predecessor's own predecessor is not reached.
+def test_a_chain_of_migrations_resolves_exactly_one_link(monkeypatch):
+    """A platform may be both a successor and a predecessor.
 
-    A seed has to be a series measured on comparable software; a chain of
-    substitutions stops being that after the first link. Guarded here rather
-    than left to the map's shape, because the map is edited per migration.
+    gcc17 → gcc16 → gcc14 is a legal map: gcc17 seeds from gcc16 and stops
+    there, because a seed has to be a series measured on comparable software.
+    The older entry stays — a backfill of an old gcc16 night still needs it —
+    so "one hop" constrains the lookup, never the map.
     """
-    seconds = {
-        BASELINE_PREDECESSORS[p]
-        for p in BASELINE_PREDECESSORS
-        if BASELINE_PREDECESSORS[p] in BASELINE_PREDECESSORS
-    }
-    assert not seconds, (
-        f"{sorted(seconds)} is both a predecessor and has one — the seed would "
-        "otherwise depend on which link a reader follows"
-    )
+    monkeypatch.setitem(BASELINE_PREDECESSORS, "gcc16", "gcc14")
+    monkeypatch.setitem(BASELINE_PREDECESSORS, "gcc17", "gcc16")
+    assert baseline_predecessor("gcc17") == "gcc16"
+    assert baseline_predecessor("gcc16") == "gcc14"
 
 
 def test_no_platform_seeds_itself():
