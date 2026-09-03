@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections import Counter
 from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -91,6 +92,17 @@ def _manifest(stack_setup: Path) -> Path | None:
     return views.parent / "nightlies" / version / slot / f"LCG_externals_{platform}.txt"
 
 
+def _lcgcmake_revision(githashes: list[str]) -> str:
+    """The LCGCMake revision a view was predominantly built from.
+
+    Nightlies are incremental: a package is only rebuilt when it or a dependency
+    moved, so each install records the revision current at *its* build and one
+    view routinely carries several. Taking the modal one keeps the answer
+    independent of manifest ordering; ties break on first appearance.
+    """
+    return Counter(githashes).most_common(1)[0][0] if githashes else ""
+
+
 def _repository_urls(view: str, lcgcmake_commit: str) -> dict[str, str]:
     """Read HEAD URLs from the exact, recursively included LCGCMake toolchain."""
     if not lcgcmake_commit:
@@ -130,7 +142,7 @@ def read_stack(stack_setup: str | Path) -> tuple[Path | None, dict[str, dict]]:
         return None, {}
 
     packages: dict[str, dict] = {}
-    lcgcmake_commit = ""
+    githashes: list[str] = []
     for row in rows:
         fields = [field.strip() for field in row.split(";")]
         if len(fields) < 4 or fields[2] != "HEAD":
@@ -142,7 +154,7 @@ def read_stack(stack_setup: str | Path) -> tuple[Path | None, dict[str, dict]]:
             continue
         config = _GITHASH_RE.search(buildinfo)
         if config:
-            lcgcmake_commit = config.group(1)
+            githashes.append(config.group(1))
         revision = _REVISION_RE.search(buildinfo)
         if revision:
             packages[name] = {
@@ -150,7 +162,7 @@ def read_stack(stack_setup: str | Path) -> tuple[Path | None, dict[str, dict]]:
                 "version": "HEAD",
                 "repo_url": None,
             }
-    repos = _repository_urls(setup.parents[2].name, lcgcmake_commit)
+    repos = _repository_urls(setup.parents[2].name, _lcgcmake_revision(githashes))
     for name, package in packages.items():
         package["repo_url"] = repos.get(name.lower())
     return manifest, packages

@@ -106,10 +106,31 @@ Legacy Spack records use `k4h_stack_root` instead of `k4h_stack_manifest`.
 
 LCG build metadata does not carry source URLs, so `repo_url` is read from the
 exact LCGCMake toolchain revision that built the view (including its inherited
-`heptools-*` files). That lookup is best-effort: if GitLab is unavailable the
-commits are still recorded, but their repository links are `None`.
-`k4h_packages` is absent for runs predating provenance capture, and an empty
-map means *unknown*, never *unchanged*.
+`heptools-*` files). Because a nightly is incremental, installs record several
+revisions and the modal one is used. That lookup is best-effort: if CERN GitLab
+is unavailable the commits are still recorded, but their repository links are
+`null`. `k4h_packages` is absent for runs predating provenance capture, and an
+empty map means *unknown*, never *unchanged*.
+
+### Reading across the Spack-to-LCG boundary
+
+Runs recorded from a Spack release and runs recorded from an LCG view are not
+directly comparable, and history keeps both:
+
+- **Platform.** The EOS path segment moved from
+  `x86_64-almalinux9-gcc14.2.0-opt` to `x86_64-el9-gcc16-opt`. Since results are
+  filed under `{detector}/{platform}/...`, the LCG series starts with no
+  history rather than continuing the old one — which is what stops a compiler
+  change from being reported as a regression in every metric at once. The old
+  tree stays readable; it simply stops growing.
+- **Package names.** LCG spells them as upstream does (`DD4hep`, `fcc_config`)
+  where Spack lower-cased and hyphenated them (`dd4hep`, `fcc-config`).
+- **Commit length.** LCG records the abbreviated sha (`9e2047a`) where Spack
+  recorded all 40 characters. Both forges resolve either in a compare link.
+
+A stack diff that spans the boundary therefore reports every package as removed
+and re-added. That is cosmetically noisy but inert for attribution: an added
+package has no base commit, so it yields no blame window.
 
 ## Benchmark YAML
 

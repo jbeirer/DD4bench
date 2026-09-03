@@ -16,9 +16,13 @@ def test_nightly_uses_resolved_lcg_view_not_key4hep_package_variable():
     script = (
         Path(__file__).resolve().parents[2] / ".github/scripts/nightly_benchmark.sh"
     ).read_text()
-    identity_line = next(line for line in script.splitlines() if "stack_identity(sys.argv" in line)
-    assert "${K4H_STACK_SETUP}" in identity_line
-    assert "KEY4HEP_STACK" not in identity_line
+    # The release label and the EOS path it drives come from the view the gate
+    # resolved, never from whatever a sourced stack left in KEY4HEP_STACK.
+    start = script.index("K4H_IDENTITY=")
+    identity = script[start:script.index("IFS='|' read", start)]
+    assert "stack_identity" in identity
+    assert "${K4H_STACK_SETUP}" in identity
+    assert "KEY4HEP_STACK" not in identity
     assert '"k4h_stack_setup":  os.environ["K4H_STACK_SETUP"]' in script
     assert 'read_stack(os.environ["K4H_STACK_SETUP"])' in script
 
@@ -44,7 +48,7 @@ def test_read_stack_uses_manifest_buildinfo_and_lcgcmake_urls(tmp_path, monkeypa
     setup.write_text("# Generated: Thu Sep  3 01:25:04 2026\n")
     nightly = tmp_path / "lcg/nightlies/test-view/slot"
     package = nightly / "package/HEAD/platform"
-    mystery = nightly / "mystery/HEAD/platform"
+    mystery = nightly / "Mystery/HEAD/platform"
     release = nightly / "ROOT/6.40/platform"
     missing = nightly / "missing/HEAD/platform"
     malformed = nightly / "malformed/HEAD/platform"
@@ -53,14 +57,14 @@ def test_read_stack_uses_manifest_buildinfo_and_lcgcmake_urls(tmp_path, monkeypa
     (package / ".buildinfo_package.txt").write_text(
         "GITHASH: 'bfca9fdfa', REVISION: 9e2047a|1, VERSION: HEAD\n"
     )
-    (mystery / ".buildinfo_mystery.txt").write_text(
+    (mystery / ".buildinfo_Mystery.txt").write_text(
         "GITHASH: 'bfca9fdfa', REVISION: abcdef123, VERSION: HEAD\n"
     )
     (malformed / ".buildinfo_malformed.txt").write_text("REVISION: not-a-sha\n")
     manifest = nightly / "LCG_externals_platform.txt"
     manifest.write_text(
         f"package; 8ed64; HEAD; {package}; deps\n"
-        f"mystery; 12345; HEAD; {mystery}; deps\n"
+        f"Mystery; 12345; HEAD; {mystery}; deps\n"
         f"missing; 23456; HEAD; {missing}; deps\n"
         f"malformed; 34567; HEAD; {malformed}; deps\n"
         f"ROOT; 67890; 6.40; {release}; deps\n"
@@ -102,12 +106,24 @@ def test_read_stack_uses_manifest_buildinfo_and_lcgcmake_urls(tmp_path, monkeypa
             "version": "HEAD",
             "repo_url": "https://github.com/example/package.git",
         },
-        "mystery": {
+        # The manifest spells it "Mystery" and the toolchain "mystery": the
+        # join is case-insensitive, so the URL still lands.
+        "Mystery": {
             "commit": "abcdef123",
             "version": "HEAD",
             "repo_url": "https://gitlab.cern.ch/group/mystery.git",
         },
     }
+
+
+def test_lcgcmake_revision_takes_the_modal_githash():
+    # A nightly is incremental, so installs carry different LCGCMake revisions
+    # depending on when each was last rebuilt. The mode is what keeps the
+    # toolchain the URLs come from independent of manifest ordering.
+    assert stack._lcgcmake_revision(["aaa", "bbb", "aaa"]) == "aaa"
+    assert stack._lcgcmake_revision(["bbb", "aaa", "aaa"]) == "aaa"
+    assert stack._lcgcmake_revision(["only"]) == "only"
+    assert stack._lcgcmake_revision([]) == ""
 
 
 def test_read_stack_fails_closed_for_unknown_layout(tmp_path):

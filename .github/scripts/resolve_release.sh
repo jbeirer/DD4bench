@@ -78,4 +78,4 @@ fi
 
 echo "::warning::No Key4hep nightly published for ${TODAY}; benchmarking ${FALLBACK} again"
 publish "${FALLBACK}" false "${SETUP}" \
-    "**No Key4hep nightly for \`${TODAY}\`.** Benchmarking \`${FALLBACK}\` - a re-measurement of an already-benchmarked stack, not a new release."
+    "**No Key4hep nightly for \`${TODAY}\`.** Benchmarking \`${FALLBACK}\` — a re-measurement of an already-benchmarked stack, not a new release."

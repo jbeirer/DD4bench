@@ -36,6 +36,10 @@
 
 set -euo pipefail
 
+# This script's own checkout, so the steps that run before k4bench is installed
+# do not depend on the directory it was invoked from.
+K4BENCH_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
 # Personal EOS area.
 EOS_FQDN="eosuser.cern.ch"
 EOS_ROOT="/eos/user/j/jbeirer/k4bench"
@@ -70,9 +74,14 @@ set +u
 source "${K4H_STACK_SETUP}"
 set -u
 [[ -n "${KEY4HEP_STACK:-}" ]] || { echo "ERROR: KEY4HEP_STACK not set after sourcing Key4hep setup" >&2; exit 1; }
-IFS='|' read -r K4H_RELEASE K4H_PLATFORM < <(
-    python3 -c 'import sys; from k4bench.provenance.stack import stack_identity; print("|".join(stack_identity(sys.argv[1])))' "${K4H_STACK_SETUP}"
-)
+# Reads the release date out of the view. This runs before section 4 installs
+# k4bench, so the checkout is put on the path explicitly rather than relying on
+# the interpreter's cwd; `|| true` keeps a failure in the guard below instead of
+# aborting on `read` hitting EOF with no message worth reading.
+K4H_IDENTITY="$(PYTHONPATH="${K4BENCH_ROOT}${PYTHONPATH:+:${PYTHONPATH}}" python3 -c \
+    'import sys; from k4bench.provenance.stack import stack_identity; print("|".join(stack_identity(sys.argv[1])))' \
+    "${K4H_STACK_SETUP}" || true)"
+IFS='|' read -r K4H_RELEASE K4H_PLATFORM <<< "${K4H_IDENTITY}"
 [[ -n "${K4H_RELEASE}" ]] || { echo "ERROR: Failed to read Key4hep publication date from K4H_STACK_SETUP" >&2; exit 1; }
 # The resolved LCG setup is the source of truth for the label and the EOS path, so
 # a pinned source that lands somewhere else would file results under a release
@@ -95,7 +104,7 @@ fi
 
 # ── 4. Install k4bench ───────────────────────────────────────────────────────
 echo "::group::4. Install k4bench"
-export K4BENCH_REPO="$(pwd)"
+export K4BENCH_REPO="${K4BENCH_ROOT}"
 export LD_LIBRARY_PATH="${K4BENCH_REPO}/plugin/install/lib:${K4BENCH_REPO}/plugin/build:${LD_LIBRARY_PATH:-}"
 mkdir -p ~/.local/bin
 export PATH=~/.local/bin:"${PATH}"
@@ -332,9 +341,9 @@ run_info = {
 
 # Upstream commit of every package the stack built from git, so a regression
 # found weeks from now can still be traced to the PRs in its blame window. This
-# is the only moment the answer exists: CVMFS keeps roughly a month of
-# nightlies, after which the stack that produced these numbers is gone. Never
-# fatal — the measurements are the deliverable, provenance is metadata.
+# is the only moment the answer exists: LCG overwrites each weekday slot a week
+# later, after which the view that produced these numbers is gone. Never fatal
+# — the measurements are the deliverable, provenance is metadata.
 try:
     from k4bench.provenance.stack import read_stack
     manifest, packages = read_stack(os.environ["K4H_STACK_SETUP"])
