@@ -119,10 +119,17 @@ directly comparable, and history keeps both:
 
 - **Platform.** The EOS path segment moved from
   `x86_64-almalinux9-gcc14.2.0-opt` to `x86_64-el9-gcc16-opt`. Since results are
-  filed under `{detector}/{platform}/...`, the LCG series starts with no
-  history rather than continuing the old one — which is what stops a compiler
-  change from being reported as a regression in every metric at once. The old
-  tree stays readable; it simply stops growing.
+  filed under `{detector}/{platform}/...`, the LCG series is a new series rather
+  than a continuation of the old one — which is what stops a compiler change
+  from being reported as a regression in every metric at once. The old tree
+  stays readable; it simply stops growing.
+
+    A new series would also mean no baseline for its first week, so the LCG
+    platform *seeds* its baseline from the Spack platform's tail until it has
+    enough reliable runs of its own (`k4bench/regression/lineage.py`). Those
+    points are never judged and are never the new platform's verdicts; a shift
+    caused by the migration is reported as one ordinary step (watch, then
+    regression), naming the borrowed platform in `baseline_inherited_from`.
 - **Package names.** LCG spells them as upstream does (`DD4hep`, `fcc_config`)
   where Spack lower-cased and hyphenated them (`dd4hep`, `fcc-config`).
 - **Commit length.** LCG records the abbreviated sha (`9e2047a`) where Spack

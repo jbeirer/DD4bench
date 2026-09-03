@@ -9,10 +9,12 @@ import pandas as pd
 import pytest
 
 from k4bench.regression.engine import (
+    BASELINE_WINDOW_RUNS,
     MIN_BASELINE_RUNS,
     evaluate_series,
     robust_baseline,
 )
+from k4bench.regression.lineage import BaselineSeed
 from k4bench.regression.models import Direction, SeriesId, Severity, Unjudged
 
 _TIME = SeriesId(
@@ -802,3 +804,123 @@ def test_a_quiet_seed_change_costs_no_sensitivity():
     workloads = [None] * len(_STEADY) + [42, 42]
     verdicts = evaluate_series(_workload_history(values, workloads), series=_TIME)
     assert _severities(verdicts[-2:]) == [Severity.OK, Severity.OK]
+
+
+# ── Inherited baselines across a platform migration ───────────────────────────
+#
+# A new platform's first MIN_BASELINE_RUNS nights would be unjudged — a week
+# blind, right where a stack change is most likely to have moved something.
+# Seeded with the predecessor's tail, they are judged normally.
+
+_OLD_PLATFORM = "x86_64-almalinux9-gcc14.2.0-opt"
+
+
+def _seed(values, reliable=None, start="2025-12-01") -> BaselineSeed:
+    """The predecessor platform's history for this series, in engine shape."""
+    return BaselineSeed(
+        platform=_OLD_PLATFORM,
+        history=_history(values, reliable=reliable, start=start),
+    )
+
+
+def test_seeded_platform_is_judged_from_its_first_night():
+    verdicts = evaluate_series(
+        _history([100.1, 99.9], start="2026-02-01"),
+        series=_TIME, baseline_seed=_seed(_STEADY),
+    )
+    assert _severities(verdicts) == [Severity.OK, Severity.OK]
+    assert all(v.baseline_median == pytest.approx(100.0, abs=0.1) for v in verdicts)
+    assert all(v.baseline_inherited_from == _OLD_PLATFORM for v in verdicts)
+
+
+def test_seed_points_are_never_judged():
+    # The seed produces no verdict, so the migration cannot re-report the old
+    # platform's nights as the new platform's news.
+    verdicts = evaluate_series(
+        _history([100.1, 99.9], start="2026-02-01"),
+        series=_TIME, baseline_seed=_seed(_STEADY),
+    )
+    seed_nights = {v.run_id for v in evaluate_series(_history(_STEADY), series=_TIME)}
+    assert len(verdicts) == 2
+    assert not ({v.run_id for v in verdicts} & seed_nights)
+
+
+def test_migration_step_is_watch_then_confirmed():
+    # The whole point: a stack change that moved a metric reads as a normal
+    # step on the normal schedule instead of vanishing into a blind week.
+    verdicts = evaluate_series(
+        _history([120.0, 120.5], start="2026-02-01"),
+        series=_TIME, baseline_seed=_seed(_STEADY),
+    )
+    assert _severities(verdicts) == [Severity.WATCH, Severity.CONFIRMED]
+    assert verdicts[-1].direction is Direction.UP
+    assert verdicts[-1].pct_change == pytest.approx(0.205, abs=0.01)
+    assert verdicts[-1].onset_run_id == verdicts[0].run_id
+    assert verdicts[-1].baseline_inherited_from == _OLD_PLATFORM
+
+
+def test_confirmed_migration_step_reanchors_onto_the_new_platform():
+    # Re-anchoring re-seats the baseline on this platform's own values, so the
+    # seed is gone from the night after the confirmation.
+    new_level = [120.0, 120.5, 120.1, 119.8, 120.2]
+    verdicts = evaluate_series(
+        _history(new_level, start="2026-02-01"),
+        series=_TIME, baseline_seed=_seed(_STEADY),
+    )
+    assert _severities(verdicts) == [Severity.WATCH, Severity.CONFIRMED] + [
+        Severity.OK
+    ] * 3
+    assert all(v.baseline_inherited_from is None for v in verdicts[2:])
+    assert all(v.baseline_median == pytest.approx(120.0, abs=0.5) for v in verdicts[2:])
+
+
+def test_seed_is_dropped_once_the_platform_stands_on_its_own():
+    # A migration that moved the level by less than the effect floor: nothing
+    # is flagged, so nothing re-anchors and the handover is the deque's alone.
+    own = [v + 3.0 for v in _STEADY]
+    verdicts = evaluate_series(
+        _history(own, start="2026-02-01"),
+        series=_TIME, baseline_seed=_seed(_STEADY),
+    )
+    assert all(v.severity is Severity.OK for v in verdicts)
+    inherited = [v.baseline_inherited_from for v in verdicts]
+    assert inherited[:MIN_BASELINE_RUNS] == [_OLD_PLATFORM] * MIN_BASELINE_RUNS
+    assert inherited[MIN_BASELINE_RUNS:] == [None] * (len(own) - MIN_BASELINE_RUNS)
+    assert verdicts[0].baseline_median == pytest.approx(100.0, abs=0.1)
+    assert verdicts[MIN_BASELINE_RUNS].baseline_median == pytest.approx(103.0, abs=0.1)
+
+
+def test_seed_skips_unreliable_and_missing_nights():
+    # Filtered as the platform's own history is; the five usable points left
+    # are short of a baseline, so judging waits.
+    reliable = [True] * 5 + [False] * 5
+    values = list(_STEADY[:9]) + [float("nan")]
+    verdicts = evaluate_series(
+        _history([100.1], start="2026-02-01"),
+        series=_TIME, baseline_seed=_seed(values, reliable=reliable),
+    )
+    assert verdicts[0].severity is Severity.UNKNOWN
+    assert verdicts[0].unjudged is Unjudged.INSUFFICIENT_HISTORY
+    assert "only 5 reliable baseline runs" in verdicts[0].reason
+
+
+def test_seed_keeps_only_the_window_it_can_fill():
+    # The old platform ran at half the level until a fortnight before the
+    # migration: only its tail is kept, or every night here would flag.
+    long_history = [50.0] * 40 + (_STEADY + _STEADY)[:BASELINE_WINDOW_RUNS]
+    verdicts = evaluate_series(
+        _history([100.1], start="2026-02-01"),
+        series=_TIME, baseline_seed=_seed(long_history),
+    )
+    assert verdicts[0].severity is Severity.OK
+    assert verdicts[0].baseline_median == pytest.approx(100.0, abs=0.1)
+
+
+def test_no_seed_is_the_unchanged_cold_start():
+    plain = evaluate_series(_history(_STEADY), series=_TIME)
+    empty = evaluate_series(
+        _history(_STEADY), series=_TIME,
+        baseline_seed=BaselineSeed(_OLD_PLATFORM, _history([])),
+    )
+    assert _severities(empty) == _severities(plain)
+    assert all(v.baseline_inherited_from is None for v in empty)

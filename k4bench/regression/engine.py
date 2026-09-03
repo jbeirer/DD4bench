@@ -69,6 +69,12 @@ so every gate errs toward *not* flagging:
    change arriving in the same window keeps a bounded onset window to
    attribute it with.
 
+A platform migration is the one case where part of the baseline comes from
+somewhere else: a young platform may be seeded with a *predecessor* platform's
+tail (see :mod:`k4bench.regression.lineage`). Seed points are baseline evidence
+only — never judged — and leave the window once the platform has
+:data:`MIN_BASELINE_RUNS` reliable points of its own.
+
 Every series reaching this engine is a measurement: what a configuration
 recorded, judged against its own history. A night where every configuration of
 a run group moved together is reported once per configuration, because that is
@@ -91,6 +97,7 @@ from itertools import groupby
 import numpy as np
 import pandas as pd
 
+from k4bench.regression.lineage import BaselineSeed
 from k4bench.regression.models import (
     Direction,
     MetricVerdict,
@@ -208,10 +215,45 @@ def release_key(run_date, run_id) -> str:
     return _fmt_date(run_date) or str(run_id)
 
 
+def _seed_values(seed: pd.DataFrame) -> list[float]:
+    """The predecessor's usable values, oldest last, capped at one window.
+
+    Filtered exactly as the walk filters the series' own nights, and cut to the
+    tail: the nights nearest the migration describe the software it replaced.
+    """
+    ordered = seed.sort_values(["run_date", "run_id"], kind="stable")
+    values = [
+        float(row.value)
+        for row in ordered.itertuples(index=False)
+        if row.reliable is not False
+        and row.value is not None
+        and not (isinstance(row.value, float) and math.isnan(row.value))
+    ]
+    return values[-BASELINE_WINDOW_RUNS:]
+
+
+def _judging_window(
+    baseline: deque[tuple[float, bool]],
+) -> tuple[np.ndarray, bool]:
+    """The values the next snapshot is built from, and whether any is inherited.
+
+    The seed is dropped whole — not blended on — the moment
+    :data:`MIN_BASELINE_RUNS` of the platform's own points are in the window.
+    """
+    own = [value for value, inherited in baseline if not inherited]
+    if len(own) >= MIN_BASELINE_RUNS:
+        return np.asarray(own, dtype=float), False
+    return (
+        np.asarray([value for value, _ in baseline], dtype=float),
+        len(own) < len(baseline),
+    )
+
+
 def evaluate_series(
     history: pd.DataFrame,
     *,
     series: SeriesId,
+    baseline_seed: BaselineSeed | None = None,
 ) -> list[MetricVerdict]:
     """Chronologically evaluate one metric history and return its verdict series.
 
@@ -226,6 +268,16 @@ def evaluate_series(
       *unknown* verdict (no machine info) is not evidence of contention, and
       excluding it would starve baselines on histories without machine info —
       the same policy as the dashboard's reliability filter.
+
+    *baseline_seed* is the optional tail of a *predecessor* platform's history
+    for this same series (see :mod:`k4bench.regression.lineage`), filling the
+    baseline window while the platform is too young to have one of its own.
+    Seed points produce no verdict and are not part of the returned series, and
+    they leave the window once :data:`MIN_BASELINE_RUNS` of the platform's own
+    points are in it (at once, when a confirmed change re-anchors the
+    baseline). A migration step is therefore judged like any other step, and
+    the verdicts judged against a seeded window say so in
+    ``baseline_inherited_from``.
 
     The unit of change is the **release**: nights sharing a ``run_date`` are
     repeat measurements of one software state, and all engine state transitions
@@ -295,7 +347,13 @@ def evaluate_series(
     abs_delta_floor = ABS_DELTA_FLOOR.get(series.metric_family, 0.0)
 
     df = history.sort_values(["run_date", "run_id"], kind="stable")
-    baseline: deque[float] = deque(maxlen=BASELINE_WINDOW_RUNS)
+    #: ``(value, inherited)`` per point: seeded points are evicted by this
+    #: platform's own values in the normal way — the deque is the handover.
+    baseline: deque[tuple[float, bool]] = deque(maxlen=BASELINE_WINDOW_RUNS)
+    seed_platform: str | None = None
+    if baseline_seed is not None:
+        baseline.extend((value, True) for value in _seed_values(baseline_seed.history))
+        seed_platform = baseline_seed.platform
     pending: Direction | None = None
     pending_run: tuple[str, str] | None = None   # the WATCH night's identity (the onset)
     #: Per direction, the newest reliable judged night that measured the series
@@ -338,6 +396,10 @@ def evaluate_series(
     for release_date, group in groupby(
         df.itertuples(index=False), key=_segment_key,
     ):
+        # The baseline cannot move inside a release (judged values enter it at
+        # the boundary below), so its window is resolved once, here.
+        window, inherited = _judging_window(baseline)
+
         # Per-release state, reset at every boundary.
         # snapshot: (med, mad, reanchoring, n_base)
         snapshot: tuple[float, float, bool, int] | None = None
@@ -364,7 +426,7 @@ def evaluate_series(
             if warming is None:
                 # Decided once per release, at its first reliable night, from
                 # state that predates the release entirely.
-                warming = len(baseline) < MIN_BASELINE_RUNS and anchor_date is None
+                warming = len(window) < MIN_BASELINE_RUNS and anchor_date is None
             if warming:
                 # Warm-up covers the whole release: judging a later night of
                 # this release against a window already containing its earlier
@@ -379,7 +441,7 @@ def evaluate_series(
                     severity=Severity.UNKNOWN, direction=Direction.NONE,
                     unjudged=Unjudged.INSUFFICIENT_HISTORY,
                     reason=(
-                        f"only {len(baseline)} reliable baseline runs "
+                        f"only {len(window)} reliable baseline runs "
                         f"(<{MIN_BASELINE_RUNS}) — not judged"
                     ),
                 ))
@@ -390,18 +452,18 @@ def evaluate_series(
                 # First judged night of the release: freeze the snapshot every
                 # night of this release is judged against, built from state
                 # accumulated under earlier releases only.
-                reanchoring = len(baseline) < MIN_BASELINE_RUNS
+                reanchoring = len(window) < MIN_BASELINE_RUNS
                 if reanchoring:
                     # Short post-change segment: its median is already the best
                     # center, but its MAD is too unstable to trust — inherit
                     # the pre-change spread instead, so a second change right
                     # after a confirmed one is still detectable (no blind
                     # window).
-                    med = float(np.median(np.asarray(baseline)))
+                    med = float(np.median(window))
                     mad = anchor_mad
                 else:
-                    med, mad = robust_baseline(np.asarray(baseline))
-                snapshot = (med, mad, reanchoring, len(baseline))
+                    med, mad = robust_baseline(window)
+                snapshot = (med, mad, reanchoring, len(window))
 
             med, mad, reanchoring, n_base = snapshot
             delta = x - med
@@ -543,6 +605,7 @@ def evaluate_series(
                 # Set on every severity judged against it: a series settling onto
                 # a new level is not a control whatever tonight's verdict says.
                 reanchor_run_date=anchor_date if reanchoring else None,
+                baseline_inherited_from=seed_platform if inherited else None,
             ))
             release_values.append(x)
             release_last_reliable = _identity(row)
@@ -560,7 +623,7 @@ def evaluate_series(
             # night, and the level moves far more than the noise does.
             anchor_mad = snapshot[1]
             baseline.clear()
-            baseline.extend(release_values)
+            baseline.extend((value, False) for value in release_values)
             anchor_date = release_date
             pending = pending_run = None
             # Re-anchoring redefines the accepted level as the post-change
@@ -579,6 +642,6 @@ def evaluate_series(
             # baseline in night order (a WATCH value included — one outlier
             # cannot move a 14-point median), and a still-pending WATCH
             # carries into the next release.
-            baseline.extend(release_values)
+            baseline.extend((value, False) for value in release_values)
 
     return verdicts
