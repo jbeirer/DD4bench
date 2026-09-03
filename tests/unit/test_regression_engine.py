@@ -874,20 +874,50 @@ def test_confirmed_migration_step_reanchors_onto_the_new_platform():
     assert all(v.baseline_median == pytest.approx(120.0, abs=0.5) for v in verdicts[2:])
 
 
-def test_seed_is_dropped_once_the_platform_stands_on_its_own():
+def test_seed_hands_over_one_point_at_a_time():
     # A migration that moved the level by less than the effect floor: nothing
-    # is flagged, so nothing re-anchors and the handover is the deque's alone.
-    own = [v + 3.0 for v in _STEADY]
+    # is flagged, so nothing re-anchors and the handover is the deque's alone —
+    # one seeded point evicted per night of the platform's own, never a jump
+    # from a full mixed window to a handful of native observations.
+    own = [v + 3.0 for v in _STEADY + _STEADY[:6]]
     verdicts = evaluate_series(
         _history(own, start="2026-02-01"),
-        series=_TIME, baseline_seed=_seed(_STEADY),
+        series=_TIME, baseline_seed=_seed((_STEADY + _STEADY)[:BASELINE_WINDOW_RUNS]),
     )
     assert all(v.severity is Severity.OK for v in verdicts)
     inherited = [v.baseline_inherited_from for v in verdicts]
-    assert inherited[:MIN_BASELINE_RUNS] == [_OLD_PLATFORM] * MIN_BASELINE_RUNS
-    assert inherited[MIN_BASELINE_RUNS:] == [None] * (len(own) - MIN_BASELINE_RUNS)
+    assert inherited[:BASELINE_WINDOW_RUNS] == [_OLD_PLATFORM] * BASELINE_WINDOW_RUNS
+    assert inherited[BASELINE_WINDOW_RUNS:] == [None] * (
+        len(own) - BASELINE_WINDOW_RUNS
+    )
+    # The centre migrates with it, rather than stepping on the handover night.
     assert verdicts[0].baseline_median == pytest.approx(100.0, abs=0.1)
-    assert verdicts[MIN_BASELINE_RUNS].baseline_median == pytest.approx(103.0, abs=0.1)
+    assert verdicts[BASELINE_WINDOW_RUNS // 2].baseline_median == pytest.approx(
+        101.5, abs=0.6
+    )
+    assert verdicts[-1].baseline_median == pytest.approx(103.0, abs=0.1)
+
+
+def test_a_parallel_predecessor_cannot_leak_the_future():
+    # Two platforms benchmarked side by side. The predecessor's nights from
+    # after the successor started are not evidence about the successor's
+    # earlier nights, and must reach neither their baseline nor the
+    # WATCH/CONFIRMED state that follows from it.
+    own = _history(_STEADY + [120.0, 120.5], start="2026-01-28")
+    before_start = _history(_STEADY, start="2026-01-18")   # ends 2026-01-27
+
+    def judged(parallel_level):
+        parallel = _history([parallel_level] * 12, start="2026-01-28")
+        return evaluate_series(own, series=_TIME, baseline_seed=BaselineSeed(
+            _OLD_PLATFORM, pd.concat([before_start, parallel], ignore_index=True),
+        ))
+
+    quiet, wild = judged(100.0), judged(500.0)
+    assert quiet == wild
+    # …and the seed was doing its job in both: judged from night one, and the
+    # migration step still confirms on the normal schedule.
+    assert quiet[0].baseline_inherited_from == _OLD_PLATFORM
+    assert _severities(quiet[-2:]) == [Severity.WATCH, Severity.CONFIRMED]
 
 
 def test_seed_skips_unreliable_and_missing_nights():

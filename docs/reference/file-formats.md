@@ -125,11 +125,19 @@ directly comparable, and history keeps both:
   stays readable; it simply stops growing.
 
     A new series would also mean no baseline for its first week, so the LCG
-    platform *seeds* its baseline from the Spack platform's tail until it has
-    enough reliable runs of its own (`k4bench/regression/lineage.py`). Those
-    points are never judged and are never the new platform's verdicts; a shift
-    caused by the migration is reported as one ordinary step (watch, then
-    regression), naming the borrowed platform in `baseline_inherited_from`.
+    platform *seeds* its baseline from the Spack platform's tail
+    (`k4bench/regression/lineage.py`). Those points are never judged and are
+    never the new platform's verdicts, they never postdate the night they help
+    judge, and each of the new platform's own nights evicts one of them until
+    none are left. A shift caused by the migration is reported as one ordinary
+    step (watch, then regression), naming the borrowed platform in
+    `baseline_inherited_from`.
+
+    The same file dates the Spack platform's **retirement**. From that night on
+    no run is expected from it, so it drops out of the report instead of
+    failing with *no run uploaded* every night until the grace period expires.
+    Earlier nights are unaffected, so a backfill still reports a night that
+    platform really did miss.
 - **Package names.** LCG spells them as upstream does (`DD4hep`, `fcc_config`)
   where Spack lower-cased and hyphenated them (`dd4hep`, `fcc-config`).
 - **Commit length.** LCG records the abbreviated sha (`9e2047a`) where Spack

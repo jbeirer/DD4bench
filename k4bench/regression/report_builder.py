@@ -14,7 +14,9 @@ from __future__ import annotations
 import dataclasses
 import logging
 import math
+from collections.abc import Callable
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 
 import pandas as pd
@@ -39,7 +41,11 @@ from k4bench.regression.engine import (
     release_key,
 )
 from k4bench.regression.history import history_tail, host_facts, release_points
-from k4bench.regression.lineage import BaselineSeed, baseline_predecessor
+from k4bench.regression.lineage import (
+    BaselineSeed,
+    baseline_predecessor,
+    platform_retired,
+)
 from k4bench.regression.models import (
     MISSING_RUN_FAILURE,
     REPORTED_ONLY_REASON,
@@ -589,6 +595,23 @@ def _fetch_run_dirs(
     return tuple(r["run_dir"] for r in sorted(runs, key=lambda r: r["date"]))
 
 
+def _fetch_predecessor(
+    data_url: str,
+    cache_dir: str | None,
+    detector: str,
+    predecessor: str,
+    sample: str,
+    *,
+    fetch_window_runs: int,
+    as_of: str | None,
+) -> PredecessorRuns | None:
+    """The predecessor platform's trailing runs, downloaded on demand."""
+    return predecessor_runs(predecessor, _fetch_run_dirs(
+        data_url, cache_dir, detector, predecessor, sample,
+        fetch_window_runs=fetch_window_runs, as_of=as_of,
+    ))
+
+
 def build_group_report(
     data_url: str,
     cache_dir: str | None,
@@ -613,18 +636,13 @@ def build_group_report(
     )
     if not run_dirs:
         return None
-    # The seed goes inert at MIN_BASELINE_RUNS reliable runs, but reliability
-    # is only known once a run is downloaded — which is what this gate avoids —
-    # so a full window of runs on the board stands in for it.
     predecessor = baseline_predecessor(platform)
-    seed = None
-    if predecessor is not None and len(run_dirs) < BASELINE_WINDOW_RUNS:
-        seed = predecessor_runs(predecessor, _fetch_run_dirs(
-            data_url, cache_dir, detector, predecessor, sample,
-            fetch_window_runs=fetch_window_runs, as_of=as_of,
-        ))
     return group_report_from_run_dirs(
-        detector, platform, sample, run_dirs, predecessor=seed,
+        detector, platform, sample, run_dirs,
+        predecessor=None if predecessor is None else partial(
+            _fetch_predecessor, data_url, cache_dir, detector, predecessor, sample,
+            fetch_window_runs=fetch_window_runs, as_of=as_of,
+        ),
     )
 
 
@@ -849,13 +867,17 @@ def group_report_from_run_dirs(
     sample: str,
     run_dirs: tuple[str, ...],
     *,
-    predecessor: PredecessorRuns | None = None,
+    predecessor: Callable[[], PredecessorRuns | None] | None = None,
 ) -> RunGroupReport | None:
     """Build one triple's report from already-local run directories (ordered
     oldest → newest; each directory's name is its nightly date).
 
     *predecessor* lends baseline points to a platform too young to have its
-    own; it never contributes a verdict, a release, a failure or a timing.
+    own; it never contributes a verdict, a release, a failure or a timing. It
+    is a callable, and called only while this platform's own *reliable* runs
+    still fall short of a baseline window — reliability is known only once a
+    run is parsed, so the decision belongs here and not at the call site, where
+    it could only have counted directories.
     """
     if not run_dirs:
         return None
@@ -867,13 +889,18 @@ def group_report_from_run_dirs(
     event_df = build_event_timing_trend(run_dirs)
     machine_df = build_machine_info_trend(run_dirs)
     reliability = run_reliability_map(results_df, machine_df)
+    seed = None
+    if predecessor is not None and sum(
+        verdict is not False for verdict in reliability.values()
+    ) < BASELINE_WINDOW_RUNS:
+        seed = predecessor()
     group = _group_report_from_frames(
         detector, platform, sample,
         results_df=results_df, event_df=event_df,
         reliability=reliability, tonight=tonight,
         hosts=host_facts(machine_df),
         configured_labels=tonight_meta["configured_labels"],
-        predecessor=predecessor,
+        predecessor=seed,
     )
     if group is None:
         return None
@@ -969,15 +996,14 @@ def build_nightly_report_local(
         for platform, per_sample in per_platform.items():
             predecessor = baseline_predecessor(platform)
             for sample, run_paths in sorted(per_sample.items()):
-                run_dirs = _window(run_paths)
-                seed = None
-                if predecessor is not None and len(run_dirs) < BASELINE_WINDOW_RUNS:
-                    seed = predecessor_runs(
-                        predecessor,
-                        _window(per_platform.get(predecessor, {}).get(sample, [])),
-                    )
+                seed_dirs = _window(
+                    per_platform.get(predecessor, {}).get(sample, [])
+                ) if predecessor is not None else ()
                 group = group_report_from_run_dirs(
-                    det_dir.name, platform, sample, run_dirs, predecessor=seed,
+                    det_dir.name, platform, sample, _window(run_paths),
+                    predecessor=None if predecessor is None else partial(
+                        predecessor_runs, predecessor, seed_dirs,
+                    ),
                 )
                 if group is not None:
                     groups.append(group)
@@ -1072,9 +1098,15 @@ def _finalize_report(groups: list[RunGroupReport]) -> NightlyReport:
                 )
                 kept.append(g)
                 continue
+            if platform_retired(g.platform, report_night):
+                _log.info(
+                    "_finalize_report: dropping %s/%s/%s — platform retired "
+                    "(last run %s)", g.detector, g.platform, g.sample, g.run_date,
+                )
+                continue
             if age_days > MISSING_RUN_GRACE_DAYS:
                 _log.info(
-                    "_finalize_report: dropping retired triple %s/%s/%s "
+                    "_finalize_report: dropping stale triple %s/%s/%s "
                     "(last run %s)", g.detector, g.platform, g.sample, g.run_date,
                 )
                 continue

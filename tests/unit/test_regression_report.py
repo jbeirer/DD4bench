@@ -11,7 +11,8 @@ import pytest
 
 import pandas as pd
 
-from k4bench.regression.lineage import BASELINE_PREDECESSORS
+from k4bench.regression.engine import BASELINE_WINDOW_RUNS
+from k4bench.regression.lineage import BASELINE_PREDECESSORS, PLATFORM_RETIREMENTS
 from k4bench.regression.models import Direction, Severity, Unjudged
 from k4bench.regression.report_builder import (
     EVENT_METRICS,
@@ -921,15 +922,17 @@ def test_a_confirmation_within_one_workload_gets_no_seed_note(tmp_path):
 _NEW_PLAT, _OLD_PLAT = next(iter(BASELINE_PREDECESSORS.items()))
 
 
-def _migration_tree(root: Path, *, new_walls: list[float]) -> Path:
+def _migration_tree(
+    root: Path, *, new_walls: list[float], start: str = "2026-01-01",
+) -> Path:
     """Ten nights on the old platform, then *new_walls* nights on the new one."""
-    old_nights = _nights(10)
+    old_nights = _nights(10, start=start)
     for night in old_nights:
         _write_run(
             root / "DET" / _OLD_PLAT / _STACK / "single_e" / night,
             night=night, wall_time_s=100.0, platform=_OLD_PLAT,
         )
-    new_nights = _nights(len(new_walls), start="2026-01-11")
+    new_nights = _nights(len(new_walls), start=_nights(11, start=start)[-1])
     for night, wall in zip(new_nights, new_walls):
         _write_run(
             root / "DET" / _NEW_PLAT / _STACK / "single_e" / night,
@@ -956,7 +959,7 @@ def test_seeded_group_judges_its_first_night_as_its_own_platform(tmp_path):
     _migration_tree(tmp_path, new_walls=[100.2])
     group = group_report_from_run_dirs(
         "DET", _NEW_PLAT, "single_e", _new_platform_runs(tmp_path),
-        predecessor=_old_platform_seed(tmp_path),
+        predecessor=lambda: _old_platform_seed(tmp_path),
     )
     assert group is not None
     wall = next(v for v in group.verdicts if v.metric == "wall_time_s")
@@ -974,7 +977,7 @@ def test_seeded_group_confirms_a_migration_step(tmp_path):
     _migration_tree(tmp_path, new_walls=[120.0, 120.5])
     group = group_report_from_run_dirs(
         "DET", _NEW_PLAT, "single_e", _new_platform_runs(tmp_path),
-        predecessor=_old_platform_seed(tmp_path),
+        predecessor=lambda: _old_platform_seed(tmp_path),
     )
     assert group is not None
     confirmed = {(v.metric, v.severity, v.direction) for v in group.regressions}
@@ -996,6 +999,46 @@ def test_an_unseeded_new_platform_is_still_cold(tmp_path):
     assert wall.baseline_inherited_from is None
 
 
+def test_seed_is_consulted_while_reliable_history_is_short(tmp_path):
+    # Fourteen run directories, ten of them contended: the platform still has
+    # too few *usable* nights to judge against, so the predecessor is still
+    # consulted. Counting directories would have written it off here.
+    run_dirs = _make_history(
+        tmp_path, [100.0] * BASELINE_WINDOW_RUNS,
+        {i: {"contended": True} for i in range(10)},
+    )
+    consulted = []
+    group_report_from_run_dirs(
+        "DET", _NEW_PLAT, "single_e", tuple(str(d) for d in run_dirs),
+        predecessor=lambda: consulted.append(True),
+    )
+    assert consulted
+
+
+def test_seed_is_left_alone_once_the_window_is_full(tmp_path):
+    run_dirs = _make_history(tmp_path, [100.0] * BASELINE_WINDOW_RUNS)
+    consulted = []
+    group_report_from_run_dirs(
+        "DET", _NEW_PLAT, "single_e", tuple(str(d) for d in run_dirs),
+        predecessor=lambda: consulted.append(True),
+    )
+    assert not consulted
+
+
+def test_a_retired_platform_is_not_reported_as_missing(tmp_path):
+    # The old platform stops running at the migration. Past its retirement date
+    # nothing expects it, so it is dropped rather than flagged ❌ every night
+    # for a week — which would have made the migration read as an outage.
+    retired = PLATFORM_RETIREMENTS[_OLD_PLAT]
+    start = (date.fromisoformat(retired) - timedelta(days=11)).isoformat()
+    _migration_tree(tmp_path, new_walls=[100.0] * 3, start=start)
+    report = build_nightly_report_local(str(tmp_path))
+
+    assert report.report_night >= retired
+    assert {g.platform for g in report.groups} == {_NEW_PLAT}
+    assert report.job_failures == []
+
+
 def test_local_report_seeds_the_successor_platform(tmp_path):
     # End to end over the run tree: the predecessor is found by platform name
     # under the same detector.
@@ -1007,8 +1050,10 @@ def test_local_report_seeds_the_successor_platform(tmp_path):
         ("wall_time_s", Direction.UP)
     ]
     assert all(v.baseline_inherited_from == _OLD_PLAT for v in new.regressions)
-    # The old platform is a platform in its own right and keeps its own entry;
-    # it simply stopped running, which is reported as such.
+    # This night predates the old platform's retirement, so a night it really
+    # did miss is still reported as missing — retirement is dated so that a
+    # backfill of an earlier night keeps saying what that night knew.
     old = next(g for g in report.groups if g.platform == _OLD_PLAT)
+    assert report.report_night < PLATFORM_RETIREMENTS[_OLD_PLAT]
     assert old.regressions == []
     assert old.job_failures

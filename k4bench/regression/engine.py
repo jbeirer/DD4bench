@@ -72,8 +72,8 @@ so every gate errs toward *not* flagging:
 A platform migration is the one case where part of the baseline comes from
 somewhere else: a young platform may be seeded with a *predecessor* platform's
 tail (see :mod:`k4bench.regression.lineage`). Seed points are baseline evidence
-only — never judged — and leave the window once the platform has
-:data:`MIN_BASELINE_RUNS` reliable points of its own.
+only — never judged — and are evicted one by one as the platform's own nights
+arrive, so it is judged against itself alone within a window.
 
 Every series reaching this engine is a measurement: what a configuration
 recorded, judged against its own history. A night where every configuration of
@@ -215,13 +215,22 @@ def release_key(run_date, run_id) -> str:
     return _fmt_date(run_date) or str(run_id)
 
 
-def _seed_values(seed: pd.DataFrame) -> list[float]:
-    """The predecessor's usable values, oldest last, capped at one window.
+def _seed_values(seed: pd.DataFrame, *, before) -> list[float]:
+    """The predecessor's usable values from strictly before *before*, oldest last.
 
-    Filtered exactly as the walk filters the series' own nights, and cut to the
-    tail: the nights nearest the migration describe the software it replaced.
+    Cut there because platforms can run in parallel: a seed point measured
+    *after* the night it helps judge would leak the future into that verdict,
+    and into the WATCH/CONFIRMED state that follows from it. Without a usable
+    date on either side nothing can be shown to predate anything, so nothing is
+    inherited. Filtered as the walk filters the series' own nights, and capped
+    at one baseline window — the tail, nearest the migration.
     """
-    ordered = seed.sort_values(["run_date", "run_id"], kind="stable")
+    dates = pd.to_datetime(seed["run_date"], errors="coerce")
+    if pd.isna(before):
+        return []
+    ordered = seed[dates.notna() & (dates < before)].sort_values(
+        ["run_date", "run_id"], kind="stable",
+    )
     values = [
         float(row.value)
         for row in ordered.itertuples(index=False)
@@ -230,23 +239,6 @@ def _seed_values(seed: pd.DataFrame) -> list[float]:
         and not (isinstance(row.value, float) and math.isnan(row.value))
     ]
     return values[-BASELINE_WINDOW_RUNS:]
-
-
-def _judging_window(
-    baseline: deque[tuple[float, bool]],
-) -> tuple[np.ndarray, bool]:
-    """The values the next snapshot is built from, and whether any is inherited.
-
-    The seed is dropped whole — not blended on — the moment
-    :data:`MIN_BASELINE_RUNS` of the platform's own points are in the window.
-    """
-    own = [value for value, inherited in baseline if not inherited]
-    if len(own) >= MIN_BASELINE_RUNS:
-        return np.asarray(own, dtype=float), False
-    return (
-        np.asarray([value for value, _ in baseline], dtype=float),
-        len(own) < len(baseline),
-    )
 
 
 def evaluate_series(
@@ -272,11 +264,12 @@ def evaluate_series(
     *baseline_seed* is the optional tail of a *predecessor* platform's history
     for this same series (see :mod:`k4bench.regression.lineage`), filling the
     baseline window while the platform is too young to have one of its own.
-    Seed points produce no verdict and are not part of the returned series, and
-    they leave the window once :data:`MIN_BASELINE_RUNS` of the platform's own
-    points are in it (at once, when a confirmed change re-anchors the
-    baseline). A migration step is therefore judged like any other step, and
-    the verdicts judged against a seeded window say so in
+    Seed points produce no verdict, are not part of the returned series, and
+    never postdate the first night they help judge. They are evicted one at a
+    time as the platform's own values arrive — gone after
+    :data:`BASELINE_WINDOW_RUNS` of them, or at once when a confirmed change
+    re-anchors the baseline. A migration step is therefore judged like any
+    other step, and the verdicts judged against a seeded window say so in
     ``baseline_inherited_from``.
 
     The unit of change is the **release**: nights sharing a ``run_date`` are
@@ -352,7 +345,10 @@ def evaluate_series(
     baseline: deque[tuple[float, bool]] = deque(maxlen=BASELINE_WINDOW_RUNS)
     seed_platform: str | None = None
     if baseline_seed is not None:
-        baseline.extend((value, True) for value in _seed_values(baseline_seed.history))
+        baseline.extend((value, True) for value in _seed_values(
+            baseline_seed.history,
+            before=pd.to_datetime(df["run_date"], errors="coerce").min(),
+        ))
         seed_platform = baseline_seed.platform
     pending: Direction | None = None
     pending_run: tuple[str, str] | None = None   # the WATCH night's identity (the onset)
@@ -397,8 +393,11 @@ def evaluate_series(
         df.itertuples(index=False), key=_segment_key,
     ):
         # The baseline cannot move inside a release (judged values enter it at
-        # the boundary below), so its window is resolved once, here.
-        window, inherited = _judging_window(baseline)
+        # the boundary below), so its window is resolved once, here. Seeded
+        # points are evicted one at a time by this platform's own values —
+        # the deque is the handover, and a re-anchor clears them outright.
+        window = np.asarray([value for value, _ in baseline], dtype=float)
+        inherited = any(seeded for _, seeded in baseline)
 
         # Per-release state, reset at every boundary.
         # snapshot: (med, mad, reanchoring, n_base)
