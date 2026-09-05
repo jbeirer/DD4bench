@@ -290,6 +290,12 @@ class MetricVerdict:
     #:
     #: ``None`` on reports written before this field existed.
     reanchor_run_date: str | None = None
+    #: The *predecessor* platform whose measurements seeded the baseline this
+    #: verdict was judged against (see :mod:`k4bench.regression.lineage`), or
+    #: ``None`` when the baseline is this platform's own — the normal case, and
+    #: every legacy report. A yardstick measured by a different compiler is
+    #: exactly the kind of thing that explains a step, so it is recorded.
+    baseline_inherited_from: str | None = None
 
     @property
     def flagged(self) -> bool:

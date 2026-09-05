@@ -14,7 +14,9 @@ from __future__ import annotations
 import dataclasses
 import logging
 import math
+from collections.abc import Callable
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 
 import pandas as pd
@@ -38,6 +40,11 @@ from k4bench.regression.engine import (
     release_key,
 )
 from k4bench.regression.history import history_tail, host_facts, release_points
+from k4bench.regression.lineage import (
+    BaselineSeed,
+    baseline_predecessor,
+    platform_retired,
+)
 from k4bench.regression.models import (
     MISSING_RUN_FAILURE,
     REPORTED_ONLY_REASON,
@@ -154,6 +161,64 @@ def _series_history(
     })
 
 
+@dataclasses.dataclass(frozen=True)
+class PredecessorRuns:
+    """One run group's predecessor-platform frames, for baseline seeding only.
+
+    Kept apart from the group's own frames rather than concatenated into them:
+    everything else read off those frames — tonight's release, the CI run, the
+    config roster, failures, region timings — is a statement about *this*
+    platform, which a borrowed row would answer wrongly.
+    """
+
+    platform: str
+    results_df: pd.DataFrame | None
+    event_df: pd.DataFrame | None
+    reliability: dict[str, bool | None]
+
+
+def predecessor_runs(platform: str, run_dirs: tuple[str, ...]) -> PredecessorRuns | None:
+    """Build :class:`PredecessorRuns` from the predecessor's run directories.
+
+    Failed configs are dropped as they are for the group's own runs: a gap must
+    not seed a baseline any more than it may enter one.
+    """
+    if not run_dirs:
+        return None
+    results_df = build_results_trend(run_dirs)
+    event_df = build_event_timing_trend(run_dirs)
+    machine_df = build_machine_info_trend(run_dirs)
+    return PredecessorRuns(
+        platform=platform,
+        results_df=judgeable_config_rows(results_df, results_df),
+        event_df=judgeable_config_rows(event_df, results_df),
+        reliability=run_reliability_map(results_df, machine_df),
+    )
+
+
+def _baseline_seed(
+    predecessor: PredecessorRuns | None,
+    df: pd.DataFrame | None,
+    label: str,
+    metric: str,
+) -> BaselineSeed | None:
+    """The predecessor's history for one series, or ``None`` when it has none.
+
+    Matched on ``(label, metric)``: a config the predecessor never ran has
+    nothing to lend, and another config's history would be a fabricated
+    baseline rather than a borrowed one.
+    """
+    if predecessor is None or df is None or df.empty or metric not in df.columns:
+        return None
+    mask = df["label"] == label
+    if not mask.any():
+        return None
+    return BaselineSeed(
+        platform=predecessor.platform,
+        history=_series_history(df, mask, metric, predecessor.reliability),
+    )
+
+
 def unjudged_value_verdicts(
     *,
     detector: str,
@@ -259,6 +324,7 @@ def evaluate_group_series(
     event_df: pd.DataFrame | None,
     reliability: dict[str, bool | None],
     hosts: dict[str, HostFact] | None = None,
+    predecessor: PredecessorRuns | None = None,
 ) -> dict[SeriesId, list[MetricVerdict]]:
     """Run the step detector over every run/event metric series of one run
     group. Region timings are not walked.
@@ -267,6 +333,11 @@ def evaluate_group_series(
     report takes each series' verdict for the report night, while the
     dashboard drill-down and the retrospective threshold validation consume
     the whole walk.
+
+    *predecessor* (from :func:`predecessor_runs`) is the older platform this
+    one seeds its baseline from while it is too young to have one; every series
+    takes the matching series out of it. Omitted — the normal case — each
+    series is judged against its own history alone.
 
     *hosts* (from :func:`~k4bench.regression.history.host_facts`) names the
     machine behind each run, and only reaches the history tails attached to
@@ -279,7 +350,9 @@ def evaluate_group_series(
     """
     out: dict[SeriesId, list[MetricVerdict]] = {}
 
-    def _walk(df: pd.DataFrame, metrics: dict[str, str]) -> None:
+    def _walk(
+        df: pd.DataFrame, metrics: dict[str, str], seed_df: pd.DataFrame | None,
+    ) -> None:
         labels = sorted(df["label"].dropna().unique())
 
         for metric, family in metrics.items():
@@ -289,15 +362,24 @@ def evaluate_group_series(
                 name = str(label)
                 sid = SeriesId(detector, platform, sample, name, family, metric)
                 history = _series_history(df, df["label"] == label, metric, reliability)
-                verdicts = evaluate_series(history, series=sid)
+                verdicts = evaluate_series(
+                    history, series=sid,
+                    baseline_seed=_baseline_seed(predecessor, seed_df, name, metric),
+                )
                 if verdicts:
                     out[sid] = _with_history(history, verdicts, hosts or {})
 
     if results_df is not None and not results_df.empty:
-        _walk(results_df, RUN_METRICS)
+        _walk(
+            results_df, RUN_METRICS,
+            predecessor.results_df if predecessor is not None else None,
+        )
 
     if event_df is not None and not event_df.empty:
-        _walk(event_df, EVENT_METRICS)
+        _walk(
+            event_df, EVENT_METRICS,
+            predecessor.event_df if predecessor is not None else None,
+        )
 
     return out
 
@@ -486,6 +568,49 @@ def _missing_config_failures(
     ]
 
 
+def _fetch_run_dirs(
+    data_url: str,
+    cache_dir: str | None,
+    detector: str,
+    platform: str,
+    sample: str,
+    *,
+    fetch_window_runs: int,
+    as_of: str | None,
+) -> tuple[str, ...]:
+    """One triple's trailing run window, cached locally, oldest → newest.
+    Empty when it has no runs, or none could be downloaded."""
+    stacks_dates = list_run_dates_all_stacks(data_url, detector, platform, sample)
+    pairs = sorted(
+        (date, stack) for stack, dates in stacks_dates.items() for date in dates
+        if as_of is None or date <= as_of
+    )[-fetch_window_runs:]
+    if not pairs:
+        return ()
+    window: dict[str, list[str]] = {}
+    for date, stack in pairs:
+        window.setdefault(stack, []).append(date)
+    runs = fetch_runs_windowed(data_url, detector, platform, sample, window, cache_root=cache_dir)
+    return tuple(r["run_dir"] for r in sorted(runs, key=lambda r: r["date"]))
+
+
+def _fetch_predecessor(
+    data_url: str,
+    cache_dir: str | None,
+    detector: str,
+    predecessor: str,
+    sample: str,
+    *,
+    fetch_window_runs: int,
+    as_of: str | None,
+) -> PredecessorRuns | None:
+    """The predecessor platform's trailing runs, downloaded on demand."""
+    return predecessor_runs(predecessor, _fetch_run_dirs(
+        data_url, cache_dir, detector, predecessor, sample,
+        fetch_window_runs=fetch_window_runs, as_of=as_of,
+    ))
+
+
 def build_group_report(
     data_url: str,
     cache_dir: str | None,
@@ -504,21 +629,20 @@ def build_group_report(
     report that night's runs would have produced — the seam the historical
     backfill drives. ``None`` judges the full history (the nightly CI case).
     """
-    stacks_dates = list_run_dates_all_stacks(data_url, detector, platform, sample)
-    pairs = sorted(
-        (date, stack) for stack, dates in stacks_dates.items() for date in dates
-        if as_of is None or date <= as_of
-    )[-fetch_window_runs:]
-    if not pairs:
+    run_dirs = _fetch_run_dirs(
+        data_url, cache_dir, detector, platform, sample,
+        fetch_window_runs=fetch_window_runs, as_of=as_of,
+    )
+    if not run_dirs:
         return None
-    window: dict[str, list[str]] = {}
-    for date, stack in pairs:
-        window.setdefault(stack, []).append(date)
-    runs = fetch_runs_windowed(data_url, detector, platform, sample, window, cache_root=cache_dir)
-    if not runs:
-        return None
-    run_dirs = tuple(r["run_dir"] for r in sorted(runs, key=lambda r: r["date"]))
-    return group_report_from_run_dirs(detector, platform, sample, run_dirs)
+    predecessor = baseline_predecessor(platform)
+    return group_report_from_run_dirs(
+        detector, platform, sample, run_dirs,
+        predecessor=None if predecessor is None else partial(
+            _fetch_predecessor, data_url, cache_dir, detector, predecessor, sample,
+            fetch_window_runs=fetch_window_runs, as_of=as_of,
+        ),
+    )
 
 
 def _group_report_from_frames(
@@ -532,6 +656,7 @@ def _group_report_from_frames(
     tonight: str,
     hosts: dict[str, HostFact] | None = None,
     configured_labels: list[str] | None = None,
+    predecessor: PredecessorRuns | None = None,
 ) -> RunGroupReport | None:
     """Build one triple's report for *tonight* from already-parsed trend
     frames (already windowed to whatever trailing span "tonight" should be
@@ -582,7 +707,7 @@ def _group_report_from_frames(
     series = evaluate_group_series(
         detector=detector, platform=platform, sample=sample,
         results_df=judgeable_results_df, event_df=judgeable_event_df,
-        reliability=reliability, hosts=hosts,
+        reliability=reliability, hosts=hosts, predecessor=predecessor,
     )
     # Only verdicts issued *for tonight's run* belong in tonight's report; a
     # series with no verdict for tonight simply was not judged tonight.
@@ -629,6 +754,7 @@ def _group_report_from_frames(
             detector=detector, platform=platform, sample=sample,
             results_df=display_results, event_df=display_events,
             reliability=display_reliability, hosts=hosts,
+            predecessor=predecessor,
         )
         failure_reason = {v.label: v.reason for v in config_failures}
         group.verdicts.extend(
@@ -659,6 +785,16 @@ def _group_report_from_frames(
         results_df=judgeable_results_df, event_df=judgeable_event_df,
         tonight=tonight, already=already,
     ))
+
+    if inherited := sorted({
+        v.baseline_inherited_from for v in group.verdicts
+        if v.baseline_inherited_from
+    }):
+        group.notes.append(
+            f"baseline seeded from {', '.join(inherited)} — this platform's "
+            "baseline window still holds measurements of the platform it "
+            "replaced; its own runs replace them one at a time"
+        )
 
     if reliability.get(tonight) is False:
         group.notes.append(
@@ -729,9 +865,19 @@ def group_report_from_run_dirs(
     platform: str,
     sample: str,
     run_dirs: tuple[str, ...],
+    *,
+    predecessor: Callable[[], PredecessorRuns | None] | None = None,
 ) -> RunGroupReport | None:
     """Build one triple's report from already-local run directories (ordered
-    oldest → newest; each directory's name is its nightly date)."""
+    oldest → newest; each directory's name is its nightly date).
+
+    *predecessor* lends baseline points to a platform too young to have its
+    own; it never contributes a verdict, a release, a failure or a timing. It
+    is loaded for every replay: group run counts cannot say whether each
+    series has enough usable points from earlier releases, or whether its
+    detection state depends on the seed. The engine replaces inherited points
+    as each series fills its own baseline window.
+    """
     if not run_dirs:
         return None
     tonight = max(Path(d).name for d in run_dirs)
@@ -742,12 +888,14 @@ def group_report_from_run_dirs(
     event_df = build_event_timing_trend(run_dirs)
     machine_df = build_machine_info_trend(run_dirs)
     reliability = run_reliability_map(results_df, machine_df)
+    seed = predecessor() if predecessor is not None else None
     group = _group_report_from_frames(
         detector, platform, sample,
         results_df=results_df, event_df=event_df,
         reliability=reliability, tonight=tonight,
         hosts=host_facts(machine_df),
         configured_labels=tonight_meta["configured_labels"],
+        predecessor=seed,
     )
     if group is None:
         return None
@@ -818,9 +966,18 @@ def build_nightly_report_local(
     *as_of* truncates each sample's runs the same way."""
     root = Path(data_dir)
     groups: list[RunGroupReport] = []
+
+    def _window(run_paths: list[Path]) -> tuple[str, ...]:
+        return tuple(
+            str(p) for p in sorted(run_paths, key=lambda p: p.name)
+            if as_of is None or p.name <= as_of
+        )[-fetch_window_runs:]
+
     for det_dir in sorted(p for p in root.iterdir() if p.is_dir()):
         if det_dir.name.startswith(("_", ".")):
             continue
+        # Every platform first: a young one seeds from a predecessor's runs.
+        per_platform: dict[str, dict[str, list[Path]]] = {}
         for plat_dir in sorted(p for p in det_dir.iterdir() if p.is_dir()):
             # Collect each sample's run dirs across all stacks.
             per_sample: dict[str, list[Path]] = {}
@@ -829,13 +986,19 @@ def build_nightly_report_local(
                     per_sample.setdefault(sample_dir.name, []).extend(
                         p for p in sample_dir.iterdir() if p.is_dir()
                     )
+            per_platform[plat_dir.name] = per_sample
+
+        for platform, per_sample in per_platform.items():
+            predecessor = baseline_predecessor(platform)
             for sample, run_paths in sorted(per_sample.items()):
-                run_dirs = tuple(
-                    str(p) for p in sorted(run_paths, key=lambda p: p.name)
-                    if as_of is None or p.name <= as_of
-                )[-fetch_window_runs:]
+                seed_dirs = _window(
+                    per_platform.get(predecessor, {}).get(sample, [])
+                ) if predecessor is not None else ()
                 group = group_report_from_run_dirs(
-                    det_dir.name, plat_dir.name, sample, run_dirs
+                    det_dir.name, platform, sample, _window(run_paths),
+                    predecessor=None if predecessor is None else partial(
+                        predecessor_runs, predecessor, seed_dirs,
+                    ),
                 )
                 if group is not None:
                     groups.append(group)
@@ -930,9 +1093,15 @@ def _finalize_report(groups: list[RunGroupReport]) -> NightlyReport:
                 )
                 kept.append(g)
                 continue
+            if platform_retired(g.platform, report_night):
+                _log.info(
+                    "_finalize_report: dropping %s/%s/%s — platform retired "
+                    "(last run %s)", g.detector, g.platform, g.sample, g.run_date,
+                )
+                continue
             if age_days > MISSING_RUN_GRACE_DAYS:
                 _log.info(
-                    "_finalize_report: dropping retired triple %s/%s/%s "
+                    "_finalize_report: dropping stale triple %s/%s/%s "
                     "(last run %s)", g.detector, g.platform, g.sample, g.run_date,
                 )
                 continue

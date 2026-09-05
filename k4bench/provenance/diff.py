@@ -86,7 +86,7 @@ def diff_packages(base: dict, head: dict) -> list[PackageChange]:
             base_commit=base_commit,
             head_commit=head_commit,
             version=str(meta.get("version") or ""),
-            repo_url=meta.get("repo_url"),
+            repo_url=(after or {}).get("repo_url") or (before or {}).get("repo_url"),
         ))
     order = {CHANGED: 0, ADDED: 1, REMOVED: 2}
     return sorted(changes, key=lambda c: (order[c.status], c.name))

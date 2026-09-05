@@ -53,6 +53,7 @@ from remote_cache import (
 )
 from k4bench.blame.models import BlameReport, BlameSchemaError, rank_group_key
 from k4bench.provenance.diff import diff_packages
+from k4bench.regression.lineage import platform_retired
 from tabs import _blame
 from tabs._night_picker import render_night_picker
 from tabs._regression_flags import (
@@ -278,7 +279,7 @@ def _candidate_nights(
     dateset = set(dates)
     nights = {d for d in run_dates if d in dateset}
     newest_any = max(d for ds in stacks_dates.values() for d in ds)
-    if max(run_dates) == newest_any:
+    if max(run_dates) == newest_any and not platform_retired(platform, max(dates)):
         # Active release: also offer the latest report, so a night that
         # benchmarked nothing for this release (a missing-run failure) stays
         # visible even though it isn't one of the release's own run dates.

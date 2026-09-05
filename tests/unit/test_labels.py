@@ -63,6 +63,13 @@ def test_platform_is_split_into_its_four_parts():
     assert label.build_type == "optimized"
 
 
+def test_lcg_enterprise_linux_keeps_its_initialism():
+    # LCG spells the OS as a bare "el"; the generic fallback would title-case
+    # the initialism into "El 9".
+    assert describe_platform("x86_64-el9-gcc16-opt").os == "EL 9"
+    assert pretty_platform("x86_64-el9-gcc16-opt") == "EL 9 · GCC 16 (optimized)"
+
+
 @pytest.mark.parametrize("platform, build", [
     ("aarch64-ubuntu24.04-clang18-dbg", "debug"),
     ("x86_64-centos7-gcc11-reldbg", "release+debug"),

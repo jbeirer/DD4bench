@@ -262,6 +262,18 @@ step-change detector (`k4bench/regression/`):
   release — and falls quiet from the next release on, instead of alerting every
   night until the window rolls over. A second change right afterwards is still
   caught.
+- **Inherited baselines across a platform migration.** A platform is a separate
+  series, so a new one would have no baseline for its first week. While that
+  young it borrows the tail of its **predecessor** platform's history as
+  baseline points only — never judged, never its own verdicts, and never dated
+  after the night they help judge, so two platforms may run in parallel without
+  either seeing the other's future. Each of the new platform's own nights
+  evicts one borrowed point until none are left. A shift caused by the
+  migration is therefore reported as one ordinary step, watch then regression,
+  and the report notes which platform the baseline came from. A platform can
+  separately be marked **retired** from a given date, after which its absence
+  is silence rather than a *no run uploaded* failure, and it sorts to the end
+  of the sidebar's platform list so a fresh visit lands on one still running.
 - **Direction** (faster/slower, more/less memory) is shown but not treated as
   good or bad — a regression is simply any confirmed step beyond the baseline in
   either direction.

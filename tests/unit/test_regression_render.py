@@ -266,6 +266,9 @@ _UNJUDGED_FIELDS = {"unjudged"}
 #: The release a still-provisional baseline is re-anchoring onto, so a reader
 #: can tell "has not moved again" from "did not move" without parsing `reason`.
 _REANCHOR_FIELDS = {"reanchor_run_date"}
+#: The predecessor platform a young platform borrowed its baseline from across
+#: a migration, so a reader can see the yardstick was measured elsewhere.
+_LINEAGE_FIELDS = {"baseline_inherited_from"}
 #: The verdict schema a reader deployed before these features knew about. The
 #: compatibility contract is that the new fields are *purely additive* to this
 #: set — anything else (a renamed or dropped field) breaks an old reader in a
@@ -289,6 +292,7 @@ def test_new_report_is_additive_over_the_pre_window_schema():
             assert v.keys() == (
                 _PRE_WINDOW_FIELDS | _WINDOW_FIELDS | _REPEAT_FIELDS
                 | _HISTORY_FIELDS | _UNJUDGED_FIELDS | _REANCHOR_FIELDS
+                | _LINEAGE_FIELDS
             )
             old_view = {k: val for k, val in v.items() if k in _PRE_WINDOW_FIELDS}
             MetricVerdict(**{

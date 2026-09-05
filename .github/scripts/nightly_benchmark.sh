@@ -22,10 +22,8 @@
 #   GITHUB_RUN_ID, GITHUB_SHA, GITHUB_REPOSITORY, GITHUB_SERVER_URL
 #
 # Optional env vars:
-#   K4H_RELEASE_REQUESTED — Key4hep nightly release to source, e.g. "2026-07-28"
-#                           (resolved once per night by
-#                           .github/scripts/resolve_release.sh). Empty: source
-#                           whatever `latest` points at when this job starts
+#   K4H_RELEASE_REQUESTED — publication date resolved once per night
+#   K4H_STACK_SETUP       — exact LCG view setup.sh resolved with that date
 #
 # EOS layout written by this script:
 #   {EOS_ROOT}/{detector}/{platform}/key4hep-{release}/{sample}/{YYYY-MM-DD}/
@@ -37,6 +35,10 @@
 #     {config}.log
 
 set -euo pipefail
+
+# This script's own checkout, so the steps that run before k4bench is installed
+# do not depend on the directory it was invoked from.
+K4BENCH_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 # Personal EOS area.
 EOS_FQDN="eosuser.cern.ch"
@@ -68,28 +70,29 @@ echo "::endgroup::"
 # ── 3. Key4hep nightly ────────────────────────────────────────────────────────
 echo "::group::3. Key4hep nightly"
 set +u
-if [[ -n "${K4H_RELEASE_REQUESTED:-}" ]]; then
-    source /cvmfs/sw-nightlies.hsf.org/key4hep/setup.sh -r "${K4H_RELEASE_REQUESTED}"
-else
-    source /cvmfs/sw-nightlies.hsf.org/key4hep/setup.sh
-fi
+[[ -f "${K4H_STACK_SETUP:-}" ]] || { echo "ERROR: LCG setup not found: ${K4H_STACK_SETUP:-<unset>}" >&2; exit 1; }
+source "${K4H_STACK_SETUP}"
 set -u
 [[ -n "${KEY4HEP_STACK:-}" ]] || { echo "ERROR: KEY4HEP_STACK not set after sourcing Key4hep setup" >&2; exit 1; }
-K4H_RELEASE="$(grep -oP '\d{4}-\d{2}-\d{2}' <<< "${KEY4HEP_STACK}" | head -1 || true)"
-[[ -n "${K4H_RELEASE}" ]] || { echo "ERROR: Failed to extract Key4hep release date from KEY4HEP_STACK" >&2; exit 1; }
-# Extract platform tag (path component right after the release date, e.g. x86_64-el9-gcc14-opt)
-K4H_PLATFORM="$(grep -oP '(?<=\d{4}-\d{2}-\d{2}\/)[^/:]+' <<< "${KEY4HEP_STACK}" | head -1 || true)"
-[[ -n "${K4H_PLATFORM}" ]] || { echo "WARNING: Could not extract platform from KEY4HEP_STACK; using 'unknown'" >&2; K4H_PLATFORM="unknown"; }
-# KEY4HEP_STACK is the single source of truth for the label and the EOS path, so
+# Reads the release date out of the view. This runs before section 4 installs
+# k4bench, so the checkout is put on the path explicitly rather than relying on
+# the interpreter's cwd; `|| true` keeps a failure in the guard below instead of
+# aborting on `read` hitting EOF with no message worth reading.
+K4H_IDENTITY="$(PYTHONPATH="${K4BENCH_ROOT}${PYTHONPATH:+:${PYTHONPATH}}" python3 -c \
+    'import sys; from k4bench.provenance.stack import stack_identity; print("|".join(stack_identity(sys.argv[1])))' \
+    "${K4H_STACK_SETUP}" || true)"
+IFS='|' read -r K4H_RELEASE K4H_PLATFORM <<< "${K4H_IDENTITY}"
+[[ -n "${K4H_RELEASE}" ]] || { echo "ERROR: Failed to read Key4hep publication date from K4H_STACK_SETUP" >&2; exit 1; }
+# The resolved LCG setup is the source of truth for the label and the EOS path, so
 # a pinned source that lands somewhere else would file results under a release
 # that never produced them. Mislabelled results outlive a red job.
 if [[ -n "${K4H_RELEASE_REQUESTED:-}" && "${K4H_RELEASE}" != "${K4H_RELEASE_REQUESTED}" ]]; then
-    echo "ERROR: requested Key4hep release ${K4H_RELEASE_REQUESTED} but sourced ${K4H_RELEASE} (${KEY4HEP_STACK})" >&2
+    echo "ERROR: requested Key4hep release ${K4H_RELEASE_REQUESTED} but sourced ${K4H_RELEASE} (${K4H_STACK_SETUP})" >&2
     exit 1
 fi
 echo "Release : key4hep-${K4H_RELEASE}"
 echo "Platform: ${K4H_PLATFORM}"
-echo "Stack   : ${KEY4HEP_STACK}"
+echo "View    : ${K4H_STACK_SETUP}"
 echo "::endgroup::"
 
 # Outside the log group: which release produced these numbers is the first thing
@@ -101,7 +104,7 @@ fi
 
 # ── 4. Install k4bench ───────────────────────────────────────────────────────
 echo "::group::4. Install k4bench"
-export K4BENCH_REPO="$(pwd)"
+export K4BENCH_REPO="${K4BENCH_ROOT}"
 export LD_LIBRARY_PATH="${K4BENCH_REPO}/plugin/install/lib:${K4BENCH_REPO}/plugin/build:${LD_LIBRARY_PATH:-}"
 mkdir -p ~/.local/bin
 export PATH=~/.local/bin:"${PATH}"
@@ -304,6 +307,7 @@ run_info = {
     "platform":         platform,
     "k4h_release":      f"key4hep-{k4h_rel}",
     "k4h_release_date": k4h_rel,
+    "k4h_stack_setup":  os.environ["K4H_STACK_SETUP"],
     "detector":         detector,
     "sample":           sample,
     "xml_path":         xml_path,
@@ -337,17 +341,16 @@ run_info = {
 
 # Upstream commit of every package the stack built from git, so a regression
 # found weeks from now can still be traced to the PRs in its blame window. This
-# is the only moment the answer exists: CVMFS keeps roughly a month of
-# nightlies, after which the stack that produced these numbers is gone. Never
-# fatal — the measurements are the deliverable, provenance is metadata.
+# is the only moment the answer exists: LCG overwrites each weekday slot a week
+# later, after which the view that produced these numbers is gone. Never fatal
+# — the measurements are the deliverable, provenance is metadata.
 try:
-    from k4bench.provenance.stack import find_release_root, read_stack_packages
-    release_root = find_release_root(os.environ["KEY4HEP_STACK"])
-    if release_root is None:
-        print("WARNING: no Spack release root found; stack provenance not recorded")
+    from k4bench.provenance.stack import read_stack
+    manifest, packages = read_stack(os.environ["K4H_STACK_SETUP"])
+    if manifest is None:
+        print("WARNING: no stack provenance metadata found")
     else:
-        packages = read_stack_packages(release_root)
-        run_info["k4h_stack_root"] = str(release_root)
+        run_info["k4h_stack_manifest"] = str(manifest)
         run_info["k4h_packages"] = packages
         print(f"Stack provenance: {len(packages)} git-built package(s)")
 except Exception as exc:

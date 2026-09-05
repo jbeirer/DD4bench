@@ -4,9 +4,13 @@ injected provenance/GitHub access into a :class:`BlameReport`, offline."""
 from __future__ import annotations
 
 import dataclasses
+from pathlib import Path
+
+import yaml
 
 from k4bench.blame import builder as builder_mod
 from k4bench.blame.builder import build_blame_report
+from k4bench.blame.comment import CommentPolicy
 from k4bench.blame.github import GitHubClient, RateLimitError, RepoResolution
 from k4bench.blame.models import CandidatePR, StepAssessment
 from k4bench.blame.rank import Ranking, RankResult
@@ -1479,3 +1483,79 @@ def test_a_degenerate_harness_range_is_refused(monkeypatch, caplog):
     assert _harness_change(lookup, [v1, v2]) is None
     assert "is not an interval" in caplog.text
     assert called == []  # refused before spending a provenance read
+
+
+# ── The LCG stack's own shapes, end to end ───────────────────────────────────
+#
+# LCG differs from Spack in three ways that every downstream stage has to carry
+# unchanged: package names spelled as upstream does (``DD4hep``, ``fcc_config``),
+# abbreviated commits, and repository URLs read from CERN GitLab — a best-effort
+# lookup that records ``None`` when the forge is unreachable. This walks one
+# regression through diff → compare link → resolved repo → candidate → the
+# comment policy that decides whether a pull request is written to.
+
+_LCG_PLAT = "x86_64-el9-gcc16-opt"
+_LCG_ALLOWLIST = yaml.safe_load(
+    (Path(__file__).resolve().parents[2] / ".github/blame-comments.yml").read_text()
+)
+
+
+def _lcg_verdict() -> MetricVerdict:
+    return dataclasses.replace(_verdict(), platform=_LCG_PLAT)
+
+
+def test_an_lcg_window_reaches_the_comment_policy(monkeypatch):
+    # k4geo moved and DD4hep did not. k4geo's head record lost its repo_url —
+    # the GitLab lookup failed that night — which must not cost the window its
+    # compare link or its candidates.
+    provenance = _provenance({
+        (_LCG_PLAT, "2026-07-03"): {
+            "k4geo": {"commit": "9e2047a", "version": "HEAD",
+                      "repo_url": "https://github.com/key4hep/k4geo.git"},
+            "DD4hep": {"commit": "1c3f8ab", "version": "HEAD",
+                       "repo_url": "https://github.com/AIDASoft/DD4hep.git"},
+        },
+        (_LCG_PLAT, "2026-07-04"): {
+            "k4geo": {"commit": "b71d904", "version": "HEAD", "repo_url": None},
+            "DD4hep": {"commit": "1c3f8ab", "version": "HEAD",
+                       "repo_url": "https://github.com/AIDASoft/DD4hep.git"},
+        },
+    })
+    seen: list[tuple[str, str, str]] = []
+
+    def fake_resolve(client, slug, base, head):
+        seen.append((slug, base, head))
+        return RepoResolution(candidates=[
+            CandidatePR(
+                repo=slug, number=412, title="Retune the ECal segmentation",
+                author="someone", url=f"https://github.com/{slug}/pull/412",
+                merged_at="2026-07-04T09:00:00Z",
+                files=("FCCee/ALLEGRO/compact/ALLEGRO_o1_v03/ALLEGRO_o1_v03.xml",),
+                additions=12, deletions=3, score=88.0, ranked=True,
+            ),
+        ])
+    _stub_resolve(monkeypatch, fake_resolve)
+
+    blame = build_blame_report(
+        _report([_lcg_verdict()]), packages_for_release=provenance,
+        github=GitHubClient(),
+    )
+
+    entry, = blame.entries
+    repo, = entry.repos
+    # The abbreviated shas travel through the diff untouched, and the URL the
+    # base release recorded still names the repository.
+    assert repo.package == "k4geo"
+    assert (repo.base_commit, repo.head_commit) == ("9e2047a", "b71d904")
+    assert repo.compare_url == (
+        "https://github.com/key4hep/k4geo/compare/9e2047a...b71d904"
+    )
+    assert entry.n_unchanged == 1                      # DD4hep, LCG spelling
+    assert seen == [("key4hep/k4geo", "9e2047a", "b71d904")]
+
+    # …and the candidate that came back clears the repository allowlist, which
+    # is written in GitHub's spelling and matched case-insensitively, so the
+    # LCG package name never has to agree with it.
+    policy = CommentPolicy.from_config(_LCG_ALLOWLIST)
+    candidate, = entry.candidates
+    assert policy.allows(candidate)

@@ -102,6 +102,24 @@ def test_diff_prefers_head_metadata():
     assert change.repo.slug == "key4hep/k4geo"
 
 
+def test_diff_keeps_a_repo_url_the_head_lost():
+    # LCG reads repository URLs from the toolchain sources on CERN GitLab, and
+    # that lookup is best-effort: an unreachable forge records the commit with
+    # no URL. The repository is the package's identity and did not change, so
+    # the base's is still the right answer — dropping it would cost the change
+    # its compare link and the blame ranker its candidate pull requests.
+    base = {"k4geo": {"commit": "9e2047a", "version": "HEAD",
+                      "repo_url": "https://github.com/key4hep/k4geo.git"}}
+    head = {"k4geo": {"commit": "1c3f8ab", "version": "HEAD", "repo_url": None}}
+
+    change, = diff_packages(base, head)
+
+    assert change.repo.slug == "key4hep/k4geo"
+    assert change.compare_url == (
+        "https://github.com/key4hep/k4geo/compare/9e2047a...1c3f8ab"
+    )
+
+
 def test_diff_tolerates_missing_commits():
     # An empty map means "unknown", so it must not be read as a package that
     # changed to nothing.

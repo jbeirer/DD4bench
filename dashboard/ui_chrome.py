@@ -15,7 +15,21 @@ import streamlit as st
 
 from k4bench.analysis.loader import failed_config_mask
 from k4bench.labels import pretty_platform, pretty_release, pretty_sample
+from k4bench.regression.lineage import platform_retired
 from sections import SECTION_SCOPE, SectionScope
+
+
+def order_platforms(platforms: list[str], *, today: str | None = None) -> list[str]:
+    """Platforms with retired ones last, name-ascending within each group.
+
+    The sidebar's selectbox takes its default from the first entry, and the
+    listing it is built from is only alphabetical — which after a migration
+    means the *replaced* platform, whose tree stopped growing and which the
+    nightly report no longer covers. Retired platforms stay selectable; their
+    history is still worth reading, it is just not where a reader should land.
+    """
+    night = today or date.today().isoformat()
+    return sorted(platforms, key=lambda p: (platform_retired(p, night), p))
 
 
 def _failed_labels(results: "pd.DataFrame") -> list[str]:

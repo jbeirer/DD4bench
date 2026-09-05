@@ -42,6 +42,7 @@ from ui_chrome import (
     _render_footer,
     _render_scope_reset,
     _render_sidebar_footer,
+    order_platforms,
     render_example_detector_badge,
     render_logs_tab,
     render_run_status,
@@ -212,6 +213,7 @@ def main() -> None:
             if not platforms:
                 st.warning(f"No platforms found for detector '{detector}'.")
                 return
+            platforms = order_platforms(platforms)
             dropped_platform = _drop_stale_selection("sb_platform", platforms)
             seed_query_param("sb_platform", "platform", platforms)
             platform = st.selectbox("Platform", platforms, key="sb_platform")

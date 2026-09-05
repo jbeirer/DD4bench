@@ -252,14 +252,33 @@ def test_each_half_enters_its_own_worktree_before_setup_without_duplicate_build(
     facts = _facts()
     assert facts is not None
     body = render_text(facts)
-    for half, worktree in zip(_halves(body), ("before", "after")):
+    for half, worktree, release in zip(
+        _halves(body), ("before", "after"), ("2026-08-27", "2026-08-28")
+    ):
         enter = half.index(f"cd ../k4Bench-{worktree}")
-        nightly = half.index("source /cvmfs/sw-nightlies.hsf.org/key4hep/setup.sh")
+        nightly = half.index(
+            f"source /cvmfs/sw-nightlies.hsf.org/key4hep/setup.sh --spack -r {release}"
+        )
         historical_setup = half.index("source setup.sh")
         assert enter < nightly < historical_setup
     assert "KEY4HEP_REPO=" not in body
     assert "bash plugin/build.sh" not in body
     assert "git checkout" not in body
+
+
+def test_lcg_reproducer_sources_recorded_views_and_guards_rotating_slots():
+    before = "/cvmfs/sft-nightlies.cern.ch/lcg/views/devkey-head/Wed/platform/setup.sh"
+    after = "/cvmfs/sft-nightlies.cern.ch/lcg/views/devkey-head/Thu/platform/setup.sh"
+    facts = facts_from(
+        _row(),
+        _info("2026-08-27", "1", k4h_stack_setup=before),
+        _info("2026-08-28", "2", k4h_stack_setup=after),
+    )
+    assert facts is not None
+    body = render_text(facts)
+    assert before in body and after in body
+    assert body.count("Recorded LCG view is no longer available") == 2
+    assert "/key4hep/setup.sh" not in body
 
 
 def test_a_shared_input_is_fetched_once_and_a_differing_one_per_half():
@@ -274,7 +293,7 @@ def test_a_shared_input_is_fetched_once_and_a_differing_one_per_half():
     # own before reaching for it — in a subshell, so that release cannot
     # follow it into either half.
     fetch = shared.split("\n(\n")[2].split("\n)\n", 1)[0]
-    setup = "source /cvmfs/sw-nightlies.hsf.org/key4hep/setup.sh -r 2026-08-27"
+    setup = "source /cvmfs/sw-nightlies.hsf.org/key4hep/setup.sh --spack -r 2026-08-27"
     assert fetch.index(setup) < fetch.index("xrdcp --force")
 
     # Differing sources are a workload difference, and each half has to run
