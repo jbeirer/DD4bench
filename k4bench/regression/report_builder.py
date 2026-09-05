@@ -873,10 +873,10 @@ def group_report_from_run_dirs(
 
     *predecessor* lends baseline points to a platform too young to have its
     own; it never contributes a verdict, a release, a failure or a timing. It
-    is a callable, and called only while this platform's own *reliable* runs
-    still fall short of a baseline window — reliability is known only once a
-    run is parsed, so the decision belongs here and not at the call site, where
-    it could only have counted directories.
+    is loaded for every replay: group run counts cannot say whether each
+    series has enough usable points from earlier releases, or whether its
+    detection state depends on the seed. The engine replaces inherited points
+    as each series fills its own baseline window.
     """
     if not run_dirs:
         return None
@@ -888,11 +888,7 @@ def group_report_from_run_dirs(
     event_df = build_event_timing_trend(run_dirs)
     machine_df = build_machine_info_trend(run_dirs)
     reliability = run_reliability_map(results_df, machine_df)
-    seed = None
-    if predecessor is not None and sum(
-        verdict is not False for verdict in reliability.values()
-    ) < BASELINE_WINDOW_RUNS:
-        seed = predecessor()
+    seed = predecessor() if predecessor is not None else None
     group = _group_report_from_frames(
         detector, platform, sample,
         results_df=results_df, event_df=event_df,

@@ -335,7 +335,9 @@ def _fetch(input_files: tuple[str, ...]) -> list[str]:
 def _stack_source(release: str, setup: str) -> list[str]:
     """Source a recorded LCG view, or the dated legacy Spack release."""
     if not setup:
-        return [f"source {_safe(_NIGHTLY_REPO + '/key4hep/setup.sh')} -r {_safe(release)}"]
+        return [
+            f"source {_safe(_NIGHTLY_REPO + '/key4hep/setup.sh')} --spack -r {_safe(release)}"
+        ]
     return [
         f"stack_setup={_safe(setup)}",
         'stack_generated="$(sed -n \'s/^# *Generated: *//p\' "$stack_setup" | head -1)"',

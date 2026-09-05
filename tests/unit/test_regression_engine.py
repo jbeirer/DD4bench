@@ -898,7 +898,8 @@ def test_seed_hands_over_one_point_at_a_time():
     assert verdicts[-1].baseline_median == pytest.approx(103.0, abs=0.1)
 
 
-def test_a_parallel_predecessor_cannot_leak_the_future():
+@pytest.mark.parametrize("rerun", [False, True])
+def test_a_parallel_predecessor_cannot_leak_the_future(rerun):
     # Two platforms benchmarked side by side. The predecessor's nights from
     # after the successor started are not evidence about the successor's
     # earlier nights, and must reach neither their baseline nor the
@@ -908,6 +909,10 @@ def test_a_parallel_predecessor_cannot_leak_the_future():
 
     def judged(parallel_level):
         parallel = _history([parallel_level] * 12, start="2026-01-28")
+        if rerun:
+            # An older release rerun alongside the successor still measures
+            # the future, even though its release date precedes the migration.
+            parallel["run_date"] = pd.Timestamp("2026-01-27")
         return evaluate_series(own, series=_TIME, baseline_seed=BaselineSeed(
             _OLD_PLATFORM, pd.concat([before_start, parallel], ignore_index=True),
         ))

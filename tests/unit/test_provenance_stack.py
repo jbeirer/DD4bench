@@ -116,14 +116,40 @@ def test_read_stack_uses_manifest_buildinfo_and_lcgcmake_urls(tmp_path, monkeypa
     }
 
 
-def test_lcgcmake_revision_takes_the_modal_githash():
-    # A nightly is incremental, so installs carry different LCGCMake revisions
-    # depending on when each was last rebuilt. The mode is what keeps the
-    # toolchain the URLs come from independent of manifest ordering.
-    assert stack._lcgcmake_revision(["aaa", "bbb", "aaa"]) == "aaa"
-    assert stack._lcgcmake_revision(["bbb", "aaa", "aaa"]) == "aaa"
-    assert stack._lcgcmake_revision(["only"]) == "only"
-    assert stack._lcgcmake_revision([]) == ""
+def test_incremental_builds_use_each_packages_toolchain_revision(tmp_path, monkeypatch):
+    setup = tmp_path / "lcg/views/test-view/slot/platform/setup.sh"
+    setup.parent.mkdir(parents=True)
+    setup.touch()
+    nightly = tmp_path / "lcg/nightlies/test-view/slot"
+    revisions = {"old": "aaaaaaa", "other": "aaaaaaa", "new": "bbbbbbb", "unknown": ""}
+    rows = []
+    for name, revision in revisions.items():
+        install = nightly / name
+        install.mkdir(parents=True)
+        (install / f".buildinfo_{name}.txt").write_text(
+            f"GITHASH: '{revision}', REVISION: abcdef123, VERSION: HEAD\n"
+        )
+        rows.append(f"{name}; hash; HEAD; {install}; deps")
+    (nightly / "LCG_externals_platform.txt").write_text("\n".join(rows))
+    requested = []
+
+    def open_toolchain(url, timeout):
+        requested.append(url)
+        owner = "old" if "/aaaaaaa/" in url else "new"
+        return BytesIO("\n".join(
+            f"LCG_external_package({name} HEAD GIT=https://github.com/{owner}/{name}.git)"
+            for name in revisions
+        ).encode())
+
+    monkeypatch.setattr(stack, "urlopen", open_toolchain)
+    _, packages = stack.read_stack(setup)
+    assert packages["old"]["repo_url"] == "https://github.com/old/old.git"
+    assert packages["other"]["repo_url"] == "https://github.com/old/other.git"
+    assert packages["new"]["repo_url"] == "https://github.com/new/new.git"
+    assert packages["unknown"]["repo_url"] is None
+    assert len(requested) == 2
+    assert any("/aaaaaaa/" in url for url in requested)
+    assert any("/bbbbbbb/" in url for url in requested)
 
 
 def test_read_stack_fails_closed_for_unknown_layout(tmp_path):

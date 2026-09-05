@@ -1015,14 +1015,56 @@ def test_seed_is_consulted_while_reliable_history_is_short(tmp_path):
     assert consulted
 
 
-def test_seed_is_left_alone_once_the_window_is_full(tmp_path):
-    run_dirs = _make_history(tmp_path, [100.0] * BASELINE_WINDOW_RUNS)
-    consulted = []
-    group_report_from_run_dirs(
-        "DET", _NEW_PLAT, "single_e", tuple(str(d) for d in run_dirs),
-        predecessor=lambda: consulted.append(True),
+def test_seeded_confirmation_survives_fourteen_runs_of_two_releases(tmp_path):
+    _migration_tree(tmp_path, new_walls=[100.0] * 6 + [120.0] * 8)
+    run_dirs = _new_platform_runs(tmp_path)
+    for i, run_dir in enumerate(run_dirs):
+        info_path = Path(run_dir) / "run_info.json"
+        info = json.loads(info_path.read_text())
+        info["k4h_release"] = f"key4hep-{'2026-01-11' if i < 6 else '2026-01-17'}"
+        info_path.write_text(json.dumps(info))
+
+    for count in (13, 14):
+        group = group_report_from_run_dirs(
+            "DET", _NEW_PLAT, "single_e", run_dirs[:count],
+            predecessor=lambda: _old_platform_seed(tmp_path),
+        )
+        wall = next(v for v in group.verdicts if v.metric == "wall_time_s")
+        assert wall.severity is Severity.CONFIRMED
+        assert wall.direction is Direction.UP
+        assert wall.onset_run_date == "2026-01-17"
+        assert wall.baseline_inherited_from == _OLD_PLAT
+
+
+@pytest.mark.parametrize("gap", ["failed_config", "missing_metric"])
+def test_seed_remains_available_for_sparse_series_after_fourteen_runs(tmp_path, gap):
+    _migration_tree(tmp_path, new_walls=[100.0] * 14)
+    run_dirs = _new_platform_runs(tmp_path)
+    for run_dir in run_dirs[:10]:
+        results_path = Path(run_dir) / "baseline_results.csv"
+        results = pd.read_csv(results_path)
+        if gap == "failed_config":
+            results["returncode"] = 1
+        else:
+            results["peak_rss_mb"] = float("nan")
+        results.to_csv(results_path, index=False)
+    group = group_report_from_run_dirs(
+        "DET", _NEW_PLAT, "single_e", run_dirs,
+        predecessor=lambda: _old_platform_seed(tmp_path),
     )
-    assert not consulted
+    memory = next(v for v in group.verdicts if v.metric == "peak_rss_mb")
+    assert memory.severity is Severity.OK
+    assert memory.baseline_inherited_from == _OLD_PLAT
+
+
+@pytest.mark.parametrize("night", ["2026-09-03", "2026-09-04"])
+def test_missing_spack_run_is_reported_before_retirement(tmp_path, night):
+    start = (date.fromisoformat(night) - timedelta(days=12)).isoformat()
+    _migration_tree(tmp_path, new_walls=[100.0] * 3, start=start)
+    report = build_nightly_report_local(str(tmp_path))
+    assert report.report_night == night
+    old = next(g for g in report.groups if g.platform == _OLD_PLAT)
+    assert old.job_failures
 
 
 def test_a_retired_platform_is_not_reported_as_missing(tmp_path):

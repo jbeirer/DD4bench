@@ -72,11 +72,16 @@ def _sourced_env(setup: Path) -> dict[str, str]:
 
     Sourced the same way the script sources it — unset variables tolerated
     (``set +u``), since a view is entitled to read ones the caller has not
-    defined.
+    defined. Start with only the system search path so a stack already sourced
+    by CI cannot supply missing variables or executables. Propagate the setup's
+    exit status before printing the resulting environment.
     """
     done = subprocess.run(
-        ["bash", "-c", 'set +u; source "$1" >/dev/null 2>&1; env -0', "_", str(setup)],
-        check=True, capture_output=True, timeout=600,
+        [
+            "/bin/bash", "--noprofile", "--norc", "-c",
+            'set +u; source "$1" >/dev/null || exit $?; /usr/bin/env -0', "_", str(setup),
+        ],
+        env={"PATH": os.defpath}, check=True, capture_output=True, timeout=600,
     )
     return dict(
         entry.split("=", 1)
@@ -90,6 +95,28 @@ def _expand(value: str, env: dict[str, str]) -> str:
     nightly's ``os.path.expandvars`` does, against the sourced view rather than
     this process."""
     return _VAR_RE.sub(lambda m: env.get(m.group(1) or m.group(2), ""), value)
+
+
+def test_sourced_env_propagates_setup_failure(tmp_path):
+    setup = tmp_path / "setup.sh"
+    setup.write_text("return 17\n")
+    with pytest.raises(subprocess.CalledProcessError) as failure:
+        _sourced_env(setup)
+    assert failure.value.returncode == 17
+
+
+def test_sourced_env_does_not_inherit_the_callers_stack(tmp_path, monkeypatch):
+    setup = tmp_path / "setup.sh"
+    setup.write_text("export VIEW_WAS_SOURCED=yes\n")
+    for name in ("KEY4HEP_STACK", "K4GEO", "PYTHONPATH", "LD_LIBRARY_PATH"):
+        monkeypatch.setenv(name, "/old-stack")
+    monkeypatch.setenv("PATH", "/old-stack/bin:" + os.defpath)
+    env = _sourced_env(setup)
+    assert env["VIEW_WAS_SOURCED"] == "yes"
+    assert all(name not in env for name in (
+        "KEY4HEP_STACK", "K4GEO", "PYTHONPATH", "LD_LIBRARY_PATH",
+    ))
+    assert "/old-stack" not in env["PATH"]
 
 
 def test_the_view_provides_the_environment_the_nightly_expects(tmp_path):

@@ -25,9 +25,9 @@ import pandas as pd
 
 # ── Baseline inheritance ─────────────────────────────────────────────────────
 
-#: ``{platform: the platform it may seed its baseline from}``. An entry becomes
-#: inert once the new platform's own nights fill a baseline window, so removing
-#: it afterwards changes no verdict.
+#: ``{platform: the platform it may seed its baseline from}``.
+#: Retain entries for historical replay: even after inherited points leave a
+#: series' baseline window, its detection state can depend on the seeded start.
 BASELINE_PREDECESSORS: dict[str, str] = {
     # The nightly moved from the Key4hep Spack stack to the LCG devkey-head
     # views: same machines, same benchmarks, new compiler (gcc 14.2 → 16).
@@ -68,8 +68,8 @@ class BaselineSeed:
 #: so a historical backfill of an earlier night still expects it, and still
 #: reports a night it really did miss.
 PLATFORM_RETIREMENTS: dict[str, str] = {
-    # Last benchmarked on the Spack nightly stack; the LCG views took over.
-    "x86_64-almalinux9-gcc14.2.0-opt": "2026-09-03",
+    # k4Bench retires its Spack nightly on September 5, after the upstream cutover.
+    "x86_64-almalinux9-gcc14.2.0-opt": "2026-09-05",
 }
 
 

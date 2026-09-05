@@ -51,8 +51,8 @@ def test_a_predecessor_is_not_the_same_thing_as_a_retirement():
     platform has stopped — and the map that would conflate them is the one
     nobody would notice being wrong.
     """
-    assert platform_retired("x86_64-almalinux9-gcc14.2.0-opt", "2026-09-03")
-    assert not platform_retired("x86_64-almalinux9-gcc14.2.0-opt", "2026-09-02")
+    assert platform_retired("x86_64-almalinux9-gcc14.2.0-opt", "2026-09-05")
+    assert not platform_retired("x86_64-almalinux9-gcc14.2.0-opt", "2026-09-04")
     assert not platform_retired("x86_64-el9-gcc16-opt", "2027-01-01")
 
 

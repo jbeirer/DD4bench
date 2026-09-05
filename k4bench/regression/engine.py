@@ -215,8 +215,8 @@ def release_key(run_date, run_id) -> str:
     return _fmt_date(run_date) or str(run_id)
 
 
-def _seed_values(seed: pd.DataFrame, *, before) -> list[float]:
-    """The predecessor's usable values from strictly before *before*, oldest last.
+def _seed_values(seed: pd.DataFrame, *, before, before_run) -> list[float]:
+    """Usable predecessor values preceding both release and measurement cutoffs.
 
     Cut there because platforms can run in parallel: a seed point measured
     *after* the night it helps judge would leak the future into that verdict,
@@ -226,9 +226,14 @@ def _seed_values(seed: pd.DataFrame, *, before) -> list[float]:
     at one baseline window — the tail, nearest the migration.
     """
     dates = pd.to_datetime(seed["run_date"], errors="coerce")
-    if pd.isna(before):
+    measured = pd.to_datetime(seed["run_id"], errors="coerce")
+    if pd.isna(before) or pd.isna(before_run):
         return []
-    ordered = seed[dates.notna() & (dates < before)].sort_values(
+    # An old release rerun after the successor started is still future data.
+    ordered = seed[
+        dates.notna() & (dates < before)
+        & measured.notna() & (measured < before_run)
+    ].sort_values(
         ["run_date", "run_id"], kind="stable",
     )
     values = [
@@ -265,8 +270,8 @@ def evaluate_series(
     for this same series (see :mod:`k4bench.regression.lineage`), filling the
     baseline window while the platform is too young to have one of its own.
     Seed points produce no verdict, are not part of the returned series, and
-    never postdate the first night they help judge. They are evicted one at a
-    time as the platform's own values arrive — gone after
+    must predate both the first release and the first measurement they help
+    judge. They are evicted one at a time as the platform's own values arrive — gone after
     :data:`BASELINE_WINDOW_RUNS` of them, or at once when a confirmed change
     re-anchors the baseline. A migration step is therefore judged like any
     other step, and the verdicts judged against a seeded window say so in
@@ -345,9 +350,11 @@ def evaluate_series(
     baseline: deque[tuple[float, bool]] = deque(maxlen=BASELINE_WINDOW_RUNS)
     seed_platform: str | None = None
     if baseline_seed is not None:
+        measured = pd.to_datetime(df["run_id"], errors="coerce")
         baseline.extend((value, True) for value in _seed_values(
             baseline_seed.history,
             before=pd.to_datetime(df["run_date"], errors="coerce").min(),
+            before_run=measured.min() if measured.notna().all() else pd.NaT,
         ))
         seed_platform = baseline_seed.platform
     pending: Direction | None = None
