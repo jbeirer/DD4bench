@@ -924,14 +924,22 @@ def _merged_observations(
     Absorbed lineages are read too, because convergence hands their *rows* to
     this comment (:func:`_merged_retained`) and a table drawing a row from a
     report the history never recorded leaves both the history and the line under
-    the table describing a lineage this comment no longer has. They are read
-    **first** so the survivor overwrites them on a night both recorded: that is
-    the lineage this comment continues, and two comments' aggregates for one
-    night cannot be added — their regressions overlap by construction. An
-    absorbed observation keeps its own window, which is what makes the change
-    window column in the history worth a column at all.
+    the table describing a lineage this comment no longer has.
+
+    Entries are keyed by **report night and window**, not by night alone. The
+    publisher only converges windows that are containment-comparable with the
+    current one, but two absorbed windows can still be siblings — ``(09-01,
+    09-02]`` and ``(09-02, 09-03]`` are each contained by ``(09-01, 09-03]``
+    and neither contains the other — and those describe *disjoint* sets of
+    regressions observed on the same night. Keying by night alone would drop one
+    of them, taking its rows' provenance with it; keeping both is also what
+    finally makes the history's change window column earn its place.
+
+    Bodies are read with the absorbed lineages **first** so the survivor wins an
+    exact ``(night, window)`` collision: that pair really is one finding recorded
+    twice, and the lineage this comment continues is the one to believe.
     """
-    observations: dict[str, CommentObservation] = {}
+    observations: dict[tuple[str, ChangeWindow], CommentObservation] = {}
     omitted = 0
     for body in reversed(list(previous_bodies)):
         recorded, aged_out = _observations(body)
@@ -939,18 +947,97 @@ def _merged_observations(
         # history is not the concatenation of them.
         omitted = max(omitted, aged_out)
         for item in recorded:
-            observations[item.report_night] = replace(item, url=nightly_report_href(
-                comment.dashboard_url or item.url, item.report_night,
-            ))
+            observations[_observation_key(item)] = replace(
+                item, url=nightly_report_href(
+                    comment.dashboard_url or item.url, item.report_night,
+                ),
+            )
     if comment.observation is not None:
-        observations[comment.observation.report_night] = comment.observation
+        observations[_observation_key(comment.observation)] = comment.observation
     ordered = sorted(
-        observations.values(), key=lambda item: item.report_night, reverse=True
+        observations.values(),
+        key=lambda item: (
+            item.report_night, item.base_release or "", item.onset_release,
+        ),
+        reverse=True,
     )
     if len(ordered) > _MAX_OBSERVATIONS:
         omitted += len(ordered) - _MAX_OBSERVATIONS
         ordered = ordered[:_MAX_OBSERVATIONS]
     return ordered, omitted
+
+
+def _observation_key(observation: CommentObservation) -> tuple[str, ChangeWindow]:
+    """What makes two observations the same finding: night *and* window."""
+    return (
+        observation.report_night,
+        (observation.base_release, observation.onset_release),
+    )
+
+
+def _report_counts(
+    observations: Sequence[CommentObservation],
+) -> list[tuple[str, int | None]]:
+    """``(report night, regressions)`` newest first, ``None`` where unknowable.
+
+    One night can carry several observations once lineages have converged, and
+    what their counts mean together depends on how their windows sit:
+
+    * a window contained in another contributes nothing of its own — its rows
+      are a subset of the containing window's, which already counts them;
+    * the remaining (maximal) windows, when pairwise **disjoint**, partition the
+      night's regressions, so their counts add exactly;
+    * two maximal windows can still *partially* overlap — ``(09-01, 09-03]`` and
+      ``(09-02, 09-04]`` are incomparable, so nothing collapses them — and then
+      the rows in the shared span are counted by both. Observations are
+      aggregates, not identity sets, so that union is simply not recoverable
+      from this state, and the night is reported **without** a count rather than
+      with a plausible-looking wrong one.
+
+    The alternative — recording every night each identity was seen, instead of
+    the latest — would make this exact, at the cost of growing a marker that is
+    already size-capped, for a case this narrow.
+    """
+    by_night: dict[str, list[CommentObservation]] = {}
+    for item in observations:
+        if _iso_date(item.report_night) and item.regressions > 0:
+            by_night.setdefault(item.report_night, []).append(item)
+    counts: list[tuple[str, int | None]] = []
+    for night in sorted(by_night, reverse=True):
+        windows = [
+            ((item.base_release, item.onset_release), item.regressions)
+            for item in by_night[night]
+        ]
+        maximal = [
+            (window, regressions) for window, regressions in windows
+            if not any(
+                other != window and window_contains(other, window)
+                for other, _ in windows
+            )
+        ]
+        counts.append((night, _disjoint_total(maximal)))
+    return counts
+
+
+def _disjoint_total(
+    windows: list[tuple[ChangeWindow, int]]
+) -> int | None:
+    """The sum of *windows*' counts, or ``None`` if any two of them overlap.
+
+    Half-open ``(base, onset]``, so two windows are disjoint exactly when the
+    later one starts at or after the earlier one ends. An unbounded base reaches
+    back forever, so it can only ever be the first."""
+    ordered = sorted(
+        windows, key=lambda entry: (entry[0][0] is not None, entry[0][0] or "", entry[0][1])
+    )
+    total = 0
+    previous_onset: str | None = None
+    for (base, onset), regressions in ordered:
+        if previous_onset is not None and (base is None or base < previous_onset):
+            return None
+        total += regressions
+        previous_onset = onset
+    return total
 
 
 def _observation_marker(observation: CommentObservation) -> str:
@@ -3552,10 +3639,7 @@ def _reports_line(
     The rows counted as shown are every row the table drew, current and retained
     alike: the reader counts lines on the page, not the bookkeeping behind them.
     """
-    counts = [
-        (item.report_night, item.regressions) for item in observations
-        if _iso_date(item.report_night) and item.regressions > 0
-    ]
+    counts = _report_counts(observations)
     # Nothing to add when one report's regressions all reached the table: the
     # line would restate the rows immediately above it.
     if not counts or (len(counts) < 2 and shown_current >= n_rows):
@@ -3564,10 +3648,18 @@ def _reports_line(
     for index, (night, regressions) in enumerate(counts[:_MAX_NAMED_REPORTS]):
         href = nightly_report_href(dashboard_url, night)
         where = f"[{night} report ↗]({href})" if href else f"{night} report"
-        # The noun is carried once, by the leading count; repeating it on every
+        # The noun is carried once, by the leading clause; repeating it on every
         # report turns one sentence into a list of identical clauses.
-        count = f"**{_count(regressions, 'regression')}**" if index == 0 \
-            else f"**{regressions}**"
+        noun = " of regressions" if index == 0 else ""
+        if regressions is None:
+            # Converged sibling windows whose overlap this state cannot resolve
+            # (:func:`_report_counts`). The report is still named — its rows are
+            # in the table above — but no number is invented for it.
+            count = f"an unspecified number{noun}"
+        elif index == 0:
+            count = f"**{_count(regressions, 'regression')}**"
+        else:
+            count = f"**{regressions}**"
         named.append(f"{count} in the {where}")
     line = ", ".join(named)
     if len(counts) > _MAX_NAMED_REPORTS:

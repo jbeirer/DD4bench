@@ -4162,6 +4162,95 @@ def test_the_survivor_wins_a_report_night_two_lineages_both_recorded():
     assert recorded == {"2026-09-05": 1, "2026-09-04": 1}
 
 
+def _observed(night, base, onset, regressions=2):
+    """One material version's marker, for a lineage body built by hand."""
+    return comment_mod._observation_marker(CommentObservation(
+        report_night=night, base_release=base, onset_release=onset,
+        regressions=regressions, scopes=1, up=regressions, down=0, none=0,
+    ))
+
+
+def _converged(*previous_bodies):
+    """Tonight's comment materialised over hand-built lineage bodies."""
+    verdict = _verdict()
+    current = _comments(
+        _report(verdict, night="2026-09-05"), _blame([verdict], [_candidate()]),
+    )[0]
+    body = materialize(current, list(previous_bodies)).body
+    observations, _ = comment_mod._observations(body)
+    return body, observations
+
+
+def test_same_night_sibling_windows_are_both_kept_and_their_counts_summed():
+    # (09-01, 09-02] and (09-02, 09-03] are each contained by the converged
+    # window and neither contains the other, so they select disjoint rows: the
+    # night really did carry 2 + 2, and keying by night alone would have dropped
+    # one of them along with its rows' provenance.
+    body, observations = _converged(
+        _observed("2026-09-04", "2026-09-01", "2026-09-02"),
+        _observed("2026-09-04", "2026-09-02", "2026-09-03"),
+    )
+    same_night = [o for o in observations if o.report_night == "2026-09-04"]
+    assert len(same_night) == 2
+    assert {(o.base_release, o.onset_release) for o in same_night} == {
+        ("2026-09-01", "2026-09-02"), ("2026-09-02", "2026-09-03"),
+    }
+    assert comment_mod._report_counts(observations) == [
+        ("2026-09-05", 1), ("2026-09-04", 4),
+    ]
+    assert "**4** in the [2026-09-04 report ↗](" in body
+    # Both rows render, told apart by the change window column.
+    assert body.count("| `2026-09-01` → `2026-09-02` |") == 1
+    assert body.count("| `2026-09-02` → `2026-09-03` |") == 1
+
+
+def test_a_contained_window_contributes_nothing_of_its_own_to_the_count():
+    # (09-02, 09-03] sits inside (09-01, 09-03], so its rows are already among
+    # the five the containing window counted.
+    body, observations = _converged(
+        _observed("2026-09-04", "2026-09-01", "2026-09-03", regressions=5),
+        _observed("2026-09-04", "2026-09-02", "2026-09-03", regressions=2),
+    )
+    assert len([o for o in observations if o.report_night == "2026-09-04"]) == 2
+    assert comment_mod._report_counts(observations) == [
+        ("2026-09-05", 1), ("2026-09-04", 5),
+    ]
+    assert "**5** in the [2026-09-04 report ↗](" in body
+
+
+def test_partially_overlapping_windows_claim_no_count_for_that_report():
+    # (09-01, 09-03] and (09-02, 09-04] are incomparable, so nothing collapses
+    # them, and the rows with an onset in (09-02, 09-03] are counted by both.
+    # Aggregates cannot recover that union, so no number is invented.
+    body, observations = _converged(
+        _observed("2026-09-04", "2026-09-01", "2026-09-03"),
+        _observed("2026-09-04", "2026-09-02", "2026-09-04"),
+    )
+    same_night = [o for o in observations if o.report_night == "2026-09-04"]
+    assert len(same_night) == 2
+    assert comment_mod._report_counts(observations) == [
+        ("2026-09-05", 1), ("2026-09-04", None),
+    ]
+    assert "an unspecified number in the [2026-09-04 report ↗](" in body
+    assert "**4** in the [2026-09-04" not in body
+    assert "**2** in the [2026-09-04" not in body
+    # The report is still named — its rows are in the table above.
+    assert body.count("| `2026-09-01` → `2026-09-03` |") == 1
+    assert body.count("| `2026-09-02` → `2026-09-04` |") == 1
+
+
+def test_an_unbounded_base_can_only_be_the_first_of_a_disjoint_run():
+    counts = comment_mod._disjoint_total
+    assert counts([((None, "2026-09-02"), 3), (("2026-09-02", "2026-09-03"), 2)]) == 5
+    # A second unbounded window reaches back through the first.
+    assert counts([((None, "2026-09-02"), 3), ((None, "2026-09-03"), 2)]) is None
+    # Touching at the boundary is disjoint: the window is half-open.
+    assert counts([(("2026-09-01", "2026-09-02"), 1),
+                   (("2026-09-02", "2026-09-03"), 1)]) == 2
+    assert counts([(("2026-09-01", "2026-09-03"), 1),
+                   (("2026-09-02", "2026-09-04"), 1)]) is None
+
+
 def test_reconfirmed_identity_uses_its_newest_cumulative_attribution():
     a = _verdict(metric="a")
     first = materialize(

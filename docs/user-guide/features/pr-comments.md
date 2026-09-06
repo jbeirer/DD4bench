@@ -426,10 +426,19 @@ Below the regression table is a collapsed **observation history**. The newest 20
 material versions record the report night, window, regression and scope counts,
 and UP/DOWN split; an omitted count preserves how many earlier versions aged out.
 When lineages converge, the absorbed comments' versions are carried across too,
-each keeping its own change window — the surviving lineage wins any report night
-both recorded, since two comments' counts for one night overlap and cannot be
-added. Without that, the table could draw a retained row from a report neither
-the history nor the line under it ever named.
+keyed by report night **and** window rather than by night alone. Two absorbed
+windows can be siblings — `(09-01, 09-02]` and `(09-02, 09-03]` are each
+contained by `(09-01, 09-03]` and neither contains the other — describing
+disjoint regressions seen on the same night, so both keep a row and the change
+window column tells them apart. Only an exact night-and-window collision is
+resolved in the surviving lineage's favour. Without this, the table could draw a
+retained row from a report neither the history nor the line under it ever named.
+
+The per-report counts follow from the same windows: a window contained in
+another contributes nothing of its own, and the remaining windows add up when
+they are pairwise disjoint. Two of them can still partially overlap, and no
+count is recoverable from the stored aggregates then — that report is named
+with **an unspecified number** rather than a plausible-looking wrong one.
 Report dates open that same full nightly report view; earlier observation links
 are migrated when the comment is next materially updated. A retained row's own
 metric link still opens the archived view for the night that row was last
