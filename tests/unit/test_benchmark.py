@@ -85,8 +85,8 @@ class TestBenchmarkConfigValidation:
 class TestPlannedConfigLabels:
     def test_full_sweep_uses_every_geometry_detector(self):
         assert set(planned_config_labels(MINIMAL_XML, SweepMode.FULL)) == {
-            "baseline_all",
-            *(f"without_{name}" for name in ALL_DETECTORS),
+            "baseline",
+            *(f"no_{name}" for name in ALL_DETECTORS),
         }
 
     def test_partial_sweep_uses_only_configured_detectors(self):
@@ -94,13 +94,13 @@ class TestPlannedConfigLabels:
             MINIMAL_XML,
             SweepMode.FULL,
             ["HcalBarrel", "NonExistent"],
-        ) == ["baseline_all", "without_HcalBarrel"]
+        ) == ["baseline", "no_HcalBarrel"]
 
     @pytest.mark.parametrize(
         ("mode", "expected"),
         [
             (SweepMode.INCLUDE_ONLY, "only_EcalBarrel"),
-            (SweepMode.EXCLUDE_ONLY, "without_EcalBarrel"),
+            (SweepMode.EXCLUDE_ONLY, "no_EcalBarrel"),
         ],
     )
     def test_combined_modes_drop_unknown_names_from_the_label(self, mode, expected):
@@ -112,7 +112,7 @@ class TestPlannedConfigLabels:
 
     def test_single_run_modes_use_their_actual_labels(self):
         assert planned_config_labels(MINIMAL_XML, SweepMode.BASELINE) == [
-            "baseline_all"
+            "baseline"
         ]
         assert planned_config_labels(
             MINIMAL_XML,
@@ -123,13 +123,13 @@ class TestPlannedConfigLabels:
             MINIMAL_XML,
             SweepMode.EXCLUDE_ONLY,
             ["InnerTracker", "OuterTracker"],
-        ) == ["without_InnerTracker_OuterTracker"]
+        ) == ["no_InnerTracker_OuterTracker"]
 
     @pytest.mark.parametrize(
         ("mode", "prefix"),
         [
             (SweepMode.INCLUDE_ONLY, "only_"),
-            (SweepMode.EXCLUDE_ONLY, "without_"),
+            (SweepMode.EXCLUDE_ONLY, "no_"),
         ],
     )
     def test_long_hashed_label_matches_the_runtime_label(
@@ -196,14 +196,14 @@ class TestFullMode:
             return run_sweep(_make_config(tmp_path, mode=SweepMode.FULL))
 
     def test_baseline_is_first(self, results):
-        assert results[0].label == "baseline_all"
+        assert results[0].label == "baseline"
 
     def test_one_result_per_detector_plus_baseline(self, results):
         assert len(results) == 5
 
     def test_all_detectors_covered(self, results):
         labels = {r.label for r in results}
-        assert all(f"without_{d}" in labels for d in ALL_DETECTORS)
+        assert all(f"no_{d}" in labels for d in ALL_DETECTORS)
 
     def test_no_tmp_files_left_behind(self, tmp_path, monkeypatch):
         private = tmp_path / "system_tmp"
@@ -239,7 +239,7 @@ class TestFullMode:
             results = run_sweep(_make_config(tmp_path, mode=SweepMode.FULL))
 
         assert [result.label for result in results] == [
-            "baseline_all",
+            "baseline",
             "patch_setup",
         ]
         assert not results[-1].succeeded
@@ -264,10 +264,10 @@ class TestPartialSweep:
 
     def test_baseline_plus_only_named_detectors(self, results):
         labels = {r.label for r in results}
-        assert labels == {"baseline_all", "without_EcalBarrel", "without_HcalBarrel"}
+        assert labels == {"baseline", "no_EcalBarrel", "no_HcalBarrel"}
 
     def test_baseline_is_first(self, results):
-        assert results[0].label == "baseline_all"
+        assert results[0].label == "baseline"
 
     def test_unknown_detector_is_skipped(self, tmp_path):
         config = _make_config(
@@ -277,7 +277,7 @@ class TestPartialSweep:
         )
         with patch("k4bench.benchmark.ddsim.run_ddsim", side_effect=_mock_run):
             results = run_sweep(config)
-        assert {r.label for r in results} == {"baseline_all", "without_EcalBarrel"}
+        assert {r.label for r in results} == {"baseline", "no_EcalBarrel"}
 
     def test_all_unknown_detectors_raises(self, tmp_path):
         config = _make_config(
@@ -307,7 +307,7 @@ class TestIncludeMode:
             return run_sweep(config)
 
     def test_no_baseline(self, results):
-        assert not any(r.label == "baseline_all" for r in results)
+        assert not any(r.label == "baseline" for r in results)
 
     def test_single_run(self, results):
         assert len(results) == 1
@@ -318,7 +318,7 @@ class TestIncludeMode:
         assert "HcalBarrel" in label
 
     def test_no_removal_labels(self, results):
-        assert not any(r.label.startswith("without_") for r in results)
+        assert not any(r.label.startswith("no_") for r in results)
 
     def test_unknown_detector_in_include_list_is_skipped(self, tmp_path):
         config = _make_config(
@@ -360,13 +360,13 @@ class TestExcludeMode:
             return run_sweep(config)
 
     def test_no_baseline(self, results):
-        assert not any(r.label == "baseline_all" for r in results)
+        assert not any(r.label == "baseline" for r in results)
 
     def test_single_run(self, results):
         assert len(results) == 1
 
     def test_label_starts_with_without(self, results):
-        assert results[0].label.startswith("without_")
+        assert results[0].label.startswith("no_")
 
     def test_label_contains_excluded_detectors(self, results):
         label = results[0].label
@@ -381,7 +381,7 @@ class TestExcludeMode:
         with patch("k4bench.benchmark.ddsim.run_ddsim", side_effect=_mock_run):
             results = run_sweep(config)
         assert len(results) == 1
-        assert results[0].label == "baseline_all"
+        assert results[0].label == "baseline"
 
     def test_all_unknown_detectors_raises(self, tmp_path):
         config = _make_config(
@@ -401,7 +401,7 @@ class TestExcludeMode:
         )
         with patch("k4bench.benchmark.ddsim.run_ddsim", side_effect=_mock_run):
             results = run_sweep(config)
-        assert [result.label for result in results] == ["without_EcalBarrel"]
+        assert [result.label for result in results] == ["no_EcalBarrel"]
 
 
 # ---------------------------------------------------------------------------
@@ -412,19 +412,19 @@ class TestExcludeMode:
 class TestFailureHandling:
     def test_failed_ddsim_run_included_in_results(self, tmp_path):
         def side_effect(**kw):
-            rc = 1 if kw["label"] == "without_EcalBarrel" else 0
+            rc = 1 if kw["label"] == "no_EcalBarrel" else 0
             return _make_result(kw["label"], returncode=rc)
 
         with patch("k4bench.benchmark.ddsim.run_ddsim", side_effect=side_effect):
             results = run_sweep(_make_config(tmp_path, mode=SweepMode.FULL))
 
-        failed = [r for r in results if r.label == "without_EcalBarrel"]
+        failed = [r for r in results if r.label == "no_EcalBarrel"]
         assert len(failed) == 1
         assert not failed[0].succeeded
 
     def test_other_runs_continue_after_ddsim_failure(self, tmp_path):
         def side_effect(**kw):
-            rc = 1 if kw["label"] == "without_EcalBarrel" else 0
+            rc = 1 if kw["label"] == "no_EcalBarrel" else 0
             return _make_result(kw["label"], returncode=rc)
 
         with patch("k4bench.benchmark.ddsim.run_ddsim", side_effect=side_effect):
@@ -434,7 +434,7 @@ class TestFailureHandling:
 
     def test_unexpected_exception_records_failure_and_continues(self, tmp_path):
         def side_effect(**kw):
-            if kw["label"] == "without_EcalBarrel":
+            if kw["label"] == "no_EcalBarrel":
                 raise RuntimeError("unexpected crash")
             return _make_result(kw["label"])
 
@@ -442,16 +442,16 @@ class TestFailureHandling:
             results = run_sweep(_make_config(tmp_path, mode=SweepMode.FULL))
 
         labels = {r.label for r in results}
-        assert "without_EcalBarrel" in labels
+        assert "no_EcalBarrel" in labels
         assert len(results) == 5
-        failed = next(r for r in results if r.label == "without_EcalBarrel")
+        failed = next(r for r in results if r.label == "no_EcalBarrel")
         assert not failed.succeeded
 
     @pytest.mark.parametrize(
         ("mode", "label"),
         [
             (SweepMode.INCLUDE_ONLY, "only_Keep"),
-            (SweepMode.EXCLUDE_ONLY, "without_Keep"),
+            (SweepMode.EXCLUDE_ONLY, "no_Keep"),
         ],
     )
     def test_geometry_failure_is_a_failed_run(self, mode, label, tmp_path):
@@ -521,8 +521,8 @@ class TestSteeringReconciliation:
 
         captured = self._run_capturing(config)
 
-        assert captured["baseline_all"] == args
-        assert not (config.log_dir / "baseline_all_steering.py").exists()
+        assert captured["baseline"] == args
+        assert not (config.log_dir / "baseline_steering.py").exists()
 
     def test_removal_runs_reconcile_against_the_remaining_detectors(self, tmp_path):
         steering, args = self._steering_args(tmp_path)
@@ -534,9 +534,9 @@ class TestSteeringReconciliation:
         )
 
         captured = self._run_capturing(config)
-        copy = config.log_dir / "without_EcalBarrel_steering.py"
+        copy = config.log_dir / "no_EcalBarrel_steering.py"
 
-        assert captured["without_EcalBarrel"][1] == str(copy)
+        assert captured["no_EcalBarrel"][1] == str(copy)
         assert self._present_in(copy) == ALL_DETECTORS - {"EcalBarrel"}
 
     def test_keep_only_runs_reconcile_against_the_kept_detectors(self, tmp_path):

@@ -927,9 +927,9 @@ def _retained_rows_of(body: str) -> list[dict]:
     """The snapshots a rendered body carries in its hidden retained marker."""
     line = next(
         line for line in body.splitlines()
-        if line.startswith("<!-- k4bench-blame-retained:v1 ")
+        if line.startswith("<!-- k4bench-blame-retained:v2 ")
     )
-    encoded = line.removeprefix("<!-- k4bench-blame-retained:v1 ").removesuffix(" -->")
+    encoded = line.removeprefix("<!-- k4bench-blame-retained:v2 ").removesuffix(" -->")
     payload = json.loads(
         urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
     )
@@ -960,7 +960,7 @@ def test_a_row_that_stops_being_confirmed_is_retained_through_the_upsert():
     # Its own window, not the comment's: the row entered on 2026-07-01 →
     # 2026-07-03 while the comment now spans through 2026-07-05.
     assert "`2026-07-01` → `2026-07-03`" in row
-    assert body.count("<!-- k4bench-blame-retained:v1 ") == 1
+    assert body.count("<!-- k4bench-blame-retained:v2 ") == 1
     assert len(body.encode()) < 65_536
 
 

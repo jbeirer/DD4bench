@@ -40,7 +40,7 @@ from k4bench.geometry.index import GeometryIndex
 from k4bench.geometry.errors import DetectorNotFoundError, GeometryError
 from k4bench.geometry.patcher import build_patch, patched
 from k4bench.geometry.scanner import get_detector_names
-from k4bench.labels import BASELINE_LABEL
+from k4bench.labels import BASELINE_LABEL, INCLUDE_PREFIX, REMOVAL_PREFIX
 from k4bench.results.model import RunResult
 from k4bench.runner.executor import run_ddsim
 from k4bench.runner.steering import reconcile_steering_file
@@ -248,7 +248,7 @@ def _resolve_sweep_plan(
                 f"are unknown in this geometry.\n"
                 f"Available detectors: {sorted(available)}"
             )
-        labels = (BASELINE_LABEL, *(f"without_{name}" for name in selected))
+        labels = (BASELINE_LABEL, *(f"{REMOVAL_PREFIX}{name}" for name in selected))
         if announce:
             print(f"Found {len(available)} subdetectors, running {len(selected)}:")
             for name in selected:
@@ -280,7 +280,7 @@ def _resolve_sweep_plan(
         )
 
     selected = tuple(sorted(selected_set))
-    prefix = "only_" if mode is SweepMode.INCLUDE_ONLY else "without_"
+    prefix = INCLUDE_PREFIX if mode is SweepMode.INCLUDE_ONLY else REMOVAL_PREFIX
     labels = (_make_detector_label(prefix, selected_set),)
     if announce:
         verb = "Keeping" if mode is SweepMode.INCLUDE_ONLY else "Excluding"

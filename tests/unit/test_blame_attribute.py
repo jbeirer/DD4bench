@@ -165,12 +165,12 @@ def test_prompt_groups_rows_by_configuration_so_the_pattern_is_readable():
     # it off the shape of the prompt, not reconstruct it from a flat list.
     prompt = build_user_prompt(_request(regressions=(
         _fact("r1", detector="ALLEGRO_o1_v03"),
-        _fact("r2", detector="ALLEGRO_o1_v03", label="without_HCal"),
+        _fact("r2", detector="ALLEGRO_o1_v03", label="no_HCal"),
         _fact("r3", detector="ALLEGRO_o2_v01"),
     )))
     assert prompt.count("### ALLEGRO_o1_v03") == 1
     assert prompt.count("### ALLEGRO_o2_v01") == 1
-    assert "(without_HCal)" in prompt
+    assert "(no_HCal)" in prompt
 
 
 def test_prompt_carries_the_first_passs_prior_for_this_pull_request():
@@ -187,7 +187,7 @@ def test_prompt_states_what_measured_the_window_and_did_not_confirm():
         ScopeOutcome(detector="IDEA_o1_v03", platform=_PLATFORM,
                      sample="p8_ee_Zbb_ecm91", label="baseline", status="clean"),
         ScopeOutcome(detector="IDEA_o2_v01", platform=_PLATFORM,
-                     sample="p8_ee_Zbb_ecm91", label="without_HCAL",
+                     sample="p8_ee_Zbb_ecm91", label="no_HCAL",
                      status="watch", watched=("wall_time_s",)),
     )))
     assert "did NOT confirm" in prompt
@@ -195,8 +195,8 @@ def test_prompt_states_what_measured_the_window_and_did_not_confirm():
     assert "IDEA_o2_v01" in prompt
     assert "moved but did not confirm (wall_time_s)" in prompt
     # The configuration label is part of the identity: without it the prompt's
-    # "baseline vs without_<X>" reasoning has nothing to attach to.
-    assert "· baseline:" in prompt and "· without_HCAL:" in prompt
+    # "baseline vs no_<X>" reasoning has nothing to attach to.
+    assert "· baseline:" in prompt and "· no_HCAL:" in prompt
 
 
 def test_prompt_sizes_the_release_diff_by_what_did_not_change():
@@ -290,7 +290,7 @@ def test_a_very_wide_window_keeps_the_largest_movements():
 def test_the_system_prompt_names_the_cross_configuration_rules():
     system = attr_mod._SYSTEM_PROMPT
     assert "Reason across configurations" in system
-    assert "without_" in system          # the detector-removal sweep's meaning
+    assert "no_" in system          # the detector-removal sweep's meaning
     assert "owner/repo#number" in system  # how an alternative may be named
     assert "Never write a URL" in system
 
@@ -443,13 +443,13 @@ def test_an_id_is_never_deleted_out_of_the_sentence_it_carries():
     request = _request(regressions=(
         _fact("r1", detector="IDEA_o2_v01", metric="sim_time_s"),
         _fact("r2", detector="ALLEGRO_o1_v03", metric="wall_time_s",
-              label="without_HCAL"),
+              label="no_HCAL"),
     ))
     attribution = _attributor([_completion(_reply(
         "Only (r1, r2) regressed. r1 is the one this PR reaches.", r1=90, r2=88,
     ))]).attribute(request)
     assert attribution.summary == (
-        "Only (IDEA_o2_v01 sim_time_s and ALLEGRO_o1_v03 without_HCAL "
+        "Only (IDEA_o2_v01 sim_time_s and ALLEGRO_o1_v03 no_HCAL "
         "wall_time_s) regressed. IDEA_o2_v01 sim_time_s is the one this PR "
         "reaches."
     )

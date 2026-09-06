@@ -369,7 +369,7 @@ def test_a_reason_ending_behind_a_quote_or_emphasis_is_already_terminated():
     for ended in (
         'the log says "host swapped."',
         "the series is **noisy.**",
-        "the step is confined to `without_ScreenSol`.",
+        "the step is confined to `no_ScreenSol`.",
         "the host changed (see the runner note.)",
     ):
         assert StepAssessment("likely_noise", ended).reason_sentence == ended
@@ -393,10 +393,10 @@ def test_counter_evidence_round_trips_and_defaults_to_empty():
         base_commit="a" * 40, head_commit="c" * 40, compare_url=None,
         status="changed",
         candidates=(dataclasses.replace(_pr(1, score=80.0),
-                                        against="without_HCAL moved too"),),
+                                        against="no_HCAL moved too"),),
     ),))
     restored = BlameEntry.from_dict(entry.to_dict())
-    assert restored.candidates[0].against == "without_HCAL moved too"
+    assert restored.candidates[0].against == "no_HCAL moved too"
 
     raw = _entry().to_dict()
     for candidate in raw["repos"][0]["candidates"]:

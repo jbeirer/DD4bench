@@ -270,7 +270,7 @@ class TestNestedIncludeChain:
     which includes SiD_VertexBarrel.xml. Redirecting only the top level's own
     includes leaves nothing pointing at the patched copy, so ddsim loads the
     original sub-tree and the removal run keeps the detector — recorded under
-    ``without_<name>`` as though dropping it cost nothing.
+    ``no_<name>`` as though dropping it cost nothing.
     """
 
     @pytest.fixture

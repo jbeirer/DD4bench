@@ -16,7 +16,7 @@ import streamlit as st
 
 from k4bench.analysis.loader import failed_config_mask
 from k4bench.analysis.plots._theme import _TEMPLATE
-from k4bench.labels import BASELINE_LABEL
+from k4bench.labels import BASELINE_LABEL, METRIC_LABELS, REMOVAL_PREFIX
 from ui_chrome import _drop_stale_selection
 
 
@@ -25,21 +25,28 @@ class _MetricSpec:
     """One supported metric and every display/scoring rule it needs."""
 
     column: str
-    label: str
     unit: str
     lower_is_better: bool
     selector_label: str
     headline: bool = False
 
+    @property
+    def label(self) -> str:
+        """The metric's name, from the vocabulary the rest of k4Bench uses.
+        Derived rather than stored so this chart cannot drift from the mail and
+        the tables. ``selector_label`` stays its own thing: those are the short
+        words a chart's control needs, not names for the same metric."""
+        return METRIC_LABELS.get(self.column, self.column)
+
 
 # One source of truth keeps the direction invariant intact: positive impact
 # always means that the alternative improved relative to the selected baseline.
 _METRICS = (
-    _MetricSpec("wall_time_s", "Wall Time", "s", True, "Wall", True),
-    _MetricSpec("peak_rss_mb", "Peak RSS", "MB", True, "Memory", True),
-    _MetricSpec("user_cpu_s", "User CPU", "s", True, "CPU", True),
-    _MetricSpec("output_size_mb", "Output Size", "MB", True, "Output", True),
-    _MetricSpec("events_per_sec", "Throughput", "ev/s", False, "Throughput"),
+    _MetricSpec("wall_time_s", "s", True, "Wall", True),
+    _MetricSpec("peak_rss_mb", "MB", True, "Memory", True),
+    _MetricSpec("user_cpu_s", "s", True, "CPU", True),
+    _MetricSpec("output_size_mb", "MB", True, "Output", True),
+    _MetricSpec("events_per_sec", "ev/s", False, "Throughput"),
 )
 _METRICS_BY_COLUMN = {metric.column: metric for metric in _METRICS}
 
@@ -125,8 +132,8 @@ def _display_name(label: str) -> str:
     name = str(label)
     if name == BASELINE_LABEL:
         return "Full detector"
-    if name.startswith("without_"):
-        name = name.removeprefix("without_")
+    if name.startswith(REMOVAL_PREFIX):
+        name = name.removeprefix(REMOVAL_PREFIX)
     return name.replace("_", " ")
 
 

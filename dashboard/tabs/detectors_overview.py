@@ -34,7 +34,7 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 from k4bench.analysis.plots._theme import PALETTE, _TEMPLATE
-from k4bench.labels import BASELINE_LABEL
+from k4bench.labels import BASELINE_LABEL, METRIC_LABELS
 from k4bench.regression.engine import Z_THRESHOLD
 from k4bench.regression.models import NightlyReport, RunGroupReport, Severity
 from k4bench.regression.render import _detector_badge, from_json
@@ -55,7 +55,6 @@ from tabs._reliability import render_reliability_scope
 from ui_chrome import EXAMPLE_DETECTORS, seed_query_param
 from ui_utils import (
     _DASHES,
-    _METRIC_LABELS,
     _METRIC_UNITS,
     _PALETTES,
     _PALETTE_NAMES,
@@ -68,7 +67,7 @@ from ui_utils import (
 _log = logging.getLogger(__name__)
 
 #: The one config compared across detectors — the unpatched full-detector run
-#: every sweep starts with (``baseline_all``, see ``k4bench.labels``).
+#: every sweep starts with (``baseline``, see ``k4bench.labels``).
 #: Variant configs measure *within*-detector impact and live in the Config
 #: Impact tab.
 _BASELINE_LABEL = BASELINE_LABEL
@@ -124,8 +123,7 @@ def _metric_unit(metric: str) -> str:
 
 def _metric_title(metric: str) -> str:
     """Human-readable panel/axis title with units, e.g. ``Wall time (s)``."""
-    name = _METRIC_LABELS.get(metric, metric)
-    name = name[:1].upper() + name[1:]
+    name = METRIC_LABELS.get(metric, metric)
     unit = _metric_unit(metric)
     return f"{name} ({unit})" if unit else name
 
@@ -135,8 +133,7 @@ def _trend_y_title(metric: str, relative: bool) -> str:
     the detector's first plotted night."""
     if not relative:
         return _metric_title(metric)
-    name = _METRIC_LABELS.get(metric, metric)
-    return f"{name[:1].upper()}{name[1:]} (% of first night)"
+    return f"{METRIC_LABELS.get(metric, metric)} (% of first night)"
 
 
 # ── Pure data shaping (no Streamlit — the unit-test surface) ──────────────────
@@ -1037,8 +1034,7 @@ def _flag_axis_title(verdict) -> str:
     """Axis title in the report's *stored* units (MB for memory): the flag
     trend draws the verdict's own baseline band, so the axis must match those
     raw numbers rather than the GB display the figure panels use."""
-    name = _METRIC_LABELS.get(verdict.metric, verdict.metric)
-    name = name[:1].upper() + name[1:]
+    name = METRIC_LABELS.get(verdict.metric, verdict.metric)
     unit = _METRIC_UNITS.get(verdict.metric, "")
     return f"{name} ({unit})" if unit else name
 

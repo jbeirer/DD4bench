@@ -16,8 +16,13 @@ import pytest
 from k4bench import labels
 from k4bench.labels import (
     BASELINE_LABEL,
+    INCLUDE_PREFIX,
+    METRIC_LABELS,
     RELEASE_PREFIX,
+    REMOVAL_PREFIX,
+    compact_sample,
     describe_platform,
+    pretty_metric,
     pretty_platform,
     pretty_release,
     pretty_sample,
@@ -27,7 +32,13 @@ from k4bench.labels import (
 # ── Configuration labels ─────────────────────────────────────────────────────
 
 def test_full_detector_label_matches_the_on_disk_contract():
-    assert BASELINE_LABEL == "baseline_all"
+    assert BASELINE_LABEL == "baseline"
+
+
+def test_sweep_prefixes_match_the_on_disk_contract():
+    # Pinned for the same reason as the baseline label: EOS file names and every
+    # historical report are keyed on these exact strings.
+    assert (REMOVAL_PREFIX, INCLUDE_PREFIX) == ("no_", "only_")
 
 
 # ── Samples ───────────────────────────────────────────────────────────────────
@@ -36,8 +47,8 @@ def test_full_detector_label_matches_the_on_disk_contract():
     ("p8_ee_Zbb_ecm91", "Pythia8: e⁺e⁻ → Z → bb (91 GeV)"),
     ("p8_ee_WW_ecm240", "Pythia8: e⁺e⁻ → WW (240 GeV)"),  # not a decay shape
     ("p6_pp_Zbb_ecm91.0", "Pythia6: pp → Z → bb (91 GeV)"),
-    ("single_mu-_10GeV", "Single μ⁻ · 10GeV"),
-    ("single_gamma_1TeV", "Single γ · 1TeV"),
+    ("single_mu-_10GeV", "Single μ⁻ · 10 GeV"),
+    ("single_gamma_1TeV", "Single γ · 1 TeV"),
 ])
 def test_known_sample_layouts(sample, expected):
     assert pretty_sample(sample) == expected
@@ -50,7 +61,61 @@ def test_known_sample_layouts(sample, expected):
 def test_unrecognized_samples_degrade_to_the_raw_name(sample):
     # A future sample must read plainly, never as guessed-at physics.
     out = pretty_sample(sample)
-    assert out == sample or out == "Single neutralino · 10GeV"
+    assert out == sample or out == "Single neutralino · 10 GeV"
+
+
+@pytest.mark.parametrize("sample, expected", [
+    ("p8_ee_Zbb_ecm91", "Z→bb · 91 GeV"),
+    ("p8_ee_WW_ecm240", "WW · 240 GeV"),
+    ("single_mu-_10GeV", "μ⁻ gun · 10 GeV"),
+    ("single_gamma_1TeV", "γ gun · 1 TeV"),
+])
+def test_compact_samples_drop_only_what_every_sample_shares(sample, expected):
+    assert compact_sample(sample) == expected
+
+
+@pytest.mark.parametrize("sample, expected", [
+    ("p6_ee_Zbb_ecm91", "Pythia6 Z→bb · 91 GeV"),
+    ("p8_pp_Zbb_ecm91", "pp Z→bb · 91 GeV"),
+    ("p6_pp_Zbb_ecm91", "Pythia6 pp Z→bb · 91 GeV"),
+])
+def test_a_non_default_generator_or_beam_is_named(sample, expected):
+    # The short form drops the generator and beams only while they are the ones
+    # every sample shares. A sample that differs there must say so, or two
+    # samples would render identically.
+    assert compact_sample(sample) == expected
+
+
+def test_compact_samples_are_shorter_than_the_full_form():
+    # The whole reason the short form exists: the full one wrapped over several
+    # lines in a pull-request comment's table.
+    for sample in ("p8_ee_Zbb_ecm91", "single_e-_10GeV"):
+        assert len(compact_sample(sample)) < len(pretty_sample(sample))
+
+
+@pytest.mark.parametrize("sample", ["", "whatever", "single_mu-", "p8_ee_Zbb"])
+def test_unrecognized_samples_stay_raw_in_the_compact_form_too(sample):
+    assert compact_sample(sample) == sample
+
+
+# ── Metrics ───────────────────────────────────────────────────────────────────
+
+def test_metric_names_are_sentence_case():
+    # Callers drop these straight into titles and list items. Three of them used
+    # to keep a lower-case copy and capitalize it back on every use.
+    for name in METRIC_LABELS.values():
+        assert name[:1] == name[:1].upper()
+
+
+def test_a_region_level_metric_carries_its_sub_detector():
+    assert pretty_metric("mean_rss_mb", "EMEC_turbine") == (
+        "Mean event RSS · EMEC_turbine"
+    )
+    assert pretty_metric("mean_rss_mb") == "Mean event RSS"
+
+
+def test_an_unknown_metric_keeps_its_raw_column_name():
+    assert pretty_metric("some_future_column") == "some_future_column"
 
 
 # ── Platforms ─────────────────────────────────────────────────────────────────

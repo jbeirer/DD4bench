@@ -425,7 +425,7 @@ def test_different_detectors_sharing_a_release_boundary_are_not_batched(monkeypa
 
 
 def test_different_labels_sharing_a_run_group_and_window_still_collapse(monkeypatch):
-    # A detector-removal sweep's "baseline" and "without_HCAL_Barrel" runs are
+    # A detector-removal sweep's "baseline" and "no_HCAL_Barrel" runs are
     # different benchmark configs, but the *same* (detector, platform, sample)
     # run group and the *same* release window — unlike different detectors,
     # these must collapse into one shared ranking, not split. Every metric
@@ -434,14 +434,14 @@ def test_different_labels_sharing_a_run_group_and_window_still_collapse(monkeypa
     ranker = _FakeRanker({("key4hep/k4geo", 10): Ranking(60.0, "x")})
     report = _report([
         _verdict(label="baseline", metric="wall_time_s"),
-        _verdict(label="without_HCAL_Barrel", metric="wall_time_s"),
+        _verdict(label="no_HCAL_Barrel", metric="wall_time_s"),
     ])
     blame = build_blame_report(
         report, packages_for_release=_MOVED, github=GitHubClient(), ranker=ranker,
     )
     assert len(ranker.requests) == 1  # one shared call, not one per label
     labels = {m.label for m in ranker.requests[0].metrics}
-    assert labels == {"baseline", "without_HCAL_Barrel"}
+    assert labels == {"baseline", "no_HCAL_Barrel"}
     assert len(blame.entries) == 2
     for entry in blame.entries:
         assert next(c for c in entry.candidates if c.number == 10).score == 60.0
@@ -602,14 +602,14 @@ def test_no_assessment_leaves_the_entry_unassessed(monkeypatch):
 def test_counter_evidence_reaches_the_sidecar(monkeypatch):
     _two_candidates(monkeypatch)
     ranker = _FakeRanker({
-        ("key4hep/k4geo", 10): Ranking(60.0, "touches HCAL", "without_HCAL moved too"),
+        ("key4hep/k4geo", 10): Ranking(60.0, "touches HCAL", "no_HCAL moved too"),
     })
     blame = build_blame_report(
         _report([_verdict()]), packages_for_release=_MOVED,
         github=GitHubClient(), ranker=ranker,
     )
     scored = next(c for c in blame.entries[0].candidates if c.number == 10)
-    assert scored.against == "without_HCAL moved too"
+    assert scored.against == "no_HCAL moved too"
 
 
 def test_the_boundary_counts_are_persisted_for_the_second_pass(monkeypatch):

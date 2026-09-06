@@ -27,28 +27,28 @@ def _make_result(label: str, returncode: int = 0) -> RunResult:
 
 class TestSaveCsv:
     def test_file_is_created(self, tmp_path):
-        save_csv([_make_result("baseline_all")], tmp_path)
-        assert (tmp_path / "baseline_all_results.csv").exists()
+        save_csv([_make_result("baseline")], tmp_path)
+        assert (tmp_path / "baseline_results.csv").exists()
 
     def test_one_file_per_result(self, tmp_path):
-        save_csv([_make_result("baseline_all"), _make_result("without_Ecal")], tmp_path)
-        assert (tmp_path / "baseline_all_results.csv").exists()
-        assert (tmp_path / "without_Ecal_results.csv").exists()
+        save_csv([_make_result("baseline"), _make_result("no_Ecal")], tmp_path)
+        assert (tmp_path / "baseline_results.csv").exists()
+        assert (tmp_path / "no_Ecal_results.csv").exists()
 
     def test_log_dir_created(self, tmp_path):
         log_dir = tmp_path / "nested" / "dir"
-        save_csv([_make_result("baseline_all")], log_dir)
-        assert (log_dir / "baseline_all_results.csv").exists()
+        save_csv([_make_result("baseline")], log_dir)
+        assert (log_dir / "baseline_results.csv").exists()
 
     def test_csv_has_header_and_one_row(self, tmp_path):
-        save_csv([_make_result("baseline_all")], tmp_path)
-        rows = list(csv.DictReader((tmp_path / "baseline_all_results.csv").open()))
+        save_csv([_make_result("baseline")], tmp_path)
+        rows = list(csv.DictReader((tmp_path / "baseline_results.csv").open()))
         assert len(rows) == 1
 
     def test_csv_label_field_correct(self, tmp_path):
-        save_csv([_make_result("baseline_all")], tmp_path)
-        rows = list(csv.DictReader((tmp_path / "baseline_all_results.csv").open()))
-        assert rows[0]["label"] == "baseline_all"
+        save_csv([_make_result("baseline")], tmp_path)
+        rows = list(csv.DictReader((tmp_path / "baseline_results.csv").open()))
+        assert rows[0]["label"] == "baseline"
 
     def test_empty_results_raises(self, tmp_path):
         with pytest.raises(ValueError, match="empty"):
@@ -57,11 +57,11 @@ class TestSaveCsv:
 
 class TestPrintSummary:
     def test_prints_without_error(self, capsys):
-        results = [_make_result("baseline_all"), _make_result("without_Ecal", returncode=1)]
+        results = [_make_result("baseline"), _make_result("no_Ecal", returncode=1)]
         print_summary(results)
         out = capsys.readouterr().out
-        assert "baseline_all" in out
-        assert "without_Ecal" in out
+        assert "baseline" in out
+        assert "no_Ecal" in out
 
     def test_none_fields_shown_as_na(self, capsys):
         result = RunResult(label="test", returncode=0, n_events=2)
@@ -70,6 +70,6 @@ class TestPrintSummary:
         assert "N/A" in out
 
     def test_summary_header_present(self, capsys):
-        print_summary([_make_result("baseline_all")])
+        print_summary([_make_result("baseline")])
         out = capsys.readouterr().out
         assert "SUMMARY" in out

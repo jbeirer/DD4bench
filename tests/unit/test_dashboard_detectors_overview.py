@@ -55,7 +55,7 @@ ov = _load_module()
 
 def _verdict(**overrides) -> MetricVerdict:
     base = dict(
-        detector="CLD", platform="PLAT", sample="single_e", label="baseline_all",
+        detector="CLD", platform="PLAT", sample="single_e", label="baseline",
         metric_family="time", metric="wall_time_s", sub_detector=None,
         run_id="2026-01-12", run_date="2026-01-12", value=120.0,
         baseline_median=100.0, baseline_mad=0.6, pct_change=0.20, z_score=33.0,
@@ -293,7 +293,7 @@ def test_history_collapses_same_tag_reruns():
                run_date="2026-07-02", k4h_release="key4hep-2026-07-01"),
     ]))
     hist = _collapsed_history(
-        [("2026-07-01", n1), ("2026-07-02", n2)], "PLAT", "single_e", "baseline_all"
+        [("2026-07-01", n1), ("2026-07-02", n2)], "PLAT", "single_e", "baseline"
     )
     # Same tag → one point at the tag date, carrying the newest run's value …
     assert hist["night"].tolist() == ["2026-07-01"]
@@ -314,7 +314,7 @@ def _same_tag_rerun_rows() -> pd.DataFrame:
                run_date="2026-07-02", k4h_release="key4hep-2026-07-01"),
     ]))
     return ov.history_rows(
-        [("2026-07-01", n1), ("2026-07-02", n2)], "PLAT", "single_e", "baseline_all"
+        [("2026-07-01", n1), ("2026-07-02", n2)], "PLAT", "single_e", "baseline"
     )
 
 
@@ -340,7 +340,7 @@ def _same_tag_failure_rows(failed_first: bool) -> pd.DataFrame:
         (g.run_date, ov.report_metrics_frame(NightlyReport(generated_at="", groups=[g])))
         for g in groups
     ]
-    return ov.history_rows(frames, "PLAT", "single_e", "baseline_all")
+    return ov.history_rows(frames, "PLAT", "single_e", "baseline")
 
 
 @pytest.mark.parametrize("failed_first", [True, False])
@@ -483,7 +483,7 @@ def test_status_trend_preview_keeps_every_run_when_exclusion_is_off(monkeypatch)
 def test_drop_unreliable_runs_is_a_no_op_without_pairs():
     rows = _same_tag_rerun_rows()
     assert len(ov.drop_unreliable_runs(rows, set())) == len(rows)
-    empty = ov.history_rows([], "PLAT", "single_e", "baseline_all")
+    empty = ov.history_rows([], "PLAT", "single_e", "baseline")
     assert ov.drop_unreliable_runs(empty, {("2026-07-01", "CLD")}).empty
     assert ov.collapse_history(empty).empty
 
@@ -501,7 +501,7 @@ def _two_night_hist() -> pd.DataFrame:
     ])
     n2 = ov.report_metrics_frame(night2)
     return ov.history_rows(
-        [("2026-01-12", n1), ("2026-01-13", n2)], "PLAT", "single_e", "baseline_all"
+        [("2026-01-12", n1), ("2026-01-13", n2)], "PLAT", "single_e", "baseline"
     )
 
 
@@ -542,7 +542,7 @@ def test_latest_snapshot_ignores_a_partial_same_tag_rerun():
     ]))
     rows = ov.history_rows(
         [("2026-07-01", first), ("2026-07-02", rerun)],
-        "PLAT", "single_e", "baseline_all",
+        "PLAT", "single_e", "baseline",
     )
     wide, as_of = ov.latest_snapshot(rows)
     # The rerun is the newest run of the tag and carries only memory, so the
@@ -574,7 +574,7 @@ def test_snapshot_runs_picks_one_run_per_detector():
 
 def test_latest_snapshot_empty_history():
     wide, as_of = ov.latest_snapshot(
-        ov.history_rows([], "PLAT", "single_e", "baseline_all")
+        ov.history_rows([], "PLAT", "single_e", "baseline")
     )
     assert wide.empty
     assert as_of == {}
@@ -681,7 +681,7 @@ def test_history_rows_scope_and_gaps():
     ])
     n2 = ov.report_metrics_frame(night2)
     hist = _collapsed_history(
-        [("2026-01-12", n1), ("2026-01-13", n2)], "PLAT", "single_e", "baseline_all"
+        [("2026-01-12", n1), ("2026-01-13", n2)], "PLAT", "single_e", "baseline"
     )
     assert list(hist.columns) == [
         "night", "detector", "metric", "value", "k4h_release", "severity", "reliable",
@@ -692,7 +692,7 @@ def test_history_rows_scope_and_gaps():
 
 
 def test_history_empty_scope_keeps_columns():
-    hist = _collapsed_history([], "PLAT", "single_e", "baseline_all")
+    hist = _collapsed_history([], "PLAT", "single_e", "baseline")
     assert hist.empty
     assert list(hist.columns) == [
         "night", "detector", "metric", "value", "k4h_release", "severity", "reliable",
@@ -821,7 +821,7 @@ def _fixture_frames():
     ])
     n2 = ov.report_metrics_frame(night2)
     nights = [("2026-01-12", n1), ("2026-01-13", n2)]
-    rows = ov.history_rows(nights, "PLAT", "single_e", "baseline_all")
+    rows = ov.history_rows(nights, "PLAT", "single_e", "baseline")
     hist = ov.collapse_history(rows)
     failures = rows[rows["severity"] == Severity.FAILURE.value]
     wide, _ = ov.latest_snapshot(rows)
@@ -906,7 +906,7 @@ def test_history_figure_handles_partial_data():
     fig = ov._history_figure(hist_disp, "mean_time_s", "mean_rss_mb", styles, detectors)
     assert fig is not None
     # No history rows for the scope at all → no figure.
-    empty_hist = _collapsed_history([], "PLAT", "single_e", "baseline_all")
+    empty_hist = _collapsed_history([], "PLAT", "single_e", "baseline")
     assert ov._history_figure(empty_hist, "mean_time_s", "peak_rss_mb",
                               styles, detectors) is None
 
@@ -1050,10 +1050,10 @@ def test_trend_notes_prefers_the_unreliable_reason_over_the_failure_one():
 
 def test_baseline_label_matches_benchmark():
     # The tab compares detectors on the sweep's unpatched full-detector run.
-    # Pinned to the literal too: the histories on EOS carry "baseline_all"
+    # Pinned to the literal too: the histories on EOS carry "baseline"
     # forever, so a rename must not silently retarget the tab.
     from k4bench.labels import BASELINE_LABEL
-    assert ov._BASELINE_LABEL == BASELINE_LABEL == "baseline_all"
+    assert ov._BASELINE_LABEL == BASELINE_LABEL == "baseline"
 
 
 def test_metric_labels_cover_report_and_dashboard_metrics():
@@ -1062,7 +1062,10 @@ def test_metric_labels_cover_report_and_dashboard_metrics():
     # evidence even though the regression report deliberately omits it.
     report_metrics = set(RUN_VALUE_METRICS) | set(EVENT_METRICS)
     dashboard_metrics = report_metrics | {"cpu_efficiency"}
-    assert set(ov._METRIC_LABELS) == dashboard_metrics
+    # Names are shared with the mail and the analysis figures, so that
+    # vocabulary also covers columns this tab never plots; it has to *cover*
+    # these, not match them. The units are this tab's own and still do.
+    assert dashboard_metrics <= set(ov.METRIC_LABELS)
     assert set(ov._METRIC_UNITS) == dashboard_metrics
     assert set(ov._METRIC_ORDER) <= report_metrics
 
@@ -1095,7 +1098,7 @@ def test_status_rows_order_worst_first_and_pick_the_worst_flag():
     assert [r["Detector"] for r in rows] == ["FAILED", "REGRESSED", "WATCHING", "QUIET"]
     regressed = rows[1]
     assert regressed[""] == "🔴"
-    assert regressed["Worst flag"] == "wall time · baseline_all"
+    assert regressed["Worst flag"] == "Wall time · baseline"
     assert regressed["Δ"] == pytest.approx(-10.0)
     quiet = rows[3]
     assert quiet[""] == "✅" and quiet["Worst flag"] == "—" and quiet["Δ"] is None
@@ -1109,7 +1112,7 @@ def test_status_rows_delta_is_blank_for_a_percentless_flag():
         "PLAT", "single_e", "2026-01-12",
     )
     assert rows[0]["Δ"] is None
-    assert rows[0]["Worst flag"] == "wall time · baseline_all"
+    assert rows[0]["Worst flag"] == "Wall time · baseline"
 
 
 def test_status_rows_link_carries_the_triple_stack_and_report_night():

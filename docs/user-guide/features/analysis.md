@@ -40,7 +40,7 @@ DataFrame]` with columns `event_number`, `event_time_s`, `rss_begin_mb`,
 from k4bench.analysis import load_event_timing
 
 events = load_event_timing("logs/ALLEGRO_o1_v03")
-events["baseline_all"].head()
+events["baseline"].head()
 ```
 
 ### `load_region_timing(log_dir, labels=None)`
@@ -54,7 +54,7 @@ one column per top-level detector (seconds).
 from k4bench.analysis import load_region_timing
 
 regions = load_region_timing("logs/ALLEGRO_o1_v03")
-regions["baseline_all"]["at_location"].sum().sort_values(ascending=False)
+regions["baseline"]["at_location"].sum().sort_values(ascending=False)
 ```
 
 !!! note "Loaders validate their input"
@@ -149,7 +149,7 @@ event 0 when computing summary statistics (mean, median, p95). When you compute
 your own stats, do the same:
 
 ```python
-df = events["baseline_all"]
+df = events["baseline"]
 df = df[df["event_number"] != 0]      # drop warmup
 df["event_time_s"].median()
 ```
@@ -164,7 +164,7 @@ runs   = load_results("logs/ALLEGRO_o1_v03")
 events = load_event_timing("logs/ALLEGRO_o1_v03")
 
 # 2. Per-detector cost relative to baseline
-base = runs.loc[runs.label == "baseline_all", "wall_time_s"].iloc[0]
+base = runs.loc[runs.label == "baseline", "wall_time_s"].iloc[0]
 runs["delta_wall_s"] = base - runs["wall_time_s"]
 
 # 3. Steady-state per-event time (warmup excluded)

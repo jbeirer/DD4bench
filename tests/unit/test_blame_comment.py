@@ -485,18 +485,18 @@ def test_a_run_that_cannot_be_trusted_is_not_evidence_of_absence(group_kw):
 
 def test_a_detector_removal_run_is_a_control_for_its_own_baseline():
     # The sharpest control the suite produces is *inside* a run group: baseline
-    # stepped, without_HCAL did not, same detector, sample, platform and night —
+    # stepped, no_HCAL did not, same detector, sample, platform and night —
     # which places the cost inside the HCAL. Judging the negative evidence per
     # run group would delete exactly this comparison, since the regression it is
     # a control for lives in the same group.
     baseline = _verdict(label="baseline")
-    without_hcal = _verdict(label="without_HCAL", severity=Severity.OK)
+    no_hcal = _verdict(label="no_HCAL", severity=Severity.OK)
     attributor = _FakeAttributor({"r1": 90.0})
-    _comments(_report(baseline, without_hcal), _blame([baseline], [_candidate()]),
+    _comments(_report(baseline, no_hcal), _blame([baseline], [_candidate()]),
               attributor=attributor)
     outcomes = attributor.requests[0].outcomes
     assert [(o.detector, o.label, o.status) for o in outcomes] == [
-        ("ALLEGRO_o1_v03", "without_HCAL", "clean"),
+        ("ALLEGRO_o1_v03", "no_HCAL", "clean"),
     ]
 
 
@@ -936,7 +936,7 @@ def test_a_detector_sweeps_worth_of_rows_still_fits_in_a_github_comment():
     # GitHub's 65,536-character limit, *rejected outright* — the comment would
     # simply fail to post. The table is capped and the rest counted in one line.
     verdicts = [
-        _verdict(metric=f"m{i % 4}", label=f"without_Sub{i}", pct=(300 - i) / 1000)
+        _verdict(metric=f"m{i % 4}", label=f"no_Sub{i}", pct=(300 - i) / 1000)
         for i in range(318)
     ]
     comment = _comments(_report(*verdicts), _blame(verdicts, [_candidate()]))[0]
@@ -1795,8 +1795,8 @@ def test_external_prose_cannot_carry_an_active_link():
 # ── Runnable reproducer ───────────────────────────────────────────────────────
 
 def test_every_shown_row_links_its_own_recipe():
-    weak = _verdict(label="without_ECal", metric="wall_time_s", pct=0.4)
-    strong = _verdict(label="without_TPC", metric="mean_time_s", pct=0.2)
+    weak = _verdict(label="no_ECal", metric="wall_time_s", pct=0.4)
+    strong = _verdict(label="no_TPC", metric="mean_time_s", pct=0.2)
     report = _report(weak, strong)
     blame = _blame_of(
         (weak, [_candidate(score=82)]),
@@ -1810,7 +1810,7 @@ def test_every_shown_row_links_its_own_recipe():
 
     # A recipe per shown row, each linked on its own line — the commands
     # themselves live in the artifacts, not in the comment.
-    assert {facts.label for facts in published} == {"without_TPC", "without_ECal"}
+    assert {facts.label for facts in published} == {"no_TPC", "no_ECal"}
     assert len(calls) == 4
     assert "--sweep-detectors TPC" not in body
     assert "| Reproduce |" in body
@@ -1823,11 +1823,11 @@ def test_every_shown_row_links_its_own_recipe():
 def test_a_row_whose_recipe_could_not_be_built_keeps_an_empty_cell():
     # One row's run records are unreadable; it must not borrow another row's
     # commands, and the rows that do have one keep their links.
-    weak = _verdict(label="without_ECal", metric="wall_time_s", pct=0.4)
-    strong = _verdict(label="without_TPC", metric="mean_time_s", pct=0.2)
+    weak = _verdict(label="no_ECal", metric="wall_time_s", pct=0.4)
+    strong = _verdict(label="no_TPC", metric="mean_time_s", pct=0.2)
     fetch, _ = _run_info_for()
     publish, published = _publish_reproducer(
-        url=lambda f: "" if f.label == "without_ECal" else
+        url=lambda f: "" if f.label == "no_ECal" else
         f"https://data.test/_reproducers/{artifact_name(f)}"
     )
     body = _comments(
@@ -1837,14 +1837,14 @@ def test_a_row_whose_recipe_could_not_be_built_keeps_an_empty_cell():
     )[0].body
 
     assert "| Reproduce |" in body
-    assert "recipe ↗" in _row(body, "without_TPC")
-    assert "recipe ↗" not in _row(body, "without_ECal")
+    assert "recipe ↗" in _row(body, "no_TPC")
+    assert "recipe ↗" not in _row(body, "no_ECal")
 
 
 def test_no_reproducer_column_without_a_published_recipe():
     # Nothing was published, so there is no link to give and no column to hold
     # one — never a link to an artifact that does not exist.
-    weak = _verdict(label="without_ECal", metric="wall_time_s", pct=0.4)
+    weak = _verdict(label="no_ECal", metric="wall_time_s", pct=0.4)
     fetch, _calls = _run_info_for()
     body = _comments(
         _report(weak), _blame([weak], [_candidate()]), run_info_for=fetch,
@@ -1854,7 +1854,7 @@ def test_no_reproducer_column_without_a_published_recipe():
 
 
 def test_a_publisher_that_fails_costs_the_link_and_nothing_else():
-    verdict = _verdict(label="without_TPC")
+    verdict = _verdict(label="no_TPC")
 
     def refuse(_facts):
         raise OSError("upload failed")
@@ -1872,7 +1872,7 @@ def test_the_recipe_link_survives_the_write_boundary():
     # materialize() re-renders the table from structured state, so the link has
     # to travel with the comment — otherwise every *published* comment would
     # lose the column that render time gave it.
-    verdict = _verdict(label="without_TPC")
+    verdict = _verdict(label="no_TPC")
     publish, published = _publish_reproducer()
     comment = _comments(
         _report(verdict), _blame([verdict], [_candidate()]),
@@ -1890,7 +1890,7 @@ def test_model_score_drift_does_not_change_the_published_recipes():
     # followed the likelihood ranking, two scores swapping places would edit a
     # standing comment and re-notify the pull request on model drift alone.
     rows = [
-        _verdict(metric=f"m{n}", label=f"without_cfg{n}", pct=0.5 - n / 100)
+        _verdict(metric=f"m{n}", label=f"no_cfg{n}", pct=0.5 - n / 100)
         for n in range(12)
     ]
     report = _report(*rows)
@@ -1925,7 +1925,7 @@ def test_every_shown_row_has_a_recipe_even_outside_the_hashed_set():
     # the two diverge. The union is published, so no shown row is left without
     # its commands just because the models liked a small mover.
     rows = [
-        _verdict(metric=f"m{n}", label=f"without_cfg{n}", pct=0.5 - n / 100)
+        _verdict(metric=f"m{n}", label=f"no_cfg{n}", pct=0.5 - n / 100)
         for n in range(12)
     ]
     # The models rank the *smallest* movers highest — the worst case for
@@ -1988,7 +1988,7 @@ def test_current_and_retained_rows_align_with_the_table_header(
     monkeypatch.setattr(comment_mod, "_SHOW_PLATFORM_COLUMN", show_platform)
     past = replace(
         _verdict(
-            metric="mean_rss_mb", label="baseline_all",
+            metric="mean_rss_mb", label="baseline",
             sample="p8_ee_Zbb_ecm91", pct=-0.626,
         ),
         direction=Direction.DOWN,
@@ -2040,7 +2040,7 @@ def test_current_and_retained_rows_align_with_the_table_header(
 
 
 def test_reproducer_is_absent_when_either_run_record_is_missing():
-    verdict = _verdict(label="baseline_all")
+    verdict = _verdict(label="baseline")
     fetch, calls = _run_info_for(missing=True)
     publish, published = _publish_reproducer()
     body = _comments(_report(verdict), _blame([verdict], [_candidate()]),
@@ -2051,7 +2051,7 @@ def test_reproducer_is_absent_when_either_run_record_is_missing():
 
 
 def test_reproducer_command_changes_digest_but_tonights_value_does_not():
-    verdict = _verdict(label="baseline_all", pct=0.204)
+    verdict = _verdict(label="baseline", pct=0.204)
     report = _report(verdict)
     blame = _blame([verdict], [_candidate()])
     publish, _ = _publish_reproducer()
@@ -2079,7 +2079,7 @@ def test_a_recipe_that_appears_or_moves_edits_a_standing_comment():
     # The link is part of what the comment claims, so publishing one where
     # there was none — or publishing it somewhere else — must be able to
     # replace a standing body.
-    verdict = _verdict(label="baseline_all")
+    verdict = _verdict(label="baseline")
     report, blame = _report(verdict), _blame([verdict], [_candidate()])
     fetch, _ = _run_info_for()
 
@@ -3336,7 +3336,7 @@ def test_windows_nested_in_one_another_are_one_comment():
     # collected by onset alone, so the two windows hold identical rows — one
     # finding, and the pull request must be notified once.
     settled = _verdict(label="baseline", base="2026-07-03", onset="2026-07-04")
-    wobbled = _verdict(label="without_X", base="2026-07-02", onset="2026-07-04")
+    wobbled = _verdict(label="no_X", base="2026-07-02", onset="2026-07-04")
     report = _report(settled, wobbled)
     blame = _blame([settled, wobbled], [_candidate(number=611, score=95.0)])
 
@@ -3346,13 +3346,13 @@ def test_windows_nested_in_one_another_are_one_comment():
     assert plans[0].base_release == "2026-07-03"
     assert plans[0].onset_release == "2026-07-04"
     # And it still carries every row, which is what made the two identical.
-    assert {row.verdict.label for row in plans[0].rows} == {"baseline", "without_X"}
+    assert {row.verdict.label for row in plans[0].rows} == {"baseline", "no_X"}
 
 
 def test_an_unbounded_window_yields_to_a_dated_one():
     # An open base is not a bound at all, so it can never be the tighter of two.
     open_window = _verdict(label="baseline", base=None, onset="2026-07-04")
-    bounded = _verdict(label="without_X", base="2026-07-03", onset="2026-07-04")
+    bounded = _verdict(label="no_X", base="2026-07-03", onset="2026-07-04")
     report = _report(open_window, bounded)
     blame = _blame([open_window, bounded], [_candidate(number=611, score=95.0)])
 
@@ -3363,7 +3363,7 @@ def test_an_unbounded_window_yields_to_a_dated_one():
 
 def test_a_containing_window_with_a_later_onset_is_one_comment():
     narrow = _verdict(
-        label="without_X", base="2026-07-01", onset="2026-07-03",
+        label="no_X", base="2026-07-01", onset="2026-07-03",
     )
     wide = _verdict(
         label="baseline", metric="mean_time_s",
@@ -3393,7 +3393,7 @@ def test_a_containing_window_with_a_later_onset_is_one_comment():
         )
         assert plans[0].subject.score == 95.0
         assert {(row.verdict.label, row.verdict.metric) for row in plans[0].rows} == {
-            ("without_X", "wall_time_s"),
+            ("no_X", "wall_time_s"),
             ("baseline", "mean_time_s"),
         }
 
@@ -3416,7 +3416,7 @@ def _retained_marker_of(body: str) -> str:
     """The single hidden retained-state line a materialized body carries."""
     return next(
         line for line in body.splitlines()
-        if line.startswith("<!-- k4bench-blame-retained:v1 ")
+        if line.startswith("<!-- k4bench-blame-retained:v2 ")
     )
 
 
@@ -3442,7 +3442,7 @@ def _forged_marker(rows: list[dict]) -> str:
     encoded = urlsafe_b64encode(
         json.dumps({"rows": rows}, separators=(",", ":")).encode()
     ).decode().rstrip("=")
-    return f"<!-- k4bench-blame-retained:v1 {encoded} -->"
+    return f"<!-- k4bench-blame-retained:v2 {encoded} -->"
 
 
 def _snapshot_payload(**overrides) -> dict:
@@ -3450,7 +3450,7 @@ def _snapshot_payload(**overrides) -> dict:
         "detector": "ALLEGRO_o1_v03",
         "platform": _PLAT,
         "sample": "single_e-_10GeV",
-        "label": "without_InnerTrackers",
+        "label": "no_InnerTrackers",
         "metric": "mean_time_s",
         "sub_detector": "",
         "direction": "UP",
@@ -3473,7 +3473,7 @@ def _snapshot_payload(**overrides) -> dict:
 def _dd4hep_night_one():
     """The DD4hep #1617 finding as it stood the night it was confirmed."""
     row_a = _verdict(
-        metric="mean_time_s", label="without_InnerTrackers",
+        metric="mean_time_s", label="no_InnerTrackers",
         base="2026-08-27", onset="2026-08-28", pct=0.367,
     )
     comment = _comments(
@@ -3615,14 +3615,14 @@ def test_retained_state_is_one_marker_bounded_well_under_githubs_limit():
     # A detector-removal sweep confirms hundreds of rows; the state marker keeps
     # a fixed few, in one line, so no lineage can grow itself unwritable.
     verdicts = [
-        _verdict(metric=f"m{i % 4}", label=f"without_Sub{i}", pct=(300 - i) / 1000)
+        _verdict(metric=f"m{i % 4}", label=f"no_Sub{i}", pct=(300 - i) / 1000)
         for i in range(318)
     ]
     comment = _comments(_report(*verdicts), _blame(verdicts, [_candidate()]))[0]
 
     body = materialize(comment, []).body
 
-    assert body.count("<!-- k4bench-blame-retained:v1 ") == 1
+    assert body.count("<!-- k4bench-blame-retained:v2 ") == 1
     assert len(comment_mod._decoded_retained(body)) == 20
     assert len(_table_rows(body)) == 5
     assert len(body.encode()) < 65_536
@@ -3722,7 +3722,7 @@ def test_association_summary_separates_likely_idea_rows_from_weak_cld_rows():
     assert not any("CLD" in row for row in rows)
     assert "mean_time_s" not in summary
     assert all("mean_rss_mb, peak_rss_mb, wall_time_s" in row for row in rows)
-    assert "2026-09-04" in next(row for row in rows if "Single e" in row)
+    assert "2026-09-04" in next(row for row in rows if "e⁻ gun" in row)
     # But still counted, because the alert above states the union of all three.
     assert (
         "A further 2 regressions in 1 scope stayed below 70% and are not "
@@ -3829,7 +3829,7 @@ def test_retained_state_survives_a_run_of_material_versions_within_the_limit():
     for day in range(1, 26):
         verdicts = [
             _verdict(
-                metric=f"m{index}", label=f"without_Sub{day}_{index}",
+                metric=f"m{index}", label=f"no_Sub{day}_{index}",
                 base="2026-06-29", onset="2026-06-30", pct=(300 - index) / 1000,
             )
             for index in range(40)
@@ -3840,7 +3840,7 @@ def test_retained_state_survives_a_run_of_material_versions_within_the_limit():
         )[0]
         body = materialize(comment, [body]).body
 
-    assert body.count("<!-- k4bench-blame-retained:v1 ") == 1
+    assert body.count("<!-- k4bench-blame-retained:v2 ") == 1
     assert len(comment_mod._decoded_retained(body)) == 20
     assert len(body.encode()) < 65_536
 
@@ -3902,7 +3902,7 @@ def test_a_retained_marker_off_schema_is_ignored_whole(payload):
         json.dumps(payload, separators=(",", ":")).encode()
     ).decode().rstrip("=")
     previous = (
-        f"{tonight.marker}\n<!-- k4bench-blame-retained:v1 {encoded} -->"
+        f"{tonight.marker}\n<!-- k4bench-blame-retained:v2 {encoded} -->"
     )
 
     body = materialize(tonight, [previous]).body
@@ -3915,7 +3915,7 @@ def test_undecodable_retained_state_renders_the_current_rows_safely():
     tonight = _comments(
         _report(_verdict()), _blame([_verdict()], [_candidate()]),
     )[0]
-    previous = f"{tonight.marker}\n<!-- k4bench-blame-retained:v1 not@base64 -->"
+    previous = f"{tonight.marker}\n<!-- k4bench-blame-retained:v2 not@base64 -->"
 
     body = materialize(tonight, [previous]).body
 
@@ -3931,13 +3931,13 @@ def test_a_legacy_body_with_no_retained_state_is_forward_only():
     )[0]
     legacy = (
         f"{tonight.marker}\n<!-- k4bench-blame-facts:old -->\n"
-        "| `mean_time_s` | ALLEGRO_o1_v03 | e- 10GeV | `without_InnerTrackers` "
+        "| `mean_time_s` | ALLEGRO_o1_v03 | e- 10GeV | `no_InnerTrackers` "
         "| ▲&nbsp;**+36.7%** | 88% |"
     )
 
     body = materialize(tonight, [legacy]).body
 
-    assert "without_InnerTrackers" not in body
+    assert "no_InnerTrackers" not in body
     assert len(_table_rows(body)) == 1
 
 
@@ -4327,11 +4327,11 @@ def test_malformed_cumulative_state_falls_back_to_current_rows():
     ).body
     previous = next(
         line for line in previous.splitlines()
-        if line.startswith("<!-- k4bench-blame-cumulative:v1 ")
+        if line.startswith("<!-- k4bench-blame-cumulative:v2 ")
     ).join(("prefix\n", "\nsuffix"))
     previous = previous.replace(
-        next(line for line in previous.splitlines() if "cumulative:v1" in line),
-        "<!-- k4bench-blame-cumulative:v1 not@base64 -->",
+        next(line for line in previous.splitlines() if "cumulative:v2" in line),
+        "<!-- k4bench-blame-cumulative:v2 not@base64 -->",
     )
     result = materialize(
         _comments(_report(current), _blame([current], [_candidate()]))[0],
@@ -4435,7 +4435,7 @@ def test_equal_likelihood_rows_are_ordered_by_the_larger_movement():
 def test_the_dd4hep_lifecycle_keeps_its_leading_finding_across_three_nights():
     """AIDASoft/DD4hep#1617, night by night.
 
-    A ``mean_time_s`` step on ``without_InnerTrackers`` is confirmed at +36.7%
+    A ``mean_time_s`` step on ``no_InnerTrackers`` is confirmed at +36.7%
     and attributed at 88% on 2026-08-28, then drops back to ``WATCH`` for two
     nights while weaker rows are confirmed around it. The reader who was shown
     the 88% row must still see it, at the evidence it was published with,
@@ -4443,7 +4443,7 @@ def test_the_dd4hep_lifecycle_keeps_its_leading_finding_across_three_nights():
     under a table of 82% rows.
     """
     row_a = _verdict(
-        metric="mean_time_s", label="without_InnerTrackers",
+        metric="mean_time_s", label="no_InnerTrackers",
         base="2026-08-27", onset="2026-08-28", pct=0.367,
     )
     wall = _verdict(

@@ -54,7 +54,9 @@ from k4bench.regression.models import (
     Unjudged,
     unjudged_cause,
 )
-from k4bench.labels import pretty_platform, pretty_sample
+from k4bench.labels import (
+    METRIC_LABELS, pretty_metric, pretty_platform, pretty_sample,
+)
 from k4bench.regression.render import (
     _dashboard_link,
     _detector_badge,
@@ -67,40 +69,41 @@ from k4bench.regression.render import (
 
 # ── Friendly metric names, units and value formatting ─────────────────────────
 
-#: ``metric -> (label, unit-kind)``. The unit-kind drives :func:`_fmt_value`.
-#: Covers every metric ``report_builder`` currently evaluates; an unknown future
-#: metric falls back to its raw name and the plain numeric formatter rather than
-#: failing (see :func:`_metric_label` / :func:`_fmt_value`).
-_METRIC_META: dict[str, tuple[str, str]] = {
-    "wall_time_s":         ("Wall time", "seconds"),
-    "user_cpu_s":          ("User CPU time", "seconds"),
-    "peak_rss_mb":         ("Peak memory", "memory_mb"),
-    "cpu_efficiency":      ("CPU efficiency", "percent"),
-    "mean_time_s":         ("Mean event time", "seconds"),
-    "median_time_s":       ("Median event time", "seconds"),
-    "trimmed_mean_time_s": ("Trimmed mean event time", "seconds"),
-    "mean_rss_mb":         ("Mean event memory", "memory_mb"),
-    "returncode":          ("Return code", "int"),
+#: ``metric -> unit-kind``, which drives :func:`_fmt_value`. The names these
+#: metrics are *called* live in :data:`k4bench.labels.METRIC_LABELS`, shared
+#: with the dashboard so the mail and the page it links to do not disagree
+#: about what a column is named. Covers every metric ``report_builder``
+#: currently evaluates; an unknown future metric falls back to its raw name and
+#: the plain numeric formatter rather than failing (see :func:`_metric_label` /
+#: :func:`_fmt_value`).
+_METRIC_UNIT_KINDS: dict[str, str] = {
+    "wall_time_s":         "seconds",
+    "user_cpu_s":          "seconds",
+    "peak_rss_mb":         "memory_mb",
+    "cpu_efficiency":      "percent",
+    "mean_time_s":         "seconds",
+    "median_time_s":       "seconds",
+    "trimmed_mean_time_s": "seconds",
+    "mean_rss_mb":         "memory_mb",
+    "returncode":          "int",
 }
 
 
 def _metric_label(v: MetricVerdict) -> str:
-    """Friendly metric name plus the sub-detector for region-level rows
-    (``Mean event memory · without_EMEC_turbine``). Unknown metrics keep their
-    raw column name."""
-    name = _METRIC_META.get(v.metric, (v.metric, "raw"))[0]
-    return f"{name} · {v.sub_detector}" if v.sub_detector else name
+    """A verdict's metric name — :func:`k4bench.labels.pretty_metric` reached
+    through the verdict (``Mean event RSS · EMEC_turbine``). Unknown metrics
+    keep their raw column name."""
+    return pretty_metric(v.metric, v.sub_detector)
 
 
 def _html_metric_and_config(v: MetricVerdict) -> str:
     """HTML metric/config label with machine identifiers kept intact.
 
     Mail clients may wrap around the separator, but names such as
-    ``without_VertexBarrel_assembly`` stay on one line instead of breaking at
+    ``no_VertexBarrel_assembly`` stay on one line instead of breaking at
     an arbitrary character and becoming hard to copy or compare.
     """
-    name = _METRIC_META.get(v.metric, (v.metric, "raw"))[0]
-    parts = [_esc(name)]
+    parts = [_esc(METRIC_LABELS.get(v.metric, v.metric))]
     if v.sub_detector:
         parts.append(
             f'<span style="white-space:nowrap;">{_esc(v.sub_detector)}</span>'
@@ -121,7 +124,7 @@ def _fmt_value(metric: str, value: float | None) -> str:
             return "—"
     except TypeError:
         return "—"
-    kind = _METRIC_META.get(metric, ("", "raw"))[1]
+    kind = _METRIC_UNIT_KINDS.get(metric, "raw")
     if kind == "seconds":
         return f"{_fmt(value)} s"
     if kind == "percent":

@@ -126,7 +126,7 @@ def test_group_title_prettifies_known_sample_and_platform_layouts():
         sample="single_e-_10GeV", k4h_release="key4hep-2026-01-01",
         run_date="2026-01-12", run_id="2026-01-12",
     )
-    assert _group_title(group2) == "Single e⁻ · 10GeV · AlmaLinux 9 · GCC 14.2.0 (optimized)"
+    assert _group_title(group2) == "Single e⁻ · 10 GeV · AlmaLinux 9 · GCC 14.2.0 (optimized)"
 
 
 def test_group_title_falls_back_to_raw_strings_for_unknown_layouts():

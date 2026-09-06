@@ -72,14 +72,14 @@ k4bench --xml ALLEGRO_o1_v03.xml --sweep \
 ### `--sweep-detectors DETECTOR [DETECTOR ...]`
 
 Like `--sweep`, but the removal sweep is restricted to the named detectors: the
-baseline plus one `without_<Name>` run per name. Handy when a full sweep would
+baseline plus one `no_<Name>` run per name. Handy when a full sweep would
 take too long — e.g. in CI. Unknown names are warned and skipped.
 
 ```bash
 k4bench --xml ALLEGRO_o1_v03.xml \
         --sweep-detectors ECalBarrel HCalBarrel \
         --ddsim-args="--enableGun --gun.particle e- --gun.distribution uniform"
-# labels: baseline_all, without_ECalBarrel, without_HCalBarrel
+# labels: baseline, no_ECalBarrel, no_HCalBarrel
 ```
 
 ### `--include-only DETECTOR [DETECTOR ...]`
@@ -103,7 +103,7 @@ image of `--include-only`.
 k4bench --xml ALLEGRO_o1_v03.xml \
         --exclude-only DRcaloTubes \
         --ddsim-args="--enableGun --gun.particle e-"
-# label: without_DRcaloTubes
+# label: no_DRcaloTubes
 ```
 
 !!! tip "Long detector lists get a hashed label"
@@ -179,7 +179,7 @@ some configurations fail — you keep the partial results and the overall exit
 code still reflects the failure.
 
 ```text
-3 run(s) failed: ['without_ECalBarrel', 'without_HCalBarrel', 'without_Muon']
+3 run(s) failed: ['no_ECalBarrel', 'no_HCalBarrel', 'no_Muon']
 ```
 
 ## Interrupting a run

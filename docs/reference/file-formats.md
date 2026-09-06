@@ -302,7 +302,7 @@ confirmed, attributable regression).
               "merged_at": "2026-07-04T…", "files": ["FCCee/ALLEGRO/…"],
               "additions": 20, "deletions": 4,
               "score": 72, "description": "raises the tracker step count, plausibly slower",
-              "against": "the without_Tracker run stepped by the same amount"
+              "against": "the no_Tracker run stepped by the same amount"
             }
           ]
         }
@@ -324,7 +324,7 @@ a separate **ranking stage** then scores each candidate *for that group* —
 reason and `against` (optional) what the model said argues against it, judged
 once per detector/platform/sample/window (every metric — and
 every benchmark-config label, e.g. a removal sweep's `baseline` vs.
-`without_<detector>` — sharing that group and window shares one ranking,
+`no_<detector>` — sharing that group and window shares one ranking,
 applied to all of them). A *different* detector or sample sharing the same
 release dates never shares a ranking. `commits_unavailable` marks a repo whose
 range could not be enumerated at all; `truncated` marks a candidate list known

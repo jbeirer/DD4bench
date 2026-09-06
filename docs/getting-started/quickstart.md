@@ -40,13 +40,13 @@ SUMMARY
 =================================================================================
 Label                                           Wall(s)    RSS(MB)  CPU usr(s)   Out(MB)     ev/s   RC
 ---------------------------------------------------------------------------------
-baseline_all                                       16.2     2095.4        47.3      1.84    6.165    0
+baseline                                       16.2     2095.4        47.3      1.84    6.165    0
 ---------------------------------------------------------------------------------
 ```
 
 | Column | Meaning | Source |
 | --- | --- | --- |
-| `Label` | Name of the run configuration | `baseline_all` for a plain run |
+| `Label` | Name of the run configuration | `baseline` for a plain run |
 | `Wall(s)` | Elapsed wall-clock time, in seconds | `/usr/bin/time -v` *Elapsed* |
 | `RSS(MB)` | Peak resident set size (memory high-water mark) | `time -v` *Maximum resident set size* |
 | `CPU usr(s)` | User-mode CPU seconds | `time -v` *User time* |
@@ -70,10 +70,10 @@ above (`ALLEGRO_o1_v03.xml`) that is `logs/ALLEGRO_o1_v03/`:
 
 ```text
 logs/ALLEGRO_o1_v03/
-├── baseline_all.log              # full ddsim stdout/stderr (incl. time -v output)
-├── baseline_all_results.csv      # one row: all RunResult metrics
-├── baseline_all_events.json      # per-event timing/RSS  (if event plugin loaded)
-└── baseline_all_regions.json     # per-detector timing   (if region action active)
+├── baseline.log              # full ddsim stdout/stderr (incl. time -v output)
+├── baseline_results.csv      # one row: all RunResult metrics
+├── baseline_events.json      # per-event timing/RSS  (if event plugin loaded)
+└── baseline_regions.json     # per-detector timing   (if region action active)
 ```
 
 Change the location with `--output-dir`:
@@ -96,8 +96,8 @@ k4bench --xml ALLEGRO_o1_v03.xml --sweep --events 100 \
         --ddsim-args="--enableGun --gun.particle e- --gun.distribution uniform"
 ```
 
-The table now has a row per detector (`without_<Name>`). Comparing each against
-`baseline_all` shows how much wall time and memory that detector adds. This and
+The table now has a row per detector (`no_<Name>`). Comparing each against
+`baseline` shows how much wall time and memory that detector adds. This and
 the other sweep strategies are explained in
 [Sweep modes](../user-guide/features/sweep-modes.md).
 

@@ -202,7 +202,7 @@ def build_blame_report(
     #: *different* detectors or samples can share the same platform and release
     #: dates — a library regressing several detectors in one release — and must
     #: never be batched into one prompt under one detector/sample's identity.
-    #: ``label`` (a removal sweep's ``baseline`` vs. ``without_<detector>``
+    #: ``label`` (a removal sweep's ``baseline`` vs. ``no_<detector>``
     #: runs, say) is deliberately *not* part of this key: labels sharing a
     #: group and window still get one collapsed verdict, not one call each —
     #: only detector/sample are independent enough to require splitting. Each
@@ -778,7 +778,7 @@ def _outcomes(
     The controls are drawn from the *whole* report, not just this scope: a
     detector that stayed flat is only informative because it is a different
     detector. Ordering puts this scope's own configurations first — the
-    ``baseline`` vs. ``without_<detector>`` comparison is the sharpest control the
+    ``baseline`` vs. ``no_<detector>`` comparison is the sharpest control the
     suite produces, and it must survive the prompt's cap.
     """
     scope = (verdict.detector, verdict.platform, verdict.sample)
@@ -881,7 +881,7 @@ def _rank_group(
     dates (one library regressing several detectors at once) — grouping on the
     release boundary alone would silently merge their unrelated metrics into
     one prompt mislabelled with a single detector/sample. ``label`` (a removal
-    sweep's ``baseline`` vs. ``without_<detector>`` runs) is deliberately
+    sweep's ``baseline`` vs. ``no_<detector>`` runs) is deliberately
     *not* part of this key — those still collapse into one verdict, each
     metric just carries its own label into the prompt.
 
@@ -994,7 +994,7 @@ def _rank_request(
     group (detector, platform, sample) and window, so the first stands in for
     those shared facts; each metric keeps its own ``label`` (verdicts sharing a
     group and window can still come from different benchmark configs, e.g. a
-    removal sweep's ``baseline`` and ``without_<detector>`` runs).
+    removal sweep's ``baseline`` and ``no_<detector>`` runs).
 
     A verdict from a report written before histories were recorded simply
     carries none, and the prompt renders without that block — the ranking path

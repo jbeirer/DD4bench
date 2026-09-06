@@ -707,19 +707,6 @@ def _histogram_display_controls(
 # run/event metrics plus derived host evidence such as ``cpu_efficiency``, which
 # Machine Info and Trends display but the regression report does not judge.
 
-#: Human-readable metric names for row labels and panel titles; the raw column
-#: name (e.g. ``wall_time_s``) is preserved in hover tooltips.
-_METRIC_LABELS = {
-    "wall_time_s":         "wall time",
-    "user_cpu_s":          "user CPU",
-    "peak_rss_mb":         "peak RSS",
-    "cpu_efficiency":      "CPU efficiency",
-    "mean_time_s":         "mean event time",
-    "median_time_s":       "median event time",
-    "trimmed_mean_time_s": "upper-trimmed mean event time",
-    "mean_rss_mb":         "mean event RSS",
-}
-
 #: Unit suffix per metric for axis titles (empty for dimensionless ratios).
 _METRIC_UNITS = {
     "wall_time_s":         "s",

@@ -22,7 +22,7 @@ def _row(**overrides):
         "detector": "ILD_FCCee_v01",
         "platform": "x86_64-almalinux9-gcc14.2.0-opt",
         "sample": "single_e-_10GeV",
-        "label": "without_TPC",
+        "label": "no_TPC",
         "metric": "mean_time_s",
         "sub_detector": None,
         "pct_change": 0.3614,
@@ -95,10 +95,10 @@ def _facts_with_inputs(before: list[str], after: list[str]):
 
 
 def test_sweep_flag_inverts_supported_labels_and_rejects_hashed_multi_sweep():
-    assert sweep_flag("baseline_all") == ""
-    assert sweep_flag("without_TPC") == "--sweep-detectors TPC"
+    assert sweep_flag("baseline") == ""
+    assert sweep_flag("no_TPC") == "--sweep-detectors TPC"
     assert sweep_flag("only_VertexBarrel") == "--include-only VertexBarrel"
-    assert sweep_flag("without_3_detectors_12ab90ef") is None
+    assert sweep_flag("no_3_detectors_12ab90ef") is None
     assert sweep_flag("custom") is None
 
 
@@ -319,7 +319,7 @@ def test_the_recipe_names_the_measurement_it_reproduces():
     assert facts is not None
     body = render_text(facts)
     assert body.startswith("#!/usr/bin/env bash\n# k4Bench: reproduce this measurement")
-    assert "ILD_FCCee_v01" in body and "without_TPC" in body
+    assert "ILD_FCCee_v01" in body and "no_TPC" in body
     assert "2026-08-27 -> 2026-08-28" in body
     # Read on its own, it still says which runs it came from.
     assert "https://github.test/actions/runs/1" in body
@@ -439,7 +439,7 @@ def test_artifact_name_is_stable_per_measurement_and_window():
     assert artifact_name(facts) == artifact_name(_facts())
     assert artifact_name(facts).endswith(".txt")
     assert artifact_name(facts).startswith(
-        "ILD_FCCee_v01-single_e-_10GeV-without_TPC-mean_time_s-"
+        "ILD_FCCee_v01-single_e-_10GeV-no_TPC-mean_time_s-"
     )
     # A different window is a different recipe, and so is a different platform
     # even though the readable stem cannot show it.

@@ -835,7 +835,7 @@ def test_reverse_view_scopes_to_the_sidebar_and_widens_on_toggle():
     assert len(trend.options) == 3
     assert "IDEA" in trend.options[1]  # worst |Δ| first
     assert "CLD" in trend.options[2]
-    assert "Z → bb" in trend.options[1]
+    assert "Z→bb" in trend.options[1]
 
     # Select the other detector and verify that a fresh dashboard opened with
     # the resulting URL restores both all-detector scope and the exact metric.
@@ -1268,7 +1268,7 @@ def test_cpu_and_memory_regressions_are_independent_trend_options():
               report_dates=("2026-07-10",), reports_map={"2026-07-10": report})
     trend = next(s for s in at.selectbox if s.label == "Regression trend")
     assert len(trend.options) == 3
-    assert any("wall time" in option for option in trend.options)
+    assert any("Wall time" in option for option in trend.options)
     assert any("CPU efficiency" in option for option in trend.options)
     assert not any(s.key == "stack_outlier_cfg" for s in at.selectbox)
 

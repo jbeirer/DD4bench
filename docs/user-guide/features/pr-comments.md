@@ -67,7 +67,7 @@ likelihood per regression and the narrative the comment quotes.
     comment. What is never acceptable is dropping such a scope silently.
 - The negative evidence is identified down to the **benchmark configuration**,
   not the run group. The sharpest control this suite produces lives *inside* a
-  group — `baseline` stepped, `without_HCAL` did not, same detector, sample,
+  group — `baseline` stepped, `no_HCAL` did not, same detector, sample,
   platform and night, which places the cost inside the HCAL — and that is
   exactly the comparison the review is asked to make. A configuration counts as
   a control only when it genuinely measured cleanly: same release, reliable
@@ -363,7 +363,7 @@ evidence. This is the AIDASoft/DD4hep#1617 case, and it reads:
 
 | Metric | Detector | Sample | Config | Change window | Change | Attribution | Reproduce |
 |:---|:---|:---|:---|:---|---:|---:|:---|
-| `mean_time_s` | ALLEGRO_o1_v03 | Single e⁻ · 10GeV | `without_InnerTrackers` | `2026-08-27` → `2026-08-28` | ▲ **+36.7%** | 88% | [🔁 recipe ↗] |
+| `mean_time_s` | ALLEGRO_o1_v03 | Single e⁻ · 10GeV | `no_InnerTrackers` | `2026-08-27` → `2026-08-28` | ▲ **+36.7%** | 88% | [🔁 recipe ↗] |
 | `wall_time_s` | ALLEGRO_o1_v03 | Single e⁻ · 10GeV | `baseline` | `2026-08-28` → `2026-08-29` | ▲ **+12.0%** | 82% | [🔁 recipe ↗] |
 
 A retained row keeps the window — and the recipe — it was published with; one

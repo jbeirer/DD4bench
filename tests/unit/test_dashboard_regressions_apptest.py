@@ -205,7 +205,7 @@ def test_trend_preview_defaults_to_the_worst_confirmed_flag():
     preview = _preview(at)
     assert preview.value.metric == "peak_rss_mb"
     assert preview.value.pct_change == -0.35
-    assert preview.options[1] == "🔴 Regression · peak RSS · baseline — Δ -35.0%"
+    assert preview.options[1] == "🔴 Regression · Peak RSS · baseline — Δ -35.0%"
     # The drill-down actually rendered (its history fetch found no runs).
     assert any("No history could be loaded" in w.value for w in at.warning)
 
@@ -234,7 +234,7 @@ def test_failed_metric_value_stays_in_preview_and_is_labelled_failure():
     assert preview.value.severity is Severity.FAILURE
     assert preview.value.unjudged is None
     assert preview.value.value == 5.0
-    assert preview.options[1] == "❌ Failure · wall time · baseline — Δ -95.0%"
+    assert preview.options[1] == "❌ Failure · Wall time · baseline — Δ -95.0%"
 
 
 def test_scope_miss_names_the_detectors_other_groups():
@@ -400,16 +400,16 @@ def test_switching_report_night_replaces_visible_trend_option():
         query_params={"report": NIGHT},
     )
     assert _preview(at).value.metric == "wall_time_s"
-    assert "wall time" in _preview(at).options[1]
+    assert "Wall time" in _preview(at).options[1]
     assert "20.0%" in _preview(at).options[1]
 
     _night_picker(at).set_value("2026-07-11").run()
     assert not at.exception, at.exception
     preview = _preview(at)  # exactly one — no stale sibling from the old night
     assert preview.value.metric == "peak_rss_mb"
-    assert "peak RSS" in preview.options[1]
+    assert "Peak RSS" in preview.options[1]
     assert "45.0%" in preview.options[1]
-    assert all("wall time" not in option for option in preview.options)
+    assert all("Wall time" not in option for option in preview.options)
 
 
 def test_invalid_report_query_param_falls_back_to_the_default():
@@ -1048,7 +1048,7 @@ def test_rerun_confirming_a_later_window_shows_both_changes():
     # window — the picker scopes the plot, not just the attribution.
     preview = _preview(at)
     assert [o for o in preview.options if o != "—"] == [
-        "🔴 Regression · median event time · baseline — Δ +15.0%"
+        "🔴 Regression · Median event time · baseline — Δ +15.0%"
     ]
 
     # Switching to the original window shows its metrics and only its PRs,
@@ -1066,7 +1066,7 @@ def test_rerun_confirming_a_later_window_shows_both_changes():
     assert list(pr_frames[0]["Pull request"]) == ["key4hep/k4geo#1234"]
     preview = _preview(at)
     assert [o for o in preview.options if o != "—"] == [
-        "🔴 Regression · wall time · baseline — Δ +20.0%"
+        "🔴 Regression · Wall time · baseline — Δ +20.0%"
     ]
 
 
@@ -1128,7 +1128,7 @@ def test_watch_metrics_stay_reachable_beside_the_change_windows():
     assert not at.exception, at.exception
     preview = _preview(at)
     assert [o for o in preview.options if o != "—"] == [
-        "⚠️ Watch · mean event time · baseline — Δ +50.0%"
+        "⚠️ Watch · Mean event time · baseline — Δ +50.0%"
     ]
     assert not any("What changed upstream" in str(m.value) for m in at.markdown)
 
@@ -1344,7 +1344,7 @@ def test_counter_evidence_shares_the_why_cell_rather_than_adding_a_column():
         repo="key4hep/k4geo", number=1, title="Judged", author="alice",
         url="https://github.com/key4hep/k4geo/pull/1",
         score=72.0, description="raises the step count",
-        against="without_HCAL moved too", ranked=True,
+        against="no_HCAL moved too", ranked=True,
     )
     captured = {}
     original = flags.st.dataframe
@@ -1355,7 +1355,7 @@ def test_counter_evidence_shares_the_why_cell_rather_than_adding_a_column():
         flags.st.dataframe = original
 
     why = list(captured["frame"]["Why"])[0]
-    assert why == "raises the step count · Against: without_HCAL moved too"
+    assert why == "raises the step count · Against: no_HCAL moved too"
     assert list(captured["frame"].columns) == [
         "Likelihood", "Pull request", "Open", "Title", "Author", "Merged", "Why",
     ]
@@ -1425,17 +1425,17 @@ def test_metric_option_reads_the_same_in_every_picker():
 
     confirmed = _verdict("wall_time_s", Severity.CONFIRMED, 0.2)
     assert metric_option(confirmed) == (
-        "🔴 Regression · wall time · baseline — Δ +20.0%"
+        "🔴 Regression · Wall time · baseline — Δ +20.0%"
     )
     watch = _verdict("peak_rss_mb", Severity.WATCH, -0.075, metric_family="memory")
-    assert metric_option(watch) == "⚠️ Watch · peak RSS · baseline — Δ -7.5%"
+    assert metric_option(watch) == "⚠️ Watch · Peak RSS · baseline — Δ -7.5%"
     # An absolute-floor metric has no percentage; it must not read as +0.0%.
     floorless = _verdict("cpu_efficiency", Severity.WATCH, None)
     assert metric_option(floorless).endswith(" — Δ —")
     # Region rows carry their sub-detector, as in the ledger.
     region = _verdict("wall_time_s", Severity.CONFIRMED, 0.2,
                       sub_detector="VertexBarrel")
-    assert "wall time · VertexBarrel" in metric_option(region)
+    assert "Wall time · VertexBarrel" in metric_option(region)
 
 
 def test_metric_option_suffixes_carry_each_view_its_missing_context():
@@ -1447,11 +1447,11 @@ def test_metric_option_suffixes_carry_each_view_its_missing_context():
     v = _verdict("wall_time_s", Severity.CONFIRMED, 0.2, sample="p8_ee_Zbb_ecm91",
                  onset_run_date="2026-07-10", last_accepted_run_date="2026-07-08")
     assert metric_option(v, include_detector=True) == (
-        "🔴 Regression · CLD · wall time · baseline — Δ +20.0%"
+        "🔴 Regression · CLD · Wall time · baseline — Δ +20.0%"
     )
     assert metric_option(v, include_scope=True) == (
-        "🔴 Regression · wall time · baseline · "
-        "CLD, Pythia8: e⁺e⁻ → Z → bb (91 GeV) — Δ +20.0%"
+        "🔴 Regression · Wall time · baseline · "
+        "CLD, Z→bb · 91 GeV — Δ +20.0%"
     )
     assert "· 2026-07-08 → 2026-07-10 —" in metric_option(v, include_window=True)
     # A change confirmed before its series ever settled has no lower bound.

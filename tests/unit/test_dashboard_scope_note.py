@@ -107,7 +107,7 @@ def test_config_impact_names_the_selected_release():
     line = _line(_run("Config Impact", sample="single_e-_10GeV"))
     assert line == (
         "Showing CLD — AlmaLinux 9 · GCC 14.2.0 (optimized) "
-        "— Single e⁻ · 10GeV — 2026-07-10"
+        "— Single e⁻ · 10 GeV — 2026-07-10"
     )
     assert PLAT not in line and STACK not in line
 
@@ -123,7 +123,7 @@ def test_stack_changes_names_the_sidebar_scope_its_regressions_honour():
     # sidebar's detector and sample — so the note must name both facts.
     line = _line(_run("Stack Changes", sample="single_e-_10GeV"))
     assert line == (
-        "Showing CLD — AlmaLinux 9 · GCC 14.2.0 (optimized) — Single e⁻ · 10GeV "
+        "Showing CLD — AlmaLinux 9 · GCC 14.2.0 (optimized) — Single e⁻ · 10 GeV "
         "— platform-wide package diff for the release pair chosen below"
     )
     # The release pair is picked in the tab rather than by the sidebar.
