@@ -2026,7 +2026,7 @@ def test_current_and_retained_rows_align_with_the_table_header(
         cells = [cell.strip() for cell in line.split("|")[1:-1]]
         assert len(cells) == len(header)
         values = dict(zip(header, cells, strict=True))
-        assert values["Change"] == f"🔻&nbsp;**{pct}**"
+        assert values["Change"] == f"▼&nbsp;**{pct}**"
         assert values["Attribution"] == "98%"
         if show_window:
             onset = "2026-07-05" if line == rows[0] else "2026-07-04"
@@ -3932,7 +3932,7 @@ def test_a_legacy_body_with_no_retained_state_is_forward_only():
     legacy = (
         f"{tonight.marker}\n<!-- k4bench-blame-facts:old -->\n"
         "| `mean_time_s` | ALLEGRO_o1_v03 | e- 10GeV | `without_InnerTrackers` "
-        "| 🔺&nbsp;**+36.7%** | 88% |"
+        "| ▲&nbsp;**+36.7%** | 88% |"
     )
 
     body = materialize(tonight, [legacy]).body
