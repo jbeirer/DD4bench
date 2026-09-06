@@ -2665,7 +2665,7 @@ def _render(
             marker,
             f"{_FACTS_MARKER_PREFIX}{digest} -->",
             _CUMULATIVE_PLACEHOLDER,
-            "### 📉 Possible performance regression traced to this pull request",
+            "### 📊 Possible performance change traced to this pull request",
             "",
             _ALERT_START,
             _alert(plan, by_likelihood, attribution, min_score=min_score),
@@ -3937,9 +3937,10 @@ def _facts_payload(
     alike, and identities here are user-supplied names.
     """
     payload = {
-        # Repair existing comments once after the archive-link/table change.
-        # Report dates remain excluded, so later reconfirmations do not edit.
-        "render_version": 2,
+        # Repair existing comments once after a change to what the rendered
+        # body says. Report dates remain excluded, so later reconfirmations do
+        # not edit.
+        "render_version": 3,
         "window": [plan.base_release or "", plan.onset_release],
         "rows": [
             {
@@ -4120,17 +4121,20 @@ def _candidate_score_cell(candidate: CandidatePR) -> str:
 def _change_cell(pct_change: float | None) -> str:
     """A metric's step as a signed percentage with a direction marker.
     ``pct_change`` is a fraction on :class:`MetricVerdict`, matching the
-    report's own formatting. Both arrows are red on purpose: whichever way a
-    confirmed regression moved, it moved the wrong way. The gap between arrow
-    and number is non-breaking so a narrow column wraps the cell as a whole
-    rather than stranding the arrow on its own line.
+    report's own formatting. The markers are monochrome glyphs, not coloured
+    ones: they state the sign of the step and nothing more, because k4Bench
+    cannot tell whether a step in either direction is welcome — a drop can be
+    an optimization or work that is no longer being done
+    (:class:`~k4bench.regression.models.Direction`). The gap between marker and
+    number is non-breaking so a narrow column wraps the cell as a whole rather
+    than stranding the marker on its own line.
 
     Emphasised with ``**``, so every caller must be somewhere GitHub renders
     Markdown — inside a raw ``<summary>`` the asterisks would reach the reader
     as asterisks."""
     if pct_change is None or not math.isfinite(pct_change):
         return "—"
-    arrow = "🔺" if pct_change >= 0 else "🔻"
+    arrow = "▲" if pct_change >= 0 else "▼"
     return f"{arrow}&nbsp;**{pct_change:+.1%}**"
 
 
