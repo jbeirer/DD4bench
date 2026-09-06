@@ -3757,7 +3757,7 @@ def test_the_package_diff_is_linked_once_per_contributing_platform():
         for plat in (_PLAT, dbg) for i in range(2)
     ]
     body = _comments(_report(*verdicts), _blame(verdicts, [_candidate()]))[0].body
-    line = _row(body, "Every candidate here came from")
+    line = _row(body, "Inspect this window's package diffs")
     assert "one per platform" in line
     for plat in (_PLAT, dbg):
         assert f"platform={quote(plat)}" in line
@@ -3766,10 +3766,22 @@ def test_the_package_diff_is_linked_once_per_contributing_platform():
     # One platform, one link, and the sentence stays singular.
     single = [_verdict(metric=f"m{i}") for i in range(2)]
     body = _comments(_report(*single), _blame(single, [_candidate()]))[0].body
-    line = _row(body, "Every candidate here came from")
+    line = _row(body, "Inspect the [package diff for this window")
     assert "one per platform" not in line
     assert line.count("tab=Stack+Changes") == 1
-    assert "[package diff for this window ↗](" in line
+    assert "Inspect the [package diff for this window ↗](" in line
+
+
+def test_the_package_diff_is_offered_not_claimed_as_the_candidates_provenance():
+    # _record_others folds in every entry's candidates with no window filter,
+    # while only an entry measuring exactly this window describes this window's
+    # release diff. The line must therefore not assert where a candidate was
+    # found — it points somewhere to look.
+    verdicts = [_verdict(metric=f"m{i}") for i in range(2)]
+    body = _comments(_report(*verdicts), _blame(verdicts, [_candidate()]))[0].body
+    assert "Every candidate here came from" not in body
+    assert "candidates here came from" not in body
+    assert "Inspect the [package diff for this window ↗](" in body
 
 
 def test_a_wide_night_caps_the_association_table_and_counts_the_rest():

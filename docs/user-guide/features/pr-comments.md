@@ -446,11 +446,15 @@ confirmed, scoped to its recorded sample, stack and window. Below
 that sit the other candidates in the window with their likelihoods, in a
 disclosure whose summary carries the count and the strongest competing score
 without being opened (capped at five, the rest counted). The candidates are
-named but never linked, so that section closes with the link they all came
-from: the **package diff for this window**, the Stack Changes view listing every
+named but never linked, so that section closes with somewhere to look instead:
+the **package diff for this window**, the Stack Changes view listing every
 tracked package that moved between the two releases — one link per build
 platform that contributed a row, because provenance is recorded per platform and
-two platforms' diffs are two measurements, not one.
+two platforms' diffs are two measurements, not one. The line offers the diff
+rather than claiming the candidates came from it: candidates are collected from
+every entry, while only an entry measuring exactly this window describes this
+window's package set, so a candidate can have been found on a narrower range
+whose packages are not the ones behind that link.
 
 The table has a hard five-row cap — current and retained rows together — and
 anything past it is linked rather than pasted.

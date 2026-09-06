@@ -3685,9 +3685,9 @@ def _others_section(plan: CommentPlan, dashboard_url: str | None = None) -> str:
     :data:`_MAX_OTHER_CANDIDATES`, with any surplus counted rather than pasted.
 
     The candidates are named, never linked (:func:`_pr_ref`), so the section
-    closes with the one link they all came from: the window's package diff,
-    which is where the complete field — and every package behind it — can be
-    read without notifying anyone."""
+    closes with the window's package diff — where the complete field, and every
+    package behind it, can be read without notifying anyone. It is offered, not
+    claimed as their provenance: see :func:`_package_diff_line`."""
     others = _sorted_others(plan)
     diff = _package_diff_line(plan, dashboard_url)
     if not others:
@@ -3729,15 +3729,23 @@ def _others_section(plan: CommentPlan, dashboard_url: str | None = None) -> str:
 
 
 def _package_diff_line(plan: CommentPlan, dashboard_url: str | None) -> str | None:
-    """Where every candidate in this section came from: the window's package
-    diff, one link per build platform that contributed a row.
+    """The window's package diff, one link per build platform that contributed
+    a row — offered as somewhere to look, never as the candidates' provenance.
 
-    Per platform because provenance is: a plan is keyed by pull request and
-    window and never by platform, so its rows — and the candidates discovered
-    from them — can span several, while the release diff behind them is recorded
-    separately for each (:class:`CommentPlan`). Two platforms' diffs are two
-    measurements, and one link claiming to hold every candidate would be false
-    for any candidate only the other platform's diff turned up.
+    The distinction is load-bearing. :func:`_record_others` folds in every
+    entry's candidates with no window filter at all, while only an entry
+    measuring *exactly* this comment's window describes this window's release
+    diff (:func:`_confirmed_rows`): a row can enter on a narrower range of its
+    own, and :attr:`CommentPlan.packages_unavailable_on` exists to name the
+    platforms whose diff for this window was never read. So a candidate here can
+    have been found in a range whose package set is not the one behind this
+    link, and "every candidate came from" would assert a provenance the pipeline
+    does not establish.
+
+    Per platform because provenance is recorded that way: a plan is keyed by
+    pull request and window and never by platform, so its rows can span several,
+    while the release diff behind them is kept separately for each
+    (:class:`CommentPlan`). Two platforms' diffs are two measurements.
 
     Within a platform the scope parameters only choose which regression ledger
     the Stack Changes view draws underneath the diff, so the lowest row identity
@@ -3768,10 +3776,10 @@ def _package_diff_line(plan: CommentPlan, dashboard_url: str | None) -> str | No
     if not links:
         return None
     if len(links) == 1 and len(platforms) == 1:
-        return f"Every candidate here came from the {links[0]}."
+        return f"Inspect the {links[0]}."
     return (
-        "Every candidate here came from this window's package diffs, one per "
-        f"platform: {', '.join(links)}."
+        "Inspect this window's package diffs, one per platform: "
+        f"{', '.join(links)}."
     )
 
 
