@@ -15,7 +15,7 @@ import dataclasses
 import json
 from base64 import urlsafe_b64encode
 from dataclasses import replace
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
 import pytest
 
@@ -3747,6 +3747,31 @@ def test_association_summary_keeps_unscored_scopes_explicit_and_is_bounded():
     assert "attributed to this PR" not in summary
 
 
+def test_the_package_diff_is_linked_once_per_contributing_platform():
+    # A plan is keyed by pull request and window, never by platform, but the
+    # release diff behind it is recorded per platform — so one link cannot hold
+    # every candidate when two platforms contributed rows.
+    dbg = "x86_64-almalinux9-gcc14.2.0-dbg"
+    verdicts = [
+        _verdict(metric=f"m{i}", platform=plat)
+        for plat in (_PLAT, dbg) for i in range(2)
+    ]
+    body = _comments(_report(*verdicts), _blame(verdicts, [_candidate()]))[0].body
+    line = _row(body, "Every candidate here came from")
+    assert "one per platform" in line
+    for plat in (_PLAT, dbg):
+        assert f"platform={quote(plat)}" in line
+    assert line.count("tab=Stack+Changes") == 2
+
+    # One platform, one link, and the sentence stays singular.
+    single = [_verdict(metric=f"m{i}") for i in range(2)]
+    body = _comments(_report(*single), _blame(single, [_candidate()]))[0].body
+    line = _row(body, "Every candidate here came from")
+    assert "one per platform" not in line
+    assert line.count("tab=Stack+Changes") == 1
+    assert "[package diff for this window ↗](" in line
+
+
 def test_a_wide_night_caps_the_association_table_and_counts_the_rest():
     state = {
         (f"detector_{i}", _PLAT, "sample", "baseline", metric, ""):
@@ -4081,6 +4106,60 @@ def test_converging_comments_union_every_parent_identity_once():
     assert "confirmed 4 regressions across 4 detector/platform/sample scopes" in _row(
         merged.body, "nightly benchmarks confirmed"
     )
+
+
+def test_converging_lineages_keep_every_report_that_supplied_a_visible_row():
+    # Convergence hands the absorbed comments' rows to the survivor, so the
+    # table can draw a row from a report only an absorbed lineage ever saw. The
+    # line under the table claims to count each report in the lineage, and the
+    # history claims to list every material version — both would be false if
+    # only the survivor's observations were carried across.
+    a, b, c = (_verdict(metric=name, detector=name.upper()) for name in "abc")
+    left = materialize(
+        _comments(_report(a, night="2026-09-03"), _blame([a], [_candidate()]))[0], []
+    )
+    right = materialize(
+        _comments(_report(b, night="2026-09-04"), _blame([b], [_candidate()]))[0], []
+    )
+    merged = materialize(
+        _comments(_report(c, night="2026-09-05"), _blame([c], [_candidate()]))[0],
+        [left.body, right.body],
+    )
+
+    assert len(_table_rows(merged.body)) == 3
+    nights = [item.report_night for item in comment_mod._observations(merged.body)[0]]
+    assert nights == ["2026-09-05", "2026-09-04", "2026-09-03"]
+    line = _row(merged.body, "regression** in the")
+    for night in ("2026-09-05", "2026-09-04", "2026-09-03"):
+        assert f"[{night} report ↗](" in line
+    assert line.endswith("— the 3 most likely are shown above.")
+
+
+def test_the_survivor_wins_a_report_night_two_lineages_both_recorded():
+    # Two comments' aggregates for one night cannot be added — their regressions
+    # overlap by construction — so the lineage this comment continues is the one
+    # whose account of that night is kept.
+    a, b = _verdict(metric="a", detector="AAA"), _verdict(metric="b", detector="BBB")
+    survivor = materialize(
+        _comments(_report(a, night="2026-09-04"), _blame([a], [_candidate()]))[0], []
+    )
+    absorbed = materialize(
+        _comments(
+            _report(b, _verdict(metric="b2", detector="BBB"), night="2026-09-04"),
+            _blame([b], [_candidate()]),
+        )[0],
+        [],
+    )
+    c = _verdict(metric="c", detector="CCC")
+    merged = materialize(
+        _comments(_report(c, night="2026-09-05"), _blame([c], [_candidate()]))[0],
+        [survivor.body, absorbed.body],
+    )
+    recorded = {
+        item.report_night: item.regressions
+        for item in comment_mod._observations(merged.body)[0]
+    }
+    assert recorded == {"2026-09-05": 1, "2026-09-04": 1}
 
 
 def test_reconfirmed_identity_uses_its_newest_cumulative_attribution():

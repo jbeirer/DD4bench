@@ -930,6 +930,22 @@ def test_linked_nightly_report_loads_outside_the_trend_window():
     assert "Report night <strong>9 Jul 2026</strong>" in _srcdoc(at)
 
 
+def test_a_linked_report_still_opens_when_the_latest_one_fails_to_load():
+    # Report fetching is per night and independent: one failed night is simply
+    # absent. A PR comment's archived link must not break because an unrelated
+    # newer report could not be read.
+    without_latest = {n: r for n, r in REPORTS.items() if n != max(DATES)}
+    at = AppTest.from_function(
+        _app, args=(str(_DASHBOARD_DIR), DATES, without_latest, _WINDOW),
+        default_timeout=30,
+    )
+    at.query_params.update(view="Nightly Report", report="2026-07-09")
+    at.run()
+    assert not at.exception
+    assert any(max(DATES) in w.value for w in at.warning)
+    assert "Report night <strong>9 Jul 2026</strong>" in _srcdoc(at)
+
+
 def test_unavailable_linked_nightly_report_does_not_show_a_different_night():
     at = _deep_linked(view="Nightly Report", report="2026-07-01")
     assert at.error

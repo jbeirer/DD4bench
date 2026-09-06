@@ -580,14 +580,16 @@ def materialize(
     carries no sentinels, keeps its region and digest untouched — only the
     history slot is filled.
     """
-    previous_body = previous_bodies[0] if previous_bodies else ""
     comment = _with_cumulative(comment, previous_bodies)
-    # The merged observations are read before the table so the line under it can
-    # count each report in the lineage, and again by the history below it. One
-    # helper, so the two can never disagree about what a report contained.
-    observations, _ = _merged_observations(comment, previous_body)
+    # Read across *every* comparable body, not just the survivor: the table
+    # below draws retained rows from all of them (:func:`_merged_retained`), and
+    # a row whose report the line under it never names would make that line's
+    # claim false. Read before the table so the line can count each report, and
+    # again by the history below it — one helper, so the two can never disagree
+    # about what a report contained.
+    observations, _ = _merged_observations(comment, previous_bodies)
     comment = _with_details(comment, previous_bodies, observations=observations)
-    return _with_history(comment, previous_body)
+    return _with_history(comment, previous_bodies)
 
 
 def _with_cumulative(
@@ -879,7 +881,9 @@ def _cumulative_identities(body: str) -> set[tuple]:
     return set(_decoded_cumulative(body))
 
 
-def _with_history(comment: PRComment, previous_body: str = "") -> PRComment:
+def _with_history(
+    comment: PRComment, previous_bodies: Sequence[str] = ()
+) -> PRComment:
     """Fill *comment*'s history slot, carrying observations from *previous_body*.
 
     Observations are keyed by report night. Re-running a changed report for the
@@ -889,7 +893,7 @@ def _with_history(comment: PRComment, previous_body: str = "") -> PRComment:
     """
     if comment.observation is None or _HISTORY_PLACEHOLDER not in comment.body:
         return comment
-    ordered, omitted = _merged_observations(comment, previous_body)
+    ordered, omitted = _merged_observations(comment, previous_bodies)
     # A history of one repeats the window and counts the comment already
     # states above it, and has nothing to compare them against; it earns its
     # place from the second material update on. The hidden markers are still
@@ -907,21 +911,37 @@ def _with_history(comment: PRComment, previous_body: str = "") -> PRComment:
 
 
 def _merged_observations(
-    comment: PRComment, previous_body: str
+    comment: PRComment, previous_bodies: Sequence[str]
 ) -> tuple[list[CommentObservation], int]:
     """This comment's material versions, newest first, and how many aged out.
 
-    The survivor's observations carried forward and tonight's laid over them,
-    keyed by report night: re-running a changed report for the same night
+    Every comparable body's observations carried forward and tonight's laid over
+    them, keyed by report night: re-running a changed report for the same night
     replaces that night's entry, and a later material change appends one.
     Archive links are re-pointed on the way through, so observations recorded
     against an older link shape migrate on the next material edit.
+
+    Absorbed lineages are read too, because convergence hands their *rows* to
+    this comment (:func:`_merged_retained`) and a table drawing a row from a
+    report the history never recorded leaves both the history and the line under
+    the table describing a lineage this comment no longer has. They are read
+    **first** so the survivor overwrites them on a night both recorded: that is
+    the lineage this comment continues, and two comments' aggregates for one
+    night cannot be added — their regressions overlap by construction. An
+    absorbed observation keeps its own window, which is what makes the change
+    window column in the history worth a column at all.
     """
-    previous, omitted = _observations(previous_body)
-    previous = [replace(item, url=nightly_report_href(
-        comment.dashboard_url or item.url, item.report_night,
-    )) for item in previous]
-    observations = {item.report_night: item for item in previous}
+    observations: dict[str, CommentObservation] = {}
+    omitted = 0
+    for body in reversed(list(previous_bodies)):
+        recorded, aged_out = _observations(body)
+        # Not summed: each lineage counts what *it* aged out, and the merged
+        # history is not the concatenation of them.
+        omitted = max(omitted, aged_out)
+        for item in recorded:
+            observations[item.report_night] = replace(item, url=nightly_report_href(
+                comment.dashboard_url or item.url, item.report_night,
+            ))
     if comment.observation is not None:
         observations[comment.observation.report_night] = comment.observation
     ordered = sorted(
@@ -3617,28 +3637,50 @@ def _others_section(plan: CommentPlan, dashboard_url: str | None = None) -> str:
 
 
 def _package_diff_line(plan: CommentPlan, dashboard_url: str | None) -> str | None:
-    """One sentence pointing at the window's package diff.
+    """Where every candidate in this section came from: the window's package
+    diff, one link per build platform that contributed a row.
 
-    Where every candidate in this section came from: the Stack Changes view
-    lists each tracked package that moved between the two releases, with its own
-    compare link. The scope parameters only choose which regression ledger the
-    view draws underneath — the diff itself is the release pair — so the leading
-    row's scope is as good a landing place as any, and a reader re-scopes from
-    there."""
-    lead = plan.rows[0].verdict if plan.rows else None
-    if lead is None:
+    Per platform because provenance is: a plan is keyed by pull request and
+    window and never by platform, so its rows — and the candidates discovered
+    from them — can span several, while the release diff behind them is recorded
+    separately for each (:class:`CommentPlan`). Two platforms' diffs are two
+    measurements, and one link claiming to hold every candidate would be false
+    for any candidate only the other platform's diff turned up.
+
+    Within a platform the scope parameters only choose which regression ledger
+    the Stack Changes view draws underneath the diff, so the lowest row identity
+    is as good a landing place as any — picked by identity rather than by list
+    order so the sentence is byte-stable across runs."""
+    platforms = sorted({row.verdict.platform for row in plan.rows})
+    links = []
+    for platform in platforms:
+        lead = min(
+            (row.verdict for row in plan.rows if row.verdict.platform == platform),
+            key=_verdict_identity,
+        )
+        href = stack_changes_href(
+            dashboard_url,
+            detector=lead.detector,
+            platform=platform,
+            sample=lead.sample,
+            base_release=plan.base_release,
+            onset_release=plan.onset_release,
+        )
+        if not href:
+            continue
+        label = (
+            "package diff for this window" if len(platforms) == 1
+            else _cell(pretty_platform(platform))
+        )
+        links.append(f"[{label} ↗]({href})")
+    if not links:
         return None
-    href = stack_changes_href(
-        dashboard_url,
-        detector=lead.detector,
-        platform=lead.platform,
-        sample=lead.sample,
-        base_release=plan.base_release,
-        onset_release=plan.onset_release,
+    if len(links) == 1 and len(platforms) == 1:
+        return f"Every candidate here came from the {links[0]}."
+    return (
+        "Every candidate here came from this window's package diffs, one per "
+        f"platform: {', '.join(links)}."
     )
-    if not href:
-        return None
-    return f"Every candidate here came from the [package diff for this window ↗]({href})."
 
 
 def _pr_ref(candidate: CandidatePR) -> str:

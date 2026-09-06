@@ -425,6 +425,11 @@ package diff in one place, which is what "did my change do this?" actually needs
 Below the regression table is a collapsed **observation history**. The newest 20
 material versions record the report night, window, regression and scope counts,
 and UP/DOWN split; an omitted count preserves how many earlier versions aged out.
+When lineages converge, the absorbed comments' versions are carried across too,
+each keeping its own change window — the surviving lineage wins any report night
+both recorded, since two comments' counts for one night overlap and cannot be
+added. Without that, the table could draw a retained row from a report neither
+the history nor the line under it ever named.
 Report dates open that same full nightly report view; earlier observation links
 are migrated when the comment is next materially updated. A retained row's own
 metric link still opens the archived view for the night that row was last
@@ -432,9 +437,11 @@ confirmed, scoped to its recorded sample, stack and window. Below
 that sit the other candidates in the window with their likelihoods, in a
 disclosure whose summary carries the count and the strongest competing score
 without being opened (capped at five, the rest counted). The candidates are
-named but never linked, so that section closes with the one link they all came
+named but never linked, so that section closes with the link they all came
 from: the **package diff for this window**, the Stack Changes view listing every
-tracked package that moved between the two releases.
+tracked package that moved between the two releases — one link per build
+platform that contributed a row, because provenance is recorded per platform and
+two platforms' diffs are two measurements, not one.
 
 The table has a hard five-row cap — current and retained rows together — and
 anything past it is linked rather than pasted.
