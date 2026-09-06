@@ -1588,7 +1588,18 @@ def render(
     latest_night = max(dates)
     hist_nights = nights_in_window(dates, window)
     fetch_nights = tuple(dict.fromkeys([latest_night, *hist_nights]))
+    pinned_report = st.query_params.get("report")
+    pinned_mail = st.query_params.get("view") == "Nightly Report" and pinned_report
+    if pinned_mail:
+        if pinned_report not in dates:
+            st.error(f"The requested report ({pinned_report}) is not available.")
+            return
+        # A PR comment's archived report can lie outside the sidebar trend range.
+        fetch_nights = tuple(dict.fromkeys([*fetch_nights, pinned_report]))
     reports = _load_reports(data_url, fetch_nights)
+    if pinned_mail and pinned_report not in reports:
+        st.error(f"Could not load the requested report ({pinned_report}) from EOS.")
+        return
     if latest_night not in reports:
         st.warning(f"Could not load the latest report ({latest_night}) from EOS.")
         return

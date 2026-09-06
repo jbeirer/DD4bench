@@ -918,6 +918,25 @@ def test_view_deep_link_opens_the_email_view_directly():
     assert "Report night <strong>9 Jul 2026</strong>" in _srcdoc(at)
 
 
+def test_linked_nightly_report_loads_outside_the_trend_window():
+    at = AppTest.from_function(
+        _app, args=(str(_DASHBOARD_DIR), DATES, REPORTS,
+                    (date(2026, 7, 11), date(2026, 7, 11))), default_timeout=30,
+    )
+    at.query_params.update(view="Nightly Report", report="2026-07-09")
+    at.run()
+    assert not at.exception
+    assert at.selectbox(key="det_ov_email_night").value == "2026-07-09"
+    assert "Report night <strong>9 Jul 2026</strong>" in _srcdoc(at)
+
+
+def test_unavailable_linked_nightly_report_does_not_show_a_different_night():
+    at = _deep_linked(view="Nightly Report", report="2026-07-01")
+    assert at.error
+    assert "2026-07-01" in at.error[0].value
+    assert not at.selectbox
+
+
 def test_a_copied_url_restores_both_the_view_and_the_night():
     # The round trip a reader actually performs: open the tab, navigate to a
     # historical night, copy the URL out of the bar, paste it into a new

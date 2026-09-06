@@ -30,6 +30,20 @@ from k4bench.regression.models import (
 from k4bench.regression.render import _detector_badge, from_json, to_json
 
 
+def test_nightly_report_link_names_the_existing_view_without_single_scope_filters():
+    from urllib.parse import parse_qs, urlsplit
+    from k4bench.regression.render import nightly_report_href
+
+    href = nightly_report_href(
+        "https://dash.test/?tab=Regressions&detector=IDEA&sample=electron&stack=new",
+        "2026-09-03",
+    )
+    assert parse_qs(urlsplit(href).query) == {
+        "tab": ["Overview"], "view": ["Nightly Report"], "report": ["2026-09-03"],
+    }
+    assert nightly_report_href(None, "2026-09-03") is None
+
+
 def _verdict(**overrides) -> MetricVerdict:
     base = dict(
         detector="DET", platform="PLAT", sample="single_e", label="baseline",

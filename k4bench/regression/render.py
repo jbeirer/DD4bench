@@ -173,6 +173,18 @@ def window_href(
     return _dashboard_link(dashboard_url, tab="Regressions", **params)
 
 
+def nightly_report_href(dashboard_url: str | None, report_night: str) -> str | None:
+    """The existing Overview > Nightly Report view, across all scopes."""
+    if not dashboard_url or not report_night:
+        return None
+    split = urlsplit(dashboard_url)
+    # Scope/window parameters would imply filters the full nightly mail does
+    # not apply. Keep the destination explicit when migrating older links.
+    return urlunsplit(split._replace(query=urlencode({
+        "tab": "Overview", "view": "Nightly Report", "report": report_night,
+    })))
+
+
 def stack_changes_href(
     dashboard_url: str | None,
     *,
