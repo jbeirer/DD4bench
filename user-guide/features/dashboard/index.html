@@ -1,0 +1,4843 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Detector-agnostic performance benchmarking for DD4hep / Geant4 (ddsim) simulations in the Key4hep stack.">
+      
+      
+      
+        <link rel="canonical" href="https://key4hep.github.io/k4Bench/user-guide/features/dashboard/">
+      
+      
+        <link rel="prev" href="../analysis/">
+      
+      
+        <link rel="next" href="../pr-comments/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="https://raw.githubusercontent.com/key4hep/k4Bench/main/assets/k4bench-logo-light.svg">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Dashboard - k4Bench</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("../../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#dashboard" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow md-header--lifted" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../../.." title="k4Bench" class="md-header__button md-logo" aria-label="k4Bench" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 16a3 3 0 0 1-3-3c0-1.12.61-2.1 1.5-2.61l9.71-5.62-5.53 9.58c-.5.98-1.51 1.65-2.68 1.65m0-13c1.81 0 3.5.5 4.97 1.32l-2.1 1.21C14 5.19 13 5 12 5a8 8 0 0 0-8 8c0 2.21.89 4.21 2.34 5.65h.01c.39.39.39 1.02 0 1.41s-1.03.39-1.42.01A9.97 9.97 0 0 1 2 13 10 10 0 0 1 12 3m10 10c0 2.76-1.12 5.26-2.93 7.07-.39.38-1.02.38-1.41-.01a.996.996 0 0 1 0-1.41A7.95 7.95 0 0 0 20 13c0-1-.19-2-.54-2.9L20.67 8C21.5 9.5 22 11.18 22 13"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            k4Bench
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Dashboard
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m14.3 16-.7-2h-3.2l-.7 2H7.8L11 7h2l3.2 9zM20 8.69V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12zm-9.15 3.96h2.3L12 9z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="teal"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_2" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="teal"  aria-label="Switch to system preference"  type="radio" name="__palette" id="__palette_2">
+    
+      <label class="md-header__button md-icon" title="Switch to system preference" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+          <a href="javascript:void(0)" class="md-search__icon md-icon" title="Share" aria-label="Share" data-clipboard data-clipboard-text="" data-md-component="search-share" tabindex="-1">
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9a3 3 0 0 0-3 3 3 3 0 0 0 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.15c-.05.21-.08.43-.08.66 0 1.61 1.31 2.91 2.92 2.91s2.92-1.3 2.92-2.91A2.92 2.92 0 0 0 18 16.08"/></svg>
+          </a>
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/key4hep/k4Bench" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    key4hep/k4Bench
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+    
+      
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../../getting-started/installation/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Getting started
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    <li class="md-tabs__item md-tabs__item--active">
+      <a href="../../overview/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  User guide
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../../architecture/overview/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Architecture
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../../developer-guide/repository-layout/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Developer guide
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../../reference/configuration-reference/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Reference
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../../examples/common-workflows/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Examples
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../../faq/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  FAQ
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../../glossary/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Glossary
+
+      </a>
+    </li>
+  
+
+      
+    </ul>
+  </div>
+</nav>
+    
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../../.." title="k4Bench" class="md-nav__button md-logo" aria-label="k4Bench" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 16a3 3 0 0 1-3-3c0-1.12.61-2.1 1.5-2.61l9.71-5.62-5.53 9.58c-.5.98-1.51 1.65-2.68 1.65m0-13c1.81 0 3.5.5 4.97 1.32l-2.1 1.21C14 5.19 13 5 12 5a8 8 0 0 0-8 8c0 2.21.89 4.21 2.34 5.65h.01c.39.39.39 1.02 0 1.41s-1.03.39-1.42.01A9.97 9.97 0 0 1 2 13 10 10 0 0 1 12 3m10 10c0 2.76-1.12 5.26-2.93 7.07-.39.38-1.02.38-1.41-.01a.996.996 0 0 1 0-1.41A7.95 7.95 0 0 0 20 13c0-1-.19-2-.54-2.9L20.67 8C21.5 9.5 22 11.18 22 13"/></svg>
+
+    </a>
+    k4Bench
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/key4hep/k4Bench" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    key4hep/k4Bench
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../getting-started/installation/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting started
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_2" id="__nav_2_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../getting-started/quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quickstart
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../getting-started/first-workflow/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Your first workflow
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../overview/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User guide
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3" id="__nav_3_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    User guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../commands/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Commands
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_3" checked>
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../sweep-modes/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Features
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3_3" id="__nav_3_3_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Features
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../geometry-patching/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Geometry patching
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../timing-plugins/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Timing plugins
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../analysis/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Analysis
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Dashboard
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Dashboard
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#purpose" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Purpose
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#where-the-data-comes-from" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where the data comes from
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-tabs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The tabs
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="The tabs">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#display-options" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Display options
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#config-impact-tab" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Config Impact tab
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#region-timing-tab" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Region timing tab
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#trends-tab" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Trends tab
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#regressions-tab" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Regressions tab
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#stack-changes-tab" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stack Changes tab
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#overview-tab" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Overview tab
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#running-the-dashboard-locally" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Running the dashboard locally
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-downloads-are-cached" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How downloads are cached
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#deployment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Deployment
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pr-comments/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pull-request comments
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../architecture/overview/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_4" id="__nav_4_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../architecture/component-diagrams/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Component diagrams
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../architecture/data-flow/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Data flow
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../developer-guide/repository-layout/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Developer guide
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_5" id="__nav_5_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Developer guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../developer-guide/development-setup/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development setup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../reference/configuration-reference/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_6" id="__nav_6_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/file-formats/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    File formats
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_2" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../reference/api-reference/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_6_2" id="__nav_6_2_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_2_1" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../reference/api/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Modules
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_6_2_1" id="__nav_6_2_1_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="3" aria-labelledby="__nav_6_2_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_2_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Modules
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_2_1_2" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../reference/api/analysis/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    analysis
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_6_2_1_2" id="__nav_6_2_1_2_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="4" aria-labelledby="__nav_6_2_1_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_2_1_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    analysis
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/analysis/loader/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    loader
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_2_1_2_2" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../reference/api/analysis/plots/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    plots
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_6_2_1_2_2" id="__nav_6_2_1_2_2_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="5" aria-labelledby="__nav_6_2_1_2_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_2_1_2_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    plots
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/analysis/plots/event/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    event
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/analysis/plots/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/analysis/plots/region/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    region
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/analysis/trend/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    trend
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_2_1_3" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../reference/api/benchmark/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    benchmark
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_6_2_1_3" id="__nav_6_2_1_3_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="4" aria-labelledby="__nav_6_2_1_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_2_1_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    benchmark
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/benchmark/ddsim/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ddsim
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_2_1_4" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../reference/api/blame/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    blame
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_6_2_1_4" id="__nav_6_2_1_4_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="4" aria-labelledby="__nav_6_2_1_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_2_1_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    blame
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/blame/attribute/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    attribute
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/blame/builder/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    builder
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/blame/comment/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    comment
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/blame/evidence/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    evidence
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/blame/github/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    github
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/blame/history/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    history
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/blame/llm/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    llm
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/blame/models/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    models
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/blame/prompt/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    prompt
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/blame/publish/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    publish
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/blame/rank/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    rank
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/blame/reproduce/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    reproduce
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    cli
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_2_1_6" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../reference/api/geometry/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    geometry
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_6_2_1_6" id="__nav_6_2_1_6_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="4" aria-labelledby="__nav_6_2_1_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_2_1_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    geometry
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/geometry/errors/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    errors
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/geometry/index-module/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    index
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/geometry/patcher/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    patcher
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/geometry/references/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    references
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/geometry/scanner/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    scanner
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/labels/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    labels
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_2_1_8" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../reference/api/plugin/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    plugin
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_6_2_1_8" id="__nav_6_2_1_8_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="4" aria-labelledby="__nav_6_2_1_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_2_1_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    plugin
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/plugin/runtime/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    runtime
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_2_1_9" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../reference/api/provenance/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    provenance
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_6_2_1_9" id="__nav_6_2_1_9_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="4" aria-labelledby="__nav_6_2_1_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_2_1_9">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    provenance
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/provenance/diff/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    diff
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/provenance/stack/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    stack
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_2_1_10" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../reference/api/regression/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    regression
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_6_2_1_10" id="__nav_6_2_1_10_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="4" aria-labelledby="__nav_6_2_1_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_2_1_10">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    regression
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/regression/email/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    email
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/regression/engine/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    engine
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/regression/history/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    history
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/regression/lineage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    lineage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/regression/models/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    models
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/regression/notify/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    notify
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/regression/regions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    regions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/regression/render/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    render
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/regression/report_builder/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    report_builder
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/remote/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    remote
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_2_1_12" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../reference/api/results/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    results
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_6_2_1_12" id="__nav_6_2_1_12_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="4" aria-labelledby="__nav_6_2_1_12_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_2_1_12">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    results
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/results/model/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    model
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/results/reliability/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    reliability
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/results/reliability_evidence/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    reliability_evidence
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/results/reporter/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    reporter
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_2_1_13" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../reference/api/runner/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    runner
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_6_2_1_13" id="__nav_6_2_1_13_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="4" aria-labelledby="__nav_6_2_1_13_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_2_1_13">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    runner
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/runner/executor/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    executor
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/runner/parser/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    parser
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api/runner/steering/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    steering
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../examples/common-workflows/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Examples
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_7" id="__nav_7_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Examples
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../examples/advanced-workflows/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Advanced workflows
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../faq/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    FAQ
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../glossary/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Glossary
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#purpose" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Purpose
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#where-the-data-comes-from" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where the data comes from
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-tabs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The tabs
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="The tabs">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#display-options" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Display options
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#config-impact-tab" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Config Impact tab
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#region-timing-tab" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Region timing tab
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#trends-tab" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Trends tab
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#regressions-tab" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Regressions tab
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#stack-changes-tab" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stack Changes tab
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#overview-tab" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Overview tab
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#running-the-dashboard-locally" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Running the dashboard locally
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-downloads-are-cached" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How downloads are cached
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#deployment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Deployment
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="dashboard">Dashboard<a class="headerlink" href="#dashboard" title="Permanent link">&para;</a></h1>
+<p>The k4Bench dashboard is a <a href="https://streamlit.io/">Streamlit</a> app that browses
+benchmark history collected by the nightly CI. It's deployed at
+<strong><a href="https://k4bench-dashboard.app.cern.ch/">k4bench-dashboard.app.cern.ch</a></strong> and
+also runs locally against your own <code>logs/</code> directory.</p>
+<p>Its internals are documented under
+<a href="../../../architecture/data-flow/#nightly-eos-dashboard">Architecture → dashboard</a>;
+this page is the <em>user</em> guide.</p>
+<h2 id="purpose">Purpose<a class="headerlink" href="#purpose" title="Permanent link">&para;</a></h2>
+<p>Looking at one run tells you today's cost. The dashboard answers the questions
+that need <em>history</em> and <em>comparison</em>:</p>
+<ul>
+<li>How does each detector's cost compare in the latest run?</li>
+<li>Has a Key4hep release made simulation slower or hungrier?</li>
+<li>How does per-event time/memory drift across releases?</li>
+</ul>
+<h2 id="where-the-data-comes-from">Where the data comes from<a class="headerlink" href="#where-the-data-comes-from" title="Permanent link">&para;</a></h2>
+<p>Every night, CI runs a curated set of benchmarks (defined in
+<code>.github/benchmarks/*.yml</code>), uploads each result to CERN EOS, and the dashboard
+reads them over HTTPS from a WebEOS endpoint. The EOS layout is hierarchical:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>{detector}/{platform}/key4hep-{release}/{sample}/{YYYY-MM-DD}/
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    run_info.json  machine_info.json
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    {config}_results.csv  {config}_events.json  {config}_regions.json  {config}.log
+</span></code></pre></div>
+<p>The sidebar lets you drill down through that hierarchy: <strong>detector → platform →
+physics sample → Key4hep release</strong>. Single-run tabs use the newest uploaded
+run for that selection; the trend window controls the multi-run views.</p>
+<p>Each level is rebuilt from the one above it, so changing the detector can leave
+the selected platform or sample with no match — in which case it re-defaults to
+a valid one and says so right under the selector. That notice matters because
+the Overview tab is scoped by platform and sample <em>across all detectors</em>:
+without it, a sample that quietly moved would look like detectors vanishing
+from its charts.</p>
+<p>Not every tab honours the whole hierarchy, so a single muted line directly
+under the section bar names the slice the tab in front of you actually uses —
+for example <code>Showing CLD — AlmaLinux 9 · GCC 14.2.0 (optimized) — Single e⁻ ·
+10GeV — 2026-07-10</code>. Each level is written the way the tabs and the nightly
+mail write it, so a sample reads as its physics rather than as its EOS
+directory. Where a tab deliberately ignores a level it says so
+instead of quietly dropping it: Overview reads <strong>all detectors</strong>, Run Trends
+reads <strong>all releases in the trend window</strong>, and Stack Changes says its package
+diff is <strong>platform-wide</strong>, because a Key4hep release is the same stack whatever
+benchmarked it. The line also follows the controls inside a tab that change its
+scope: switching to a <strong>Historical Trends</strong> view replaces the release with <em>all
+releases in the trend window</em>, and switching on Stack Changes' <strong>Whole platform</strong>
+toggle replaces the detector and sample with <em>all detectors</em> and <em>all samples</em>.
+The line never repeats a date range, report night or run date — each tab prints
+its own, in its own words. In local mode there is no hierarchy to show, so it
+names the run directory instead.</p>
+<div class="admonition note">
+<p class="admonition-title">Example detectors</p>
+<p>A couple of detectors (currently: <code>SiD</code>) come from a simulation toolkit's
+own reference/tutorial geometry rather than a maintained FCC/Key4hep
+experiment design. Picking one of these shows a note in the sidebar
+linking back to its source, so it doesn't read as "just another
+experiment" (see <code>EXAMPLE_DETECTORS</code> in
+<a href="../../../architecture/data-flow/"><code>dashboard/ui_chrome.py</code></a>).</p>
+</div>
+<h2 id="the-tabs">The tabs<a class="headerlink" href="#the-tabs" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Tab</th>
+<th>What it shows</th>
+<th>Backed by</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Config Impact</strong></td>
+<td>baseline-relative configuration impact in the selected run</td>
+<td><code>*_results.csv</code></td>
+</tr>
+<tr>
+<td><strong>Event timing</strong></td>
+<td>per-event wall time distributions</td>
+<td><code>*_events.json</code></td>
+</tr>
+<tr>
+<td><strong>Event memory</strong></td>
+<td>per-event RSS and growth</td>
+<td><code>*_events.json</code></td>
+</tr>
+<tr>
+<td><strong>Region timing</strong></td>
+<td>per-subdetector stepping time, <code>at_location</code> vs <code>by_birth</code>, step counts, attribution analysis</td>
+<td><code>*_regions.json</code></td>
+</tr>
+<tr>
+<td><strong>Trends</strong></td>
+<td>metrics over time across releases</td>
+<td>many runs, windowed</td>
+</tr>
+<tr>
+<td><strong>Regressions</strong></td>
+<td>the nightly regression report for the selected detector/platform/sample</td>
+<td><code>_reports/{date}/report.json</code></td>
+</tr>
+<tr>
+<td><strong>Stack Changes</strong></td>
+<td>which Key4hep packages moved between two nightly releases</td>
+<td><code>run_info.json</code> (<code>k4h_packages</code>)</td>
+</tr>
+<tr>
+<td><strong>Overview</strong></td>
+<td>cross-detector comparison: performance trends, landscape, regression status &amp; the nightly mail</td>
+<td><code>_reports/{date}/report.json</code></td>
+</tr>
+<tr>
+<td><strong>Machine info</strong></td>
+<td>the host the benchmark ran on (CPU, RAM, governor, throttling)</td>
+<td><code>machine_info.json</code></td>
+</tr>
+<tr>
+<td><strong>Logs</strong></td>
+<td>the raw <code>ddsim</code> log for the selected run</td>
+<td><code>*.log</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="display-options">Display options<a class="headerlink" href="#display-options" title="Permanent link">&para;</a></h3>
+<p>Anything that changes <em>how</em> a figure is drawn — colour palette, opacity, style
+cycling, smoothing, histogram bins, error bars, mean lines, how many detectors
+a ranking keeps — lives in a <strong>👁️ Display options</strong> popover at the right-hand
+end of the view's control row. It looks and behaves the same in every view that
+has one (Event Timing, Event Memory, Region Timing's four views
+and Run Trends), and each popover ends with <strong>Reset to defaults</strong>, which
+restores every control inside it in one click.</p>
+<p>What stays on the page is everything that changes <em>what</em> you are looking at:
+baseline, configuration, attribution, metric, view, report night, the
+reliability scope and the regression flag pills. Overview's Log/Linear/Relative
+% scale stays out on the page for the same reason — it changes what the numbers
+mean, not how they are painted. Whenever unreliable runs are present, the
+shared <strong>Runs · ⚠ N unreliable</strong> selector occupies the right-hand end of that
+view's existing controls line (beside Display options where present); it never
+inserts a separate warning or controls row.</p>
+<p>Tabs with multiple views use the same lightweight selector: horizontal radio
+buttons under a bold <strong>View</strong> label. The segmented bar is reserved for the
+dashboard's top-level section navigation and for compact value choices such as
+Scale; it is not repeated as tab-local navigation.</p>
+<p>Palette defaults follow the data: a figure picks the smallest Matplotlib tab-N
+palette that colours every series without repeating a colour, and re-picks it
+when the number of series crosses a boundary. An explicit choice sticks until
+that happens.</p>
+<h3 id="config-impact-tab">Config Impact tab<a class="headerlink" href="#config-impact-tab" title="Permanent link">&para;</a></h3>
+<p>The four summary cards name the alternative configuration with the largest
+estimated impact on wall time, peak memory, user CPU and output size. Pick a
+metric to open its horizontal ranking: the selected baseline is the zero line,
+better-than-baseline changes extend right in blue, and worse changes extend left
+in orange. Positive has the same meaning for every metric — less
+time/memory/CPU/output, or more throughput. The default <strong>Full detector</strong>
+(<code>baseline</code>) comparison is the usual subdetector-removal study; the wording
+remains baseline-relative if you select another reference. Throughput remains
+available in the metric selector as the rate-oriented view of wall time. Hover a
+bar for rounded raw measurements and their absolute change. The compact ranking
+keeps the 12 largest absolute impacts, so it retains both major gains and major
+regressions. When more than 12 configurations are comparable, switch on <strong>All
+configs</strong> beside it to expand the chart.</p>
+<p>With the full-detector baseline, the removal impacts are ablation estimates
+rather than additive accounting. Removing material changes particle transport,
+so the individual percentages need not add up to the cost of the full detector.
+For a direct view of where simulation time is spent, <strong>Region Timing</strong> attributes
+per-subdetector Geant4 stepping time both to where tracks run and where they were
+created.</p>
+<h3 id="region-timing-tab">Region timing tab<a class="headerlink" href="#region-timing-tab" title="Permanent link">&para;</a></h3>
+<p>The richest tab. It mirrors the <a href="../timing-plugins/#per-region-timing">region plugin's</a>
+two attribution views (<code>at_location</code> and <code>by_birth</code>) and adds:</p>
+<ul>
+<li><strong>Current run</strong> — per-detector time for the selected run; <strong>Top N detectors</strong>
+  (in Display options) sets how many of the most expensive regions it ranks.</li>
+<li><strong>Attribution analysis</strong> — the gap between the two views (intrinsic vs
+  imported cost).</li>
+<li><strong>Step analysis</strong> — timer-interval counts per detector.</li>
+<li><strong>Historical</strong> — the same detector's time across runs.</li>
+</ul>
+<h3 id="trends-tab">Trends tab<a class="headerlink" href="#trends-tab" title="Permanent link">&para;</a></h3>
+<p>Plots a metric over time. The x-axis is anchored on the <strong>Key4hep release date</strong>
+(falling back to the run date), so you see regressions aligned with releases.
+A sidebar <strong>look-back window</strong> (<code>Last 7 days</code>, <code>14</code> — the default — <code>30</code>, <code>90</code>,
+<code>6 months</code>, <code>All</code>, or a custom range) controls how much history is downloaded
+and shown. A preset counts back from the <em>latest available</em> nightly, not today,
+so it always shows data even if the nightly hasn't run recently. That anchor is
+deliberately <strong>detector-independent</strong>: it is the newest nightly <em>report</em> night,
+which every detector shares, so the same preset covers the same dates whichever
+detector the sidebar has selected — including while a batch is still uploading
+and one detector's run is already newer than the last report. (The window's
+<em>end</em> does stretch to that run, so it stays visible in Run Trends; a window can
+therefore be a day or two longer than its label.) This matters most for the
+cross-detector Overview tab, which draws every detector over this one window: an
+anchor that followed the selected detector's last run would pull the window back
+whenever a lagging detector was picked, and detectors that had run more recently
+would silently vanish from its charts. If the selected detector has no runs in
+the window, the sidebar caption says so and names the night it last ran (see
+<a href="../../../reference/api/analysis/"><code>trend_window</code></a> — pure logic,
+unit-tested).</p>
+<p>Nights the nightly regression detector <strong>confirmed</strong> a step are ringed in red
+on the lines, and nights it flagged but hasn't confirmed are ringed as ⚠️ watch
+points — both on by default, each behind its own toggle. It's the same
+Confirmed/Watch toggle and marker language as the Overview tab, so a flag here
+means exactly what it means there. Flags appear on the metrics the engine judges
+(wall time, user CPU, peak RSS) plus throughput, which borrows the wall-time
+verdict since throughput is exactly <code>n_events / wall_time_s</code> (the same
+regression, inverted); CPU efficiency and context switches carry none. Runs that
+failed the host-reliability check are excluded by default with the same
+<strong>Runs · ⚠ N unreliable</strong> selector as every other historical view: <strong>Reliable
+only</strong> (the default) or <strong>All runs</strong>. Palette, style cycling, opacity
+and line smoothing sit in this tab's <a href="#display-options">Display options</a>
+popover, alongside the pills on the same row.</p>
+<div class="admonition tip">
+<p class="admonition-title">Warmup is excluded</p>
+<p>Trend and summary statistics drop event 0 (warmup), matching the
+<a href="../analysis/#warmup-events">analysis convention</a>.</p>
+</div>
+<h3 id="regressions-tab">Regressions tab<a class="headerlink" href="#regressions-tab" title="Permanent link">&para;</a></h3>
+<p>Where the Trends tab lets you <em>look for</em> regressions, this tab shows what the
+nightly detector <em>found</em> — for the sidebar-selected detector, platform and
+sample, the same scoping as every trend view (the cross-detector picture lives
+in the <a href="#overview-tab">Overview tab</a>). Every night, CI (the <code>regression-report</code>
+job in <code>nightly.yml</code>) walks the full EOS history and judges every
+<code>(detector, platform, sample, config, metric)</code> series with a conservative
+step-change detector (<code>k4bench/regression/</code>):</p>
+<ul>
+<li><strong>Baseline.</strong> Each night is compared against the median and spread (scaled
+  MAD, not mean/stddev, so one bad night can't skew it) of the trailing <strong>14
+  reliable</strong> runs before it. Nights flagged by the
+  <a href="#the-tabs">machine-info reliability check</a> are excluded outright and never
+  judged themselves. With fewer than <strong>7</strong> reliable runs to compare against, the
+  metric is left <em>unknown</em> rather than flagged.</li>
+<li><strong>What trips a flag.</strong> The value has to clear <em>two</em> gates at once: a robust
+  <strong>z-score above 3.5</strong> (a statistical outlier) <strong>and</strong> a <strong>practical-effect
+  floor</strong> — at least 5 % for time and memory, 3 percentage points for CPU
+  efficiency, and a wider floor for the noisier region metrics. Requiring both
+  keeps a very steady metric (tiny MAD) from flagging on a change too small to
+  care about.</li>
+<li><strong>The workload is pinned and recorded.</strong> Timing measures software only if both
+  nights simulated the same events, so the benchmarks fix the ddsim seed and
+  each run records the seed it used in <code>run_info.json</code>. Without one, ddsim draws
+  a fresh seed per run and every night re-rolls the shower physics. A change of
+  the recorded seed — the migration to a pinned seed, a later change of the
+  value — does <strong>not</strong> interrupt judging: the history stays one continuous
+  series, and a level the new sample lands on is confirmed or not by the same
+  two-strike rule and release-median gate as everything else, with a bounded
+  onset window an attribution can be hung on. What the change gets is a
+  <strong>note on the report</strong>, naming the old and new seed, so a group-wide move is
+  not mistaken for a code change.</li>
+<li><strong>Every configuration reports what it measured.</strong> When a whole run group
+  moves together — a host or stack effect rather than a detector one — each
+  config's row states the move it recorded, so the number in the report is the
+  number in the run data and nothing has to be reconstructed to check it. The
+  repetition is real: a group-wide move genuinely did happen to every config,
+  and reading it once per config is the price of every row being reproducible.</li>
+<li><strong>Trimmed alongside total.</strong> Timing is judged on the mean, the median <em>and</em> an
+  <strong>upper-trimmed mean</strong> that drops the slowest 5 % of events — one-sided, so
+  only the slow tail goes. It reports the typical event; the untrimmed totals
+  stay judged because the tail is exactly where a tail-confined regression would
+  appear.</li>
+<li><strong>One measurement, one test.</strong> <code>user_cpu_s</code> tracks <code>wall_time_s</code> closely
+  enough that judging both would count the same event twice, so it is recorded
+  and plottable but never flagged.</li>
+<li><strong>Watch, then regression.</strong> The first night to clear both gates is a
+  <strong>⚠️ Watch</strong>. It only becomes a confirmed <strong>🔴 Regression</strong> once the <em>next</em>
+  reliable night moves the same way again — a two-strike rule that is the main
+  defence against false alarms. The confirming night may re-benchmark the same
+  release as the watch night: a second run of the same binary tripping the same
+  way is exactly the independent evidence the rule wants.</li>
+<li><strong>Releases, not nights.</strong> The unit of change is the <strong>Key4hep release</strong>;
+  nights that re-benchmark one release are repeat measurements of the same
+  binary. Every night of a release is judged against the same frozen baseline,
+  and once a step is confirmed for a release, every later night of that release
+  that trips the same way is confirmed too, carrying the same onset window — so
+  all of a release's reports agree on its regressions, modulo each night's own
+  measured value. A repeat confirmation is labelled as such in the report and
+  email ("repeat — first confirmed {night}"), so consecutive alerts read as
+  "still present", not fresh news.</li>
+<li><strong>Confirmations follow the balance of evidence.</strong> A single quiet night inside
+  a confirmed release cannot outvote the two nights that confirmed — it is
+  reported OK with a note that the release's median still sits beyond the
+  baseline ("tonight's value looks like noise"). But when quiet nights drag the
+  <strong>median of the release's nights</strong> back inside the gates, the confirmation is
+  revoked ("confirmation revised") — the confirming nights were more likely
+  noise — and the baseline is never re-anchored onto a fluke level.</li>
+<li><strong>Re-anchoring.</strong> A confirmed regression that still stands at the next
+  <em>release boundary</em> is treated as a <strong>change-point</strong>: the baseline resets to
+  the new level when the next release arrives, so a deliberate step (say, a
+  physics change) is flagged
+  on the release that introduced it — on every night that measured that
+  release — and falls quiet from the next release on, instead of alerting every
+  night until the window rolls over. A second change right afterwards is still
+  caught.</li>
+<li><strong>Inherited baselines across a platform migration.</strong> A platform is a separate
+  series, so a new one would have no baseline for its first week. While that
+  young it borrows the tail of its <strong>predecessor</strong> platform's history as
+  baseline points only — never judged, never its own verdicts, and never dated
+  after the night they help judge, so two platforms may run in parallel without
+  either seeing the other's future. Each of the new platform's own nights
+  evicts one borrowed point until none are left. A shift caused by the
+  migration is therefore reported as one ordinary step, watch then regression,
+  and the report notes which platform the baseline came from. A platform can
+  separately be marked <strong>retired</strong> from a given date, after which its absence
+  is silence rather than a <em>no run uploaded</em> failure, and it sorts to the end
+  of the sidebar's platform list so a fresh visit lands on one still running.</li>
+<li><strong>Direction</strong> (faster/slower, more/less memory) is shown but not treated as
+  good or bad — a regression is simply any confirmed step beyond the baseline in
+  either direction.</li>
+<li><strong>Failures.</strong> A config exiting non-zero, or a whole run missing, is a
+  <strong>❌ Failure</strong> and skips the confirmation step (it alerts immediately).</li>
+<li><strong>Region timing</strong> (sub-detector) is <em>not</em> flagged — it is the noisiest series
+  in the system, dominated by timer-granularity wobble at microsecond scale, so
+  the regression report judges only top-level run and per-event metrics.</li>
+</ul>
+<p>A report is written per <em>run</em>, so several nights routinely re-benchmark one
+fixed release. Their reports mostly agree — every night of a release is judged
+against the same baseline — but can still differ: the first strike is only a
+watch, a marginal night can come out OK, and reports built before the
+release-grouped engine confirmed on a single night. The sidebar's <strong>release</strong>
+selects which of that release's report nights are on offer; the tab defaults to
+the most <strong>attention-worthy</strong> one (a confirmed regression or failure outranks a
+watch outranks a quiet night, newest breaking ties), so the most alarming night
+is never hidden behind a quieter one. A <strong>Report night</strong> pill always appears
+above the report — one option carrying that night's glance badge
+(❌ / 🔴 / ⚠️ / ✅) even when the release was only benchmarked once, and one pill
+per night to step through the rest when it was benchmarked several times. The
+newest release (the sidebar default) still surfaces the latest report even
+when it is newer than the release's last run, so a "no run uploaded" failure
+stays visible. The banner, flagged metrics, and trend preview follow the
+selected night's historical evidence. Package and pull-request attribution is
+instead <strong>release-level</strong>: it is fixed from the first report night that
+confirmed a change window for the release and reused on every rerun, because
+no upstream package changes between repeat measurements of the same binary.</p>
+<p>A benchmark job is dated when it <em>starts</em>, so a nightly batch beginning near
+midnight splits across two dates and some detectors are stamped a day behind
+the report night. Those are still tonight's measurements and are reported as
+such, with a note saying so — they are recognised by the CI run they came from,
+which every detector of one nightly shares, so a detector whose job crashed and
+uploaded nothing is still reported as a <strong>missing run</strong> rather than passing as
+a straddling batch — once the report night names a CI run, only a detector
+naming that same run is kept, whatever the gap between the two dates. Nights
+recorded before that CI run existed fall back to accepting a single night's
+lag, and their note says that is what happened. The Overview's charts follow
+each run by the date it actually ran, so a straddling job is still covered by
+the unreliable-run selector — it is one of tonight's runs, and the
+date it is stamped with should not decide whether the filter can see it.</p>
+<p>A <code>?report=YYYY-MM-DD</code> query parameter pins one report night directly and is
+authoritative when valid — this is the stable deep link the nightly email and
+the Overview roster generate, so a link to a confirmed regression keeps
+pointing at the exact report the email described. (The Run Trends
+<code>range=</code> window is unrelated and does not select a regression report.)</p>
+<p>The selected run group renders flat: an at-a-glance banner (regressed / watch
+/ failures / within-baseline counts) and a <strong>trend preview</strong> that plots a
+flagged metric's recent history with the baseline band it was judged against
+(the flagged night marked 🔴, the night it was first watched marked ⚠️), a few
+releases further out when the release has since moved on. The window contains
+up to <strong>14 distinct Key4hep releases</strong> through the flagged release plus up to
+<strong>7 later releases</strong> when available; repeat measurements of one release stay
+visible without consuming another release slot. Its dropdown lists every
+flagged metric worst first, each option carrying its own severity badge and
+Δ-vs-baseline — so scanning the list alone shows the size of every flag,
+without a separate ledger table. The preview opens on the most severe flag
+automatically; switch it to any other flagged metric, or to "—" to hide it.
+Confirmed regressions and failures — and only those — are also emailed to the
+team's e-group by the same CI job, with per-group links landing directly on
+this scoped view, pinned (via <code>stack=</code> and <code>report=</code>) to the exact report
+night they describe.</p>
+<p>For a confirmed regression the drill-down also shades the <strong>release window the
+step entered in</strong>. Because confirmation is a two-strike rule, the reported night
+is one reliable night <em>after</em> the step appeared, so the cause is upstream of the
+⚠️ onset, not at the 🔴 report — the amber band spans from the last release seen
+at the accepted level up to the onset release. The <strong>upstream-changes card</strong>
+below the preview (see below) is where to follow that window into the Stack
+Changes tab. When both ends of the window are the <em>same</em> release the band
+gives way to a "nothing upstream changed" note on that card: the stack did not
+move across the step, so the cause is the host, the sample, or noise rather
+than an upstream commit.</p>
+<p>Below the drill-down, the release gets an <strong>upstream-changes card</strong> naming the
+packages that moved in the blame window established by its first confirmed
+report, each linking to its commit range, plus an <strong>Open in Stack Changes →</strong>
+link that seeds that tab with the exact release range. That same card is shown
+on every report-night view of a re-benchmarked release: a later run may provide
+the second strike for another metric, but it cannot create a new package-change
+story for unchanged software. When the canonical report contains several
+distinct windows, each retains its own card. When the blame
+<a href="../../../reference/file-formats/#blame-sidecar-blamejson">sidecar</a>
+carries a <strong>ranking</strong>, the card also lists <strong>suggested candidate pull requests</strong>:
+each PR in the window with a 0–100% <strong>Likelihood</strong> it is the cause and a one-line
+<em>Why</em>. The ranking is produced offline by a <strong>language model</strong> that read the
+metric that moved and each PR's actual code diff (configured in CI via
+<code>K4BENCH_LLM_*</code>; see the <a href="../../../reference/file-formats/#blame-sidecar-blamejson">sidecar format</a>) —
+the dashboard only displays the stored result. Several PRs can land in one
+package's range, so each is scored on its own. All ranked leads are shown in
+one sortable table.
+The group is judged once
+per detector/platform/sample/window: when several metrics (or several
+benchmark-config labels, e.g. a removal sweep's <code>baseline</code> and
+<code>no_&lt;detector&gt;</code> runs) stepped across the same release boundary in the
+same run group, they share one diff and one candidate set, so the card shows a
+single verdict rather than a table per metric. A different detector or sample
+sharing the same release dates never shares a verdict. This is a ranked
+<strong>lead for a human, not a verdict</strong> — a suggestion, not proof of cause, in
+keeping with the
+detector's <em>no evidence ⇒ no verdict</em> rule; the nightly email surfaces the same
+top candidates under each regression. Most nights carry no <code>blame.json</code> at all,
+and a night whose candidates are not yet ranked says that no AI ranking is
+stored rather than leaving an ambiguous blank below the package diff.</p>
+<h3 id="stack-changes-tab">Stack Changes tab<a class="headerlink" href="#stack-changes-tab" title="Permanent link">&para;</a></h3>
+<p>Answers "what came in last night?" — and, when a metric has stepped, "what
+upstream change could that be?". Pick two nightly tags and it lists the Key4hep
+packages whose commit differs between them, each linking to the range on GitHub.
+When you open the tab, <strong>To release</strong> defaults to the stack selected in the
+sidebar and <strong>From release</strong> to the release immediately before it, when one is
+available. A compact line below the range reports how many tracked packages
+changed and remained unchanged without turning those counts into a second
+dashboard banner.</p>
+<p>The package diff is cross-detector: a Key4hep release is one stack, sourced
+identically by every detector benchmarked against it, so only the platform
+scopes it.</p>
+<p>Below the diff, <strong>Regressions in this range</strong> lists the confirmed metrics whose
+onset falls inside the selected release interval. It is scoped to the sidebar's
+detector and sample. A <strong>Whole platform (+N metrics)</strong> toggle appears only when
+widening would reveal confirmed metrics in other detector/sample scopes; a
+package change can affect any detector that sources it.</p>
+<p>The worst metric opens in a compact selector rather than a ledger. Every option
+shows its severity, metric (including its region), config, Δ-vs-baseline and
+exact <strong>blame window</strong>; in the all-detectors view it also names the detector and
+sample. If distinct steps otherwise have the same label, their onset run is
+shown too. The selected item
+uses the same trend component as the Regressions tab: up to <strong>14 releases</strong> of
+history and <strong>7 later releases</strong>, the accepted-baseline band, first-watch and
+confirmation markers, unreliable-run filtering, and the shaded blame window.
+This makes a multi-release cumulative diff safe to inspect without implying
+that every package above belongs to every metric below. When that selected
+metric's blame window is narrower than the package comparison, <strong>Focus package
+diff on …</strong> resets From/To to the exact interval in one click.
+If package provenance is unavailable, or the selected endpoint stacks are
+identical, the section says so instead of describing the metric changes as
+effects of a package diff that was not observed. For a cumulative range with
+identical endpoints it also warns that an intermediate release may still have
+moved.</p>
+<p>When the selected regression has a ranked blame sidecar, its <strong>AI-generated PR
+ranking</strong> appears directly below the trend. The same complete ledger and
+"suggestion, not proof" framing are reused from the Regressions tab;
+Stack Changes does not recompute or reinterpret the model output. When no
+ranking was stored, the tab says so explicitly instead of leaving an ambiguous
+blank.</p>
+<p>The selected regression is part of the URL (<code>reg_*</code> parameters), including its
+detector/sample identity, config, metric, region, exact onset run and whether
+<strong>Whole platform</strong> is enabled. Sharing, reopening, or navigating back to the URL
+therefore restores the exact investigation rather than the range's default
+metric. An explicitly linked metric remains selectable even when it falls below
+the normal worst-30 display cap. Historical report JSONs
+for a cold range are fetched as one parallel batch; the selected trend still
+downloads run data only when it is shown.</p>
+<p><strong>It compares releases, not run dates.</strong> The nightly build does not publish
+every day; a benchmark then re-uses the newest release available, so several
+consecutive run dates routinely share one identical stack — most run dates on
+EOS are not release dates at all, and only dates that have a release are
+selectable.</p>
+<p>Picking two releases that are far apart gives the <strong>cumulative</strong> change across
+every release in between, which the header states explicitly — a month-wide diff
+looks no different from one night's in the table.</p>
+<p>An empty diff is a result, not a blank: if two releases sit at the same commit
+for every tracked package, nothing upstream changed between them, so a metric
+that moved did so for another reason — the host, the sample, or noise.</p>
+<p>The data comes from <code>k4h_packages</code> in each run's <code>run_info.json</code>, recorded from
+CVMFS as the benchmark runs (see
+<a href="../../../reference/file-formats/#stack-provenance-k4h_packages">file formats</a>).
+Releases benchmarked before provenance capture — or whose stack had already aged
+off CVMFS when the history was backfilled — cannot be compared, and the tab says
+so rather than showing an empty diff.</p>
+<h3 id="overview-tab">Overview tab<a class="headerlink" href="#overview-tab" title="Permanent link">&para;</a></h3>
+<p>Where every other metric tab compares configs <em>within</em> the selected detector,
+this one compares the detectors <em>against each other</em> — always on their
+<strong>baseline</strong> config, for the sidebar-selected platform and sample, over the
+sidebar's trend window (the same scoping as Run Trends, minus the detector —
+and the window is anchored detector-independently, so switching the sidebar
+detector never changes which detectors this tab shows).
+It reads the same nightly <code>_reports/{date}/report.json</code> as the Regressions
+tab — whose verdicts carry the raw nightly value of every run and per-event
+metric for all detectors — so the whole comparison loads from one small JSON
+per night, with no per-detector run downloads.</p>
+<p>Four views, dispatched by the same View switcher as the other multi-view tabs
+(one colour per detector, consistent across the figures). The selected view
+rides in the URL as <code>?view=</code>, so a copied link reopens the view it came from
+along with the parameters only that view reads:</p>
+<p>Like every tab-local view selector in the dashboard, the Overview switcher uses
+simple horizontal radio buttons under a bold <strong>View</strong> label. It is visually
+separate from a single bordered comparison toolbar. <strong>Time</strong>, <strong>Memory</strong> and
+<strong>Scale</strong> form its left-hand group; <strong>Regressions</strong> and the explicit
+<strong>Runs · ⚠ N unreliable</strong> choice form its right-hand group on the same row.
+When unreliable runs are present, that choice offers:
+<strong>Reliable only</strong> (the default) or <strong>All runs</strong>; affected dates and the Machine
+Info pointer live in the control's help instead of a separate banner. The rows
+wrap naturally on narrow screens, with no CSS override. Each detector family
+has its own vertical legend below the figure: the family is the heading and its
+versions sit directly beneath it, while every version remains individually
+toggleable. Legend columns are centre-anchored and move into additional rows
+when there are many families or unusually long labels, keeping the plot usable
+at narrower dashboard widths.</p>
+<ul>
+<li><strong>Performance Trends</strong> — the two selected metrics side by side (CPU,
+  Memory), one line per detector across every nightly tag in the sidebar's
+  trend window (x-axis: the Key4hep nightly tag, like every other trend
+  view; a nightly benchmarked twice collapses to one point, newest run wins),
+  so cross-detector gaps can be tracked over time. Nights the
+  regression detector <strong>confirmed</strong> a step are ringed in red on the lines, and
+  nights it flagged but hasn't confirmed are ringed as ⚠️ watch points — both
+  on by default, each behind its own toggle. The <strong>Scale</strong> switcher's
+  <em>Relative %</em> option rescales each line to its first night = 100 %, making
+  drift comparable across detectors of very different absolute cost; it sits on
+  the page rather than in Display options because it changes what the numbers
+  mean. Any scoped detector the
+  chart has <strong>no line for</strong> is named with the reason — every run excluded as
+  unreliable · no value for the selected metrics · ran but produced no
+  comparable metrics (a hard-failed config) · no run in the window, with the
+  night it last ran · not benchmarked with this sample/platform — so a missing
+  detector doesn't read as a quiet one. The roster comes from the nightly
+  reports' run <em>groups</em>, not from their metric values, which is what lets a
+  detector whose config failed outright be named at all. It is stated whether or
+  not there is a chart, since a window with nothing to draw is when it matters
+  most. One gap remains: a detector retired past the engine's seven-day
+  missing-run grace period is dropped from the reports entirely and cannot be
+  named — widen the window to a range it still ran in to see it;</li>
+<li><strong>Performance Landscape</strong> — the selected time metric against the selected
+  memory metric, one point per detector at its <strong>most recent run</strong> — closer to
+  the origin is faster <em>and</em> leaner. It follows the runs rather than the
+  reports, so it is unaffected by the Regression Status night on screen, and a
+  detector that missed the newest night keeps its last measured point (the
+  caption and the hover name its nightly tag) instead of dropping off the
+  chart; the same fallback applies to a run excluded by the reliability
+  toggle; a detector that ran but produced no usable point — a hard-failed
+  config, or one whose every run the toggle dropped — is named in the caption
+  rather than left out. That last run is found even when it falls outside the trend window
+  — a detector that has been missing for a few nights is shown at the night it
+  really last ran, not at wherever the window happens to end. Both coordinates
+  always come from one run, reruns of a nightly tag included. The metric selectors
+  offer mean/median event time, wall time or user CPU for time; mean event RSS
+  or peak RSS for memory (shown in GB), are shared with the trends view, and
+  the selection is shareable via <code>?tmetric=</code>/<code>?mmetric=</code>;</li>
+<li><strong>Regression Status</strong> — since the Regressions tab is scoped to one
+  detector, the <strong>cross-detector regression picture lives here</strong>: a <strong>report
+  night picker</strong> (every fetched night that covers the scope, newest first,
+  each badged with its worst cross-detector state; defaults to the newest,
+  pinnable via <code>?report=</code> — the same parameter the roster links and alert
+  emails carry, and the trend window sets how far back it reaches; changing
+  the sidebar platform or sample returns it to the newest night, since two
+  scopes rarely flag their regression on the same one), a
+  banner with that night's verdict counts across all scoped detectors
+  (checked / 🔴 regressed / ⚠️ watch / ❌ failures), a per-detector status
+  roster (badge, flag counts, worst flagged metric, and a link that opens the
+  Regressions tab scoped to that detector and pinned to the selected night),
+  and a <strong>flagged-metric trend</strong> that opens on the night's worst flag — the
+  metric's history over the trend window (plus the selected night itself when
+  it lies outside) with the baseline band its verdict was judged against and,
+  for a confirmed step, the shaded blame window, all built from the cached
+  reports with no run downloads. The view renders even
+  on a night whose configs all hard-failed (when there are no values to plot),
+  so a failure is never hidden behind an empty chart;</li>
+<li><strong>Nightly Report</strong> — one night's regression report in the form the Key4hep
+  e-group received it. Nothing is archived for it: the mail body is <em>rebuilt</em>
+  from the already-fetched report (plus that night's blame sidecar) by the same
+  renderer the nightly mail uses, so it is a reconstruction rather than a stored
+  copy — an old night is redrawn by today's renderer, and the mail's <em>CI run</em>
+  button is absent because that workflow-run URL is not stored in the report.
+  Its night picker reaches as far back as the trend window and is deep-linkable
+  via <code>?report=</code>, the same parameter the Regressions tab and the alert emails
+  already speak. Unlike every other view it is <strong>not</strong> scoped to the sidebar's
+  platform/sample — the mail covers every detector, platform and sample the
+  night benchmarked — which is why it stays reachable even when the selected
+  scope has no data. Links open in a new tab.</li>
+</ul>
+<p>Colours follow the detector <em>family</em> (ALLEGRO, CLD, …), with versions of one
+family distinguished by dash pattern and marker symbol, so experiment-level
+comparisons read at a glance. Runs that failed the host-reliability check are
+excluded by default with the same <strong>Reliable only / All runs</strong> selector as every historical
+view (the nightly report carries each night's per-detector verdict); their raw
+values are still recorded — as unjudged points, never flagged — so choosing
+<strong>All runs</strong> plots them like Run Trends does. One selector covers all three views,
+the Regression Status trend preview included, and it reaches
+every report in view — including nights outside the trend window, which the
+landscape and the night picker both read, and any the landscape reaches back to
+for a detector that has not run in a while. Exclusion drops the <em>run</em>,
+not the nightly tag: a tag benchmarked twice keeps the point measured by
+whichever rerun passed, and a 🔴/⚠️ marker leaves the chart with the run that
+earned it rather than ringing on a rerun that was never flagged.</p>
+<p>A point on these charts is a Key4hep nightly <strong>tag</strong>, not a run — the unit the
+regression engine judges on — so where a tag was benchmarked more than once it
+carries the <em>newest</em> run's value and the <em>worst</em> verdict among its runs. A
+release that regressed is therefore still marked even when a later rerun of the
+same stack came out quiet. The per-run view is the Regressions tab's drill-down,
+where every run gets its own point and a flag sits only on the run that earned
+it; if that run was excluded or falls outside the window, the drill-down hides
+the marker and says why rather than moving it.</p>
+<p>The landscape is the one chart that is a <em>run</em>, not a tag: its point comes from
+a single run of the detector's newest tag, so the two coordinates are always the
+same measurement even when a rerun re-measured only one of them. Value
+axes are logarithmic by default (the <strong>Scale</strong> switcher offers Linear as well)
+— the detectors span more than a decade in both time and memory, so a linear
+scale squashes the small ones into an unreadable cluster.</p>
+<p>Detectors are only compared like-for-like: anything not benchmarked with the
+selected sample/platform is listed as excluded instead of silently plotted
+against a different workload. The values shown are the raw nightly
+measurements the regression engine judged — baselines and Δ-verdicts stay in
+the Regressions tab.</p>
+<h2 id="running-the-dashboard-locally">Running the dashboard locally<a class="headerlink" href="#running-the-dashboard-locally" title="Permanent link">&para;</a></h2>
+<p>You can point the dashboard at either a local directory or the remote WebEOS
+endpoint, via environment variables read by
+<a href="../../../architecture/data-flow/"><code>dashboard/config.py</code></a>:</p>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>K4BENCH_DATA_DIR</code></td>
+<td><code>logs</code></td>
+<td>local directory to read runs from</td>
+</tr>
+<tr>
+<td><code>K4BENCH_DATA_URL</code></td>
+<td><em>(unset)</em></td>
+<td>WebEOS base URL; when set, overrides local reads</td>
+</tr>
+<tr>
+<td><code>K4BENCH_CACHE_DIR</code></td>
+<td><code>$TMPDIR/k4bench_cache</code></td>
+<td>on-disk cache for downloaded runs</td>
+</tr>
+<tr>
+<td><code>K4BENCH_DASHBOARD_URL</code></td>
+<td><code>https://k4bench-dashboard.app.cern.ch</code></td>
+<td>this deployment's own public URL; the Overview tab's <strong>Nightly Report</strong> view needs it because the embedded mail's deep links must be absolute</td>
+</tr>
+</tbody>
+</table>
+<div class="tabbed-set tabbed-alternate" data-tabs="1:2"><input checked="checked" id="__tabbed_1_1" name="__tabbed_1" type="radio" /><input id="__tabbed_1_2" name="__tabbed_1" type="radio" /><div class="tabbed-labels"><label for="__tabbed_1_1">Against your own runs</label><label for="__tabbed_1_2">Against the hosted data</label></div>
+<div class="tabbed-content">
+<div class="tabbed-block">
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>pip<span class="w"> </span>install<span class="w"> </span>-r<span class="w"> </span>dashboard/requirements.txt
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="nb">cd</span><span class="w"> </span>dashboard
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="nv">K4BENCH_DATA_DIR</span><span class="o">=</span>../logs/ALLEGRO_o1_v03<span class="w"> </span>streamlit<span class="w"> </span>run<span class="w"> </span>app.py
+</span></code></pre></div>
+</div>
+<div class="tabbed-block">
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nb">cd</span><span class="w"> </span>dashboard
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="nv">K4BENCH_DATA_URL</span><span class="o">=</span>https://k4bench-data.web.cern.ch<span class="w"> </span>streamlit<span class="w"> </span>run<span class="w"> </span>app.py
+</span></code></pre></div>
+</div>
+</div>
+</div>
+<p>The dashboard imports <code>k4bench.analysis</code> for its loaders, so a working k4bench
+install is required.</p>
+<h2 id="how-downloads-are-cached">How downloads are cached<a class="headerlink" href="#how-downloads-are-cached" title="Permanent link">&para;</a></h2>
+<p>Historical runs are <strong>immutable</strong>, so the dashboard downloads each run at most
+once into <code>K4BENCH_CACHE_DIR</code> and reuses it across reruns. Downloads are staged
+in a temp dir and published with a single atomic <code>rename</code>, so a reader never
+sees a half-written run and an interrupted download leaves no partial run
+behind. Filenames from the directory listing are validated (decoded, then
+rejected if they aren't a single plain path component) to prevent path-traversal.
+Details: <a href="../../../architecture/data-flow/">Architecture → data flow</a>.</p>
+<h2 id="deployment">Deployment<a class="headerlink" href="#deployment" title="Permanent link">&para;</a></h2>
+<p>The dashboard is containerised (<code>dashboard/Dockerfile</code>), pushed to <code>ghcr.io</code>,
+and deployed to CERN's OpenShift PaaS via <code>openshift/</code> manifests
+(Deployment/Service/Route) by the <code>deploy-dashboard.yml</code> workflow. The full
+deployment path is in
+<a href="../../../architecture/data-flow/#deployment">Architecture → data flow</a>.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../analysis/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Analysis">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Analysis
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../pr-comments/" class="md-footer__link md-footer__link--next" aria-label="Next: Pull-request comments">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Pull-request comments
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      Copyright &copy; CERN / Key4hep — k4Bench contributors
+    </div>
+  
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/key4hep/k4Bench" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+    
+    
+    
+    
+    <a href="https://k4bench-dashboard.app.cern.ch/" target="_blank" rel="noopener" title="Live dashboard" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 3v6h8V3m-8 18h8V11h-8M3 21h8v-6H3m0-2h8V3H3z"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../../..", "features": ["navigation.tabs", "navigation.tabs.sticky", "navigation.sections", "navigation.indexes", "navigation.top", "navigation.footer", "navigation.tracking", "toc.follow", "search.suggest", "search.highlight", "search.share", "content.code.copy", "content.code.annotate", "content.tabs.link", "content.tooltips"], "search": "../../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>
