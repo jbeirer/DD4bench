@@ -1588,8 +1588,32 @@ def render(
     latest_night = max(dates)
     hist_nights = nights_in_window(dates, window)
     fetch_nights = tuple(dict.fromkeys([latest_night, *hist_nights]))
+    pinned_report = st.query_params.get("report")
+    pinned_mail = st.query_params.get("view") == "Nightly Report" and pinned_report
+    if pinned_mail:
+        if pinned_report not in dates:
+            st.error(f"The requested report ({pinned_report}) is not available.")
+            return
+        # A PR comment's archived report can lie outside the sidebar trend range.
+        fetch_nights = tuple(dict.fromkeys([*fetch_nights, pinned_report]))
     reports = _load_reports(data_url, fetch_nights)
+    if pinned_mail and pinned_report not in reports:
+        st.error(f"Could not load the requested report ({pinned_report}) from EOS.")
+        return
     if latest_night not in reports:
+        if pinned_mail:
+            # A deep-linked archived report stands on its own: the mail covers
+            # every scope that night measured and needs nothing from the latest
+            # report or the sidebar's window. Everything below this point does,
+            # so the mail is rendered here rather than through the view switcher
+            # — a PR comment's link must not break because an unrelated night
+            # failed to fetch.
+            st.warning(
+                f"Could not load the latest report ({latest_night}) from EOS — "
+                f"showing the requested {pinned_report} report on its own."
+            )
+            _nightly_email.render(data_url, dashboard_url, reports, latest_night)
+            return
         st.warning(f"Could not load the latest report ({latest_night}) from EOS.")
         return
 

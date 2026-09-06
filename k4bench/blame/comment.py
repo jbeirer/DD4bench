@@ -104,6 +104,7 @@ from k4bench.blame.reproduce import facts_from as reproducer_facts_from
 from k4bench.labels import pretty_platform, pretty_sample
 from k4bench.regression.models import MetricVerdict, NightlyReport
 from k4bench.regression.render import (
+    nightly_report_href,
     regression_href,
     stack_changes_href,
     window_href,
@@ -159,6 +160,8 @@ _MAX_CUMULATIVE_BYTES = 256_000
 _MAX_CUMULATIVE_MARKER_BYTES = 16_384
 _ALERT_START = "<!-- k4bench-blame-alert:start -->"
 _ALERT_END = "<!-- k4bench-blame-alert:end -->"
+_ASSOCIATION_START = "<!-- k4bench-blame-association:start -->"
+_ASSOCIATION_END = "<!-- k4bench-blame-association:end -->"
 
 #: Retained-row snapshots carried in one comment's single hidden state marker —
 #: the strongest candidates for the table, current and historical alike. The cap
@@ -171,8 +174,8 @@ _MAX_RETAINED_ROWS = 20
 #: :func:`materialize` once the publisher knows the prior owned bodies, so rows
 #: retained from earlier material versions can join the table from structured
 #: state rather than from parsing any presentation Markdown. The rendered body
-#: between the sentinels carries nothing that varies night to night, so a
-#: standing comment still renders byte-identically until something changes.
+#: between the sentinels pins archive links to the report being rendered.
+#: Report dates stay outside the digest, so they alone never trigger an edit.
 _DETAILS_START = "<!-- k4bench-blame-details:start -->"
 _DETAILS_END = "<!-- k4bench-blame-details:end -->"
 _RETAINED_PREFIX = "<!-- k4bench-blame-retained:v1 "
@@ -547,9 +550,9 @@ def materialize(
 ) -> PRComment:
     """Fill *comment*'s write-boundary sections from the prior owned bodies.
 
-    This runs at the write boundary, not during rendering: report dates are
-    intentionally absent from the stable rendered body and must not make an
-    unchanged regression re-notify a pull request every night. The publisher
+    This runs at the write boundary, not during rendering: report dates in
+    archive links stay outside the facts digest and must not make an unchanged
+    regression re-notify a pull request every night. The publisher
     calls this only for the body it is about to compare or write, with the
     comparable bodies it found — the survivor of this comment's lineage first,
     then any other comparable lineage comments a converging window is absorbing.
@@ -578,10 +581,15 @@ def materialize(
     history slot is filled.
     """
     comment = _with_cumulative(comment, previous_bodies)
-    comment = _with_details(comment, previous_bodies)
-    return _with_history(
-        comment, previous_bodies[0] if previous_bodies else ""
-    )
+    # Read across *every* comparable body, not just the survivor: the table
+    # below draws retained rows from all of them (:func:`_merged_retained`), and
+    # a row whose report the line under it never names would make that line's
+    # claim false. Read before the table so the line can count each report, and
+    # again by the history below it — one helper, so the two can never disagree
+    # about what a report contained.
+    observations, _ = _merged_observations(comment, previous_bodies)
+    comment = _with_details(comment, previous_bodies, observations=observations)
+    return _with_history(comment, previous_bodies)
 
 
 def _with_cumulative(
@@ -636,6 +644,11 @@ def _with_cumulative(
     _, _, tail = rest.partition(_ALERT_END)
     body = f"{head}{_ALERT_START}\n{alert}\n{_ALERT_END}{tail}"
     body = body.replace(_CUMULATIVE_PLACEHOLDER, marker, 1)
+    if _ASSOCIATION_START in body and _ASSOCIATION_END in body:
+        head, _, rest = body.partition(_ASSOCIATION_START)
+        _, _, tail = rest.partition(_ASSOCIATION_END)
+        summary = _association_summary(state, comment.min_score, comment.dashboard_url)
+        body = f"{head}{_ASSOCIATION_START}\n{summary}\n{_ASSOCIATION_END}{tail}"
 
     payload = dict(comment.facts_payload)
     canonical = json.dumps(identities, separators=(",", ":"))
@@ -645,6 +658,143 @@ def _with_cumulative(
         "scopes": scopes,
     }
     return replace(comment, body=body, facts_payload=payload)
+
+
+#: How many detector/platform/sample scopes the association table names before
+#: it starts counting them instead. A night that regresses across the whole
+#: suite would otherwise paste a table nobody reads into someone's pull request
+#: — the same reason the regression table itself is capped.
+_MAX_ASSOCIATION_SCOPES = 8
+
+#: Metrics named in one scope's cell before the rest are counted.
+_MAX_ASSOCIATION_METRICS = 4
+
+
+def _association_summary(
+    state: dict[tuple, tuple[float | None, str, str]],
+    min_score: float,
+    dashboard_url: str | None,
+) -> str:
+    """The PR's association with each scope it is implicated in, current and
+    historical alike.
+
+    Only scopes carrying at least one regression at or above *min_score* get a
+    row. A scope the review scored *down* is not evidence about this pull
+    request, and a table listing it beside the attributed ones invites the
+    reader to weigh it as though it were — but it is still counted, in one line
+    below, because the alert above states a union that has to reconcile.
+    """
+    grouped: dict[tuple, list[tuple]] = {}
+    for identity, (score, source, night) in state.items():
+        grouped.setdefault(identity[:3], []).append((identity, score, source, night))
+
+    def attributed_in(entries: list[tuple]) -> int:
+        return sum(
+            score is not None and score >= min_score for _, score, _, _ in entries
+        )
+
+    ordered = sorted(
+        grouped.items(), key=lambda item: (-attributed_in(item[1]), item[0])
+    )
+    shown = [item for item in ordered if attributed_in(item[1])]
+    # Every scope scored below the threshold is the one case where the table
+    # would otherwise be a header and nothing else. Fall back to naming them
+    # rather than rendering an empty table.
+    unattributed = [item for item in ordered if not attributed_in(item[1])]
+    if not shown:
+        shown, unattributed = ordered, []
+    listed, over_cap = shown[:_MAX_ASSOCIATION_SCOPES], shown[_MAX_ASSOCIATION_SCOPES:]
+
+    lines = [
+        "",
+        "**Association with this PR, by detector and sample**",
+        "",
+        "Counts cover distinct metric/configuration/region combinations across the "
+        "published reports. Attribution uses each regression's latest published AI score.",
+        "",
+        f"| Detector | Sample | Metrics / configurations | Attribution ≥ {_pct(min_score)} "
+        f"| Likelihood | Reports |",
+        "|:---|:---|:---|---:|---:|:---|",
+    ]
+    for (detector, platform, sample), entries in listed:
+        metrics = sorted({identity[4] for identity, _, _, _ in entries})
+        metric_text = ", ".join(
+            _cell(metric) for metric in metrics[:_MAX_ASSOCIATION_METRICS]
+        )
+        if len(metrics) > _MAX_ASSOCIATION_METRICS:
+            metric_text += f", +{len(metrics) - _MAX_ASSOCIATION_METRICS} more"
+        configs = len({identity[3] for identity, _, _, _ in entries})
+        metric_text += f"<br>{_count(configs, 'configuration')}"
+        scores = [score for _, score, _, _ in entries if score is not None]
+        likelihood = (
+            _pct(scores[0]) if scores and min(scores) == max(scores)
+            else f"{_pct(min(scores))}–{_pct(max(scores))}" if scores else "not scored"
+        )
+        nights = sorted({night for _, _, _, night in entries if _iso_date(night)})
+        report_labels = []
+        for night in ([nights[0], nights[-1]] if len(nights) > 1 else nights):
+            href = nightly_report_href(dashboard_url, night)
+            report_labels.append(f"[{night}]({href})" if href else night)
+        report_text = " to ".join(report_labels) or "unknown"
+        scope = _cell(detector)
+        if _SHOW_PLATFORM_COLUMN or len({key[1] for key in grouped}) > 1:
+            scope += f"<br>{_cell(pretty_platform(platform))}"
+        lines.append(
+            f"| {scope} | {_cell(pretty_sample(sample))} | {metric_text} | "
+            f"**{attributed_in(entries)} / {len(entries)}** | {likelihood} "
+            f"| {report_text} |"
+        )
+    trailing = [
+        note for note in (
+            _capped_scopes_note(over_cap),
+            _unattributed_note(unattributed, min_score),
+        ) if note
+    ]
+    for note in trailing:
+        lines += ["", note]
+    lines += [
+        "",
+        "Report dates open the **full nightly report**, including other change windows.",
+    ]
+    return "\n".join(lines)
+
+
+def _capped_scopes_note(over_cap: list[tuple]) -> str | None:
+    """The scopes the table had no room for, counted with their rows.
+
+    Deliberately says nothing about attribution: the rows above it are the
+    attributed ones in the ordinary case, but on the fallback path — where no
+    scope reached the threshold at all — they are not, and one line cannot
+    claim both."""
+    if not over_cap:
+        return None
+    rows = sum(len(entries) for _key, entries in over_cap)
+    return (
+        f"{_count(len(over_cap), 'further scope')} "
+        f"({_count(rows, 'regression')}) are not listed above."
+    )
+
+
+def _unattributed_note(unattributed: list[tuple], min_score: float) -> str | None:
+    """The scopes the review scored down, counted rather than tabulated.
+
+    Kept because the alert above states the union across every scope, and a
+    table that silently dropped these would leave that number unexplained."""
+    if not unattributed:
+        return None
+    rows = sum(len(entries) for _key, entries in unattributed)
+    scores = [
+        score for _key, entries in unattributed
+        for _identity, score, _source, _night in entries if score is not None
+    ]
+    standing = (
+        f"highest {_pct(max(scores))}" if scores else "none of them scored"
+    )
+    return (
+        f"A further {_count(rows, 'regression')} in "
+        f"{_count(len(unattributed), 'scope')} stayed below {_pct(min_score)} "
+        f"and are not attributed to this PR ({standing})."
+    )
 
 
 def _cumulative_marker(
@@ -731,7 +881,9 @@ def _cumulative_identities(body: str) -> set[tuple]:
     return set(_decoded_cumulative(body))
 
 
-def _with_history(comment: PRComment, previous_body: str = "") -> PRComment:
+def _with_history(
+    comment: PRComment, previous_bodies: Sequence[str] = ()
+) -> PRComment:
     """Fill *comment*'s history slot, carrying observations from *previous_body*.
 
     Observations are keyed by report night. Re-running a changed report for the
@@ -739,18 +891,9 @@ def _with_history(comment: PRComment, previous_body: str = "") -> PRComment:
     Each entry is also carried in a base64-encoded hidden marker so the next edit
     can rebuild the table without parsing presentation Markdown.
     """
-    current = comment.observation
-    if current is None or _HISTORY_PLACEHOLDER not in comment.body:
+    if comment.observation is None or _HISTORY_PLACEHOLDER not in comment.body:
         return comment
-    previous, omitted = _observations(previous_body)
-    observations = {item.report_night: item for item in previous}
-    observations[current.report_night] = current
-    ordered = sorted(
-        observations.values(), key=lambda item: item.report_night, reverse=True
-    )
-    if len(ordered) > _MAX_OBSERVATIONS:
-        omitted += len(ordered) - _MAX_OBSERVATIONS
-        ordered = ordered[:_MAX_OBSERVATIONS]
+    ordered, omitted = _merged_observations(comment, previous_bodies)
     # A history of one repeats the window and counts the comment already
     # states above it, and has nothing to compare them against; it earns its
     # place from the second material update on. The hidden markers are still
@@ -765,6 +908,136 @@ def _with_history(comment: PRComment, previous_body: str = "") -> PRComment:
         comment,
         body=comment.body.replace(_HISTORY_PLACEHOLDER, history, 1),
     )
+
+
+def _merged_observations(
+    comment: PRComment, previous_bodies: Sequence[str]
+) -> tuple[list[CommentObservation], int]:
+    """This comment's material versions, newest first, and how many aged out.
+
+    Every comparable body's observations carried forward and tonight's laid over
+    them, keyed by report night: re-running a changed report for the same night
+    replaces that night's entry, and a later material change appends one.
+    Archive links are re-pointed on the way through, so observations recorded
+    against an older link shape migrate on the next material edit.
+
+    Absorbed lineages are read too, because convergence hands their *rows* to
+    this comment (:func:`_merged_retained`) and a table drawing a row from a
+    report the history never recorded leaves both the history and the line under
+    the table describing a lineage this comment no longer has.
+
+    Entries are keyed by **report night and window**, not by night alone. The
+    publisher only converges windows that are containment-comparable with the
+    current one, but two absorbed windows can still be siblings — ``(09-01,
+    09-02]`` and ``(09-02, 09-03]`` are each contained by ``(09-01, 09-03]``
+    and neither contains the other — and those describe *disjoint* sets of
+    regressions observed on the same night. Keying by night alone would drop one
+    of them, taking its rows' provenance with it; keeping both is also what
+    finally makes the history's change window column earn its place.
+
+    Bodies are read with the absorbed lineages **first** so the survivor wins an
+    exact ``(night, window)`` collision: that pair really is one finding recorded
+    twice, and the lineage this comment continues is the one to believe.
+    """
+    observations: dict[tuple[str, ChangeWindow], CommentObservation] = {}
+    omitted = 0
+    for body in reversed(list(previous_bodies)):
+        recorded, aged_out = _observations(body)
+        # Not summed: each lineage counts what *it* aged out, and the merged
+        # history is not the concatenation of them.
+        omitted = max(omitted, aged_out)
+        for item in recorded:
+            observations[_observation_key(item)] = replace(
+                item, url=nightly_report_href(
+                    comment.dashboard_url or item.url, item.report_night,
+                ),
+            )
+    if comment.observation is not None:
+        observations[_observation_key(comment.observation)] = comment.observation
+    ordered = sorted(
+        observations.values(),
+        key=lambda item: (
+            item.report_night, item.base_release or "", item.onset_release,
+        ),
+        reverse=True,
+    )
+    if len(ordered) > _MAX_OBSERVATIONS:
+        omitted += len(ordered) - _MAX_OBSERVATIONS
+        ordered = ordered[:_MAX_OBSERVATIONS]
+    return ordered, omitted
+
+
+def _observation_key(observation: CommentObservation) -> tuple[str, ChangeWindow]:
+    """What makes two observations the same finding: night *and* window."""
+    return (
+        observation.report_night,
+        (observation.base_release, observation.onset_release),
+    )
+
+
+def _report_counts(
+    observations: Sequence[CommentObservation],
+) -> list[tuple[str, int | None]]:
+    """``(report night, regressions)`` newest first, ``None`` where unknowable.
+
+    One night can carry several observations once lineages have converged, and
+    what their counts mean together depends on how their windows sit:
+
+    * a window contained in another contributes nothing of its own — its rows
+      are a subset of the containing window's, which already counts them;
+    * the remaining (maximal) windows, when pairwise **disjoint**, partition the
+      night's regressions, so their counts add exactly;
+    * two maximal windows can still *partially* overlap — ``(09-01, 09-03]`` and
+      ``(09-02, 09-04]`` are incomparable, so nothing collapses them — and then
+      the rows in the shared span are counted by both. Observations are
+      aggregates, not identity sets, so that union is simply not recoverable
+      from this state, and the night is reported **without** a count rather than
+      with a plausible-looking wrong one.
+
+    The alternative — recording every night each identity was seen, instead of
+    the latest — would make this exact, at the cost of growing a marker that is
+    already size-capped, for a case this narrow.
+    """
+    by_night: dict[str, list[CommentObservation]] = {}
+    for item in observations:
+        if _iso_date(item.report_night) and item.regressions > 0:
+            by_night.setdefault(item.report_night, []).append(item)
+    counts: list[tuple[str, int | None]] = []
+    for night in sorted(by_night, reverse=True):
+        windows = [
+            ((item.base_release, item.onset_release), item.regressions)
+            for item in by_night[night]
+        ]
+        maximal = [
+            (window, regressions) for window, regressions in windows
+            if not any(
+                other != window and window_contains(other, window)
+                for other, _ in windows
+            )
+        ]
+        counts.append((night, _disjoint_total(maximal)))
+    return counts
+
+
+def _disjoint_total(
+    windows: list[tuple[ChangeWindow, int]]
+) -> int | None:
+    """The sum of *windows*' counts, or ``None`` if any two of them overlap.
+
+    Half-open ``(base, onset]``, so two windows are disjoint exactly when the
+    later one starts at or after the earlier one ends. An unbounded base reaches
+    back forever, so it can only ever be the first."""
+    ordered = sorted(
+        windows, key=lambda entry: (entry[0][0] is not None, entry[0][0] or "", entry[0][1])
+    )
+    total = 0
+    previous_onset: str | None = None
+    for (base, onset), regressions in ordered:
+        if previous_onset is not None and (base is None or base < previous_onset):
+            return None
+        total += regressions
+        previous_onset = onset
+    return total
 
 
 def _observation_marker(observation: CommentObservation) -> str:
@@ -894,6 +1167,7 @@ def _observation_history(
         "",
         *([omitted_marker] if omitted_marker else []),
         *(_observation_marker(item) for item in observations),
+        "",
         "| Report | Change window | Regressions | Scopes | Directions |",
         "|:---|:---|---:|---:|:---|",
     ]
@@ -917,7 +1191,10 @@ def _observation_history(
 # ── Retained rows ─────────────────────────────────────────────────────────────
 
 def _with_details(
-    comment: PRComment, previous_bodies: Sequence[str]
+    comment: PRComment,
+    previous_bodies: Sequence[str],
+    *,
+    observations: Sequence[CommentObservation] = (),
 ) -> PRComment:
     """Re-render the details region with the retained rows the prior bodies
     carry, and finalize the digest over what actually renders.
@@ -954,6 +1231,7 @@ def _with_details(
         historical=historical,
         retained_marker=_retained_marker(state),
         reproduce=comment.reproduce,
+        observations=observations,
     )
     head, _, rest = comment.body.partition(_DETAILS_START)
     _, _, tail = rest.partition(_DETAILS_END)
@@ -1905,11 +2183,9 @@ def build_comments(
     withdrawal on the review's scores alone would let one low answer about one
     row acquit a pull request the review never disputed on the others.
 
-    The stable rendered body carries nothing that varies from night to night (no
-    run URL, no report-night query parameter). Its observation is separate until
-    the publisher has already decided a material write is warranted; only then
-    is the archived report link inserted. A regression that stands unchanged for
-    a week therefore remains one untouched comment.
+    Archive links pin the report being rendered. Report dates stay outside the
+    facts digest, so a regression that stands unchanged for a week remains one
+    untouched comment. Observation history is merged at the write boundary.
     """
     comments = []
     for plan in plans:
@@ -2375,13 +2651,14 @@ def _render(
     digest = _digest_from(payload, [])
     # The details region renders current-only here — the retained rows live in
     # the prior owned body, which only the publisher reads — and is re-rendered
-    # by :func:`materialize` at the write boundary. Nothing in it varies from
-    # night to night, so a standing comment still renders byte-identically.
+    # by :func:`materialize` at the write boundary. Archive dates do not enter
+    # the facts digest and cannot trigger an edit by themselves.
+    observation = _observation_for(plan, by_likelihood, dashboard_url)
     region, _shown_past = _details_region(
         plan, attribution, dashboard_url=dashboard_url,
         historical=[], retained_marker=None, reproduce=reproduce,
+        observations=[observation] if observation is not None else [],
     )
-    observation = _observation_for(plan, by_likelihood, dashboard_url)
 
     body = "\n".join(
         part for part in (
@@ -2398,8 +2675,18 @@ def _render(
             _DETAILS_START,
             region,
             _DETAILS_END,
+            # Below the table, not above it: the assessment is the reasoning
+            # behind the alert and belongs next to it, and this summary is the
+            # drill-down on the alert's counts — which reads after the rows it
+            # generalizes, beside the per-report line asking the same question.
+            _ASSOCIATION_START,
+            _association_summary({
+                _row_identity(row): (*_score_source(row, attribution), plan.report_night)
+                for row in plan.rows
+            }, min_score, dashboard_url),
+            _ASSOCIATION_END,
             _HISTORY_PLACEHOLDER,
-            _others_section(plan),
+            _others_section(plan, dashboard_url),
             "",
             "---",
             "",
@@ -2440,6 +2727,7 @@ def _details_region(
     historical: list[RetainedRow],
     retained_marker: str | None,
     reproduce: Reproducers | None = None,
+    observations: Sequence[CommentObservation] = (),
 ) -> tuple[str, list[RetainedRow]]:
     """The dynamic middle of a comment — assessment, regression table and its
     reference links — rendered from structured inputs alone.
@@ -2467,6 +2755,7 @@ def _details_region(
                 plan, by_likelihood, attribution,
                 shown=shown, links=links, past_links=past_links,
                 dashboard_url=dashboard_url, reproduce=reproduce,
+                observations=observations,
             ),
             _link_definitions(definitions),
         ) if part is not None
@@ -2686,8 +2975,8 @@ def _alert(
     # A count is only readable next to the population it counts, and this
     # comment states two: the union over every report the lineage has covered,
     # which only :func:`_with_cumulative` passes in, and tonight's report,
-    # which is what the fallback below counts and what the overflow line under
-    # the table counts (:func:`_overflow_line`). Each names its own, so the two
+    # which is what the fallback below counts and what the line under the
+    # table counts per report (:func:`_reports_line`). Each names its own, so the two
     # can be read side by side without guessing which is which.
     cumulative = n_regressions is not None
     n_regressions = len(rows) if n_regressions is None else n_regressions
@@ -2897,17 +3186,7 @@ def _report_href(
     """An archived dashboard view pinned to this observation's report night."""
     if not rows or not plan.report_night:
         return None
-    lead = rows[0]
-    return window_href(
-        dashboard_url,
-        detector=lead.verdict.detector,
-        platform=lead.verdict.platform,
-        sample=lead.verdict.sample,
-        base_release=plan.base_release,
-        onset_release=plan.onset_release,
-        stack=lead.stack,
-        report_night=plan.report_night,
-    )
+    return nightly_report_href(dashboard_url, plan.report_night)
 
 
 def _assessment(
@@ -3141,6 +3420,7 @@ def _past_row_line(
     row: RetainedRow,
     past_links: dict[tuple, tuple[str, str]],
     *,
+    show_window: bool,
     recipe: str | None,
 ) -> str:
     """One retained row with its last published movement and likelihood."""
@@ -3158,7 +3438,10 @@ def _past_row_line(
     cells += [
         _cell(pretty_sample(row.sample)),
         f"`{_cell(row.label)}`",
-        _window_cell(*_retained_window(row)),
+    ]
+    if show_window:
+        cells.append(_window_cell(*_retained_window(row)))
+    cells += [
         _change_cell(row.pct),
         _past_likelihood_cell(row),
     ]
@@ -3238,6 +3521,7 @@ def _table(
     past_links: dict[tuple, tuple[str, str]],
     dashboard_url: str | None,
     reproduce: Reproducers | None = None,
+    observations: Sequence[CommentObservation] = (),
 ) -> str:
     """The selected rows of the window, most likely first — tonight's confirmed
     regressions and any retained rows that outrank them.
@@ -3263,8 +3547,8 @@ def _table(
     table deliberately keeps rows the review scored *down*, and a 20% row under a
     heading claiming attribution would read as an accusation the numbers next to
     it deny. That ordering can push the window's largest movement past the cap;
-    the overflow line below counts what was cut and links all of it
-    (:func:`_overflow_line`).
+    the line below counts what each report carried and links all of it
+    (:func:`_reports_line`).
 
     A retained historical row keeps the movement, likelihood and recipe last
     published for it; the cumulative alert uses the same newest-published
@@ -3311,48 +3595,85 @@ def _table(
             ))
         else:
             lines.append(_past_row_line(
-                entry.past, past_links, recipe=recipe,
+                entry.past, past_links, show_window=show_window, recipe=recipe,
             ))
     shown_current = sum(1 for entry in shown if entry.current is not None)
-    overflow = _overflow_line(plan, rows, shown_current, dashboard_url=dashboard_url)
-    if overflow:
-        lines += ["", overflow]
+    reports = _reports_line(
+        len(rows), len(shown), shown_current, observations,
+        dashboard_url=dashboard_url,
+    )
+    if reports:
+        lines += ["", reports]
     return "\n".join(lines)
 
 
-def _overflow_line(
-    plan: CommentPlan,
-    rows: list[RegressionRow],
+#: How many reports the line under the table names before it starts counting
+#: them instead. Three sets of counts and links is what stays readable as one
+#: sentence; a lineage longer than that is what the observation history is for.
+_MAX_NAMED_REPORTS = 3
+
+
+def _reports_line(
+    n_rows: int,
     shown: int,
+    shown_current: int,
+    observations: Sequence[CommentObservation],
     *,
     dashboard_url: str | None,
 ) -> str | None:
-    """What the table did not show, as one line pointing into the dashboard.
+    """What each report in this lineage carried, as one line under the table.
 
     A wide night is not folded into a second copy of the table: a
     detector-removal sweep confirms three hundred near-identical rows, which no
     one reads whether or not they are behind a disclosure, and which GitHub will
-    not accept in one comment anyway. The dashboard holds the complete set and
-    every re-sorting of it, so the line points there. Only the destination is
-    linked — the words naming it, plus the arrow that conventionally means "this
-    opens somewhere else" — so the count reads as prose and the click target is
-    the thing being opened. The link lands on the leading row's configuration
-    (:func:`_window_href`), which is as much as one dashboard view holds; a
-    window spanning several is re-scoped from there."""
-    if shown >= len(rows):
+    not accept in one comment anyway. So the table is a selection, and this line
+    is what says so — per report, because the comment's evidence is assembled
+    from several overlapping nightly snapshots and a single total would hide
+    which one each count came from.
+
+    Every date is its own link into that night's full report, where the complete
+    set and every re-sorting of it live. Only the dates are linked — with the
+    arrow that conventionally means "this opens somewhere else" — so the counts
+    read as prose and the click target is the thing being opened.
+
+    The rows counted as shown are every row the table drew, current and retained
+    alike: the reader counts lines on the page, not the bookkeeping behind them.
+    """
+    counts = _report_counts(observations)
+    # Nothing to add when one report's regressions all reached the table: the
+    # line would restate the rows immediately above it.
+    if not counts or (len(counts) < 2 and shown_current >= n_rows):
         return None
-    href = _window_href(plan, rows, dashboard_url)
-    where = f"[dashboard ↗]({href})" if href else "dashboard"
-    # Named for the report it counts, because the alert above counts the
-    # lineage's cumulative union and the two numbers otherwise read as one
-    # population stated twice (:func:`_alert`).
-    report = (
-        f" from the {_cell(plan.report_night)} report" if plan.report_night else ""
+    named = []
+    for index, (night, regressions) in enumerate(counts[:_MAX_NAMED_REPORTS]):
+        href = nightly_report_href(dashboard_url, night)
+        where = f"[{night} report ↗]({href})" if href else f"{night} report"
+        # The noun is carried once, by the leading clause; repeating it on every
+        # report turns one sentence into a list of identical clauses.
+        noun = " of regressions" if index == 0 else ""
+        if regressions is None:
+            # Converged sibling windows whose overlap this state cannot resolve
+            # (:func:`_report_counts`). The report is still named — its rows are
+            # in the table above — but no number is invented for it.
+            count = f"an unspecified number{noun}"
+        elif index == 0:
+            count = f"**{_count(regressions, 'regression')}**"
+        else:
+            count = f"**{regressions}**"
+        named.append(f"{count} in the {where}")
+    line = ", ".join(named)
+    if len(counts) > _MAX_NAMED_REPORTS:
+        line += (
+            f", and {_count(len(counts) - _MAX_NAMED_REPORTS, 'earlier report')}"
+        )
+    drawn = (
+        "the most likely one is shown above" if shown == 1
+        else f"the {shown} most likely are shown above"
     )
-    return f"View all {_count(len(rows), 'regression')}{report} in the {where}"
+    return f"{line} — {drawn}."
 
 
-def _others_section(plan: CommentPlan) -> str:
+def _others_section(plan: CommentPlan, dashboard_url: str | None = None) -> str:
     """The rest of the candidates scored across this window, with their
     likelihoods — the reader needs to see what else was in the frame to weigh
     the claim against this PR, including the case where nothing else was.
@@ -3363,14 +3684,19 @@ def _others_section(plan: CommentPlan) -> str:
     a reader who expands nothing. The table is capped at
     :data:`_MAX_OTHER_CANDIDATES`, with any surplus counted rather than pasted.
 
-    The candidates are named, never linked — see :func:`_pr_ref`."""
+    The candidates are named, never linked (:func:`_pr_ref`), so the section
+    closes with the window's package diff — where the complete field, and every
+    package behind it, can be read without notifying anyone. It is offered, not
+    claimed as their provenance: see :func:`_package_diff_line`."""
     others = _sorted_others(plan)
+    diff = _package_diff_line(plan, dashboard_url)
     if not others:
         return "\n".join([
             "",
             "> [!NOTE]",
             "> This was the only pull request found across every tracked "
-            "package that changed in this window.",
+            "package that changed in this window."
+            + (f" {diff}" if diff else ""),
         ])
 
     shown = others[:_MAX_OTHER_CANDIDATES]
@@ -3396,8 +3722,65 @@ def _others_section(plan: CommentPlan) -> str:
     ]
     if len(others) > len(shown):
         lines += ["", f"_…and {_count(len(others) - len(shown), 'more candidate')}._"]
+    if diff:
+        lines += ["", diff]
     lines += ["", "</details>"]
     return "\n".join(lines)
+
+
+def _package_diff_line(plan: CommentPlan, dashboard_url: str | None) -> str | None:
+    """The window's package diff, one link per build platform that contributed
+    a row — offered as somewhere to look, never as the candidates' provenance.
+
+    The distinction is load-bearing. :func:`_record_others` folds in every
+    entry's candidates with no window filter at all, while only an entry
+    measuring *exactly* this comment's window describes this window's release
+    diff (:func:`_confirmed_rows`): a row can enter on a narrower range of its
+    own, and :attr:`CommentPlan.packages_unavailable_on` exists to name the
+    platforms whose diff for this window was never read. So a candidate here can
+    have been found in a range whose package set is not the one behind this
+    link, and "every candidate came from" would assert a provenance the pipeline
+    does not establish.
+
+    Per platform because provenance is recorded that way: a plan is keyed by
+    pull request and window and never by platform, so its rows can span several,
+    while the release diff behind them is kept separately for each
+    (:class:`CommentPlan`). Two platforms' diffs are two measurements.
+
+    Within a platform the scope parameters only choose which regression ledger
+    the Stack Changes view draws underneath the diff, so the lowest row identity
+    is as good a landing place as any — picked by identity rather than by list
+    order so the sentence is byte-stable across runs."""
+    platforms = sorted({row.verdict.platform for row in plan.rows})
+    links = []
+    for platform in platforms:
+        lead = min(
+            (row.verdict for row in plan.rows if row.verdict.platform == platform),
+            key=_verdict_identity,
+        )
+        href = stack_changes_href(
+            dashboard_url,
+            detector=lead.detector,
+            platform=platform,
+            sample=lead.sample,
+            base_release=plan.base_release,
+            onset_release=plan.onset_release,
+        )
+        if not href:
+            continue
+        label = (
+            "package diff for this window" if len(platforms) == 1
+            else _cell(pretty_platform(platform))
+        )
+        links.append(f"[{label} ↗]({href})")
+    if not links:
+        return None
+    if len(links) == 1 and len(platforms) == 1:
+        return f"Inspect the {links[0]}."
+    return (
+        "Inspect this window's package diffs, one per platform: "
+        f"{', '.join(links)}."
+    )
 
 
 def _pr_ref(candidate: CandidatePR) -> str:
@@ -3410,8 +3793,8 @@ def _pr_ref(candidate: CandidatePR) -> str:
     that was merely a candidate should not collect a notification every time
     another window implicates someone else, so the number is broken with a
     zero-width space: unchanged to a reader, unparsed by GitHub, and
-    unclickable. Whoever wants the full field has the package-diff link in
-    *Where to look*."""
+    unclickable. Whoever wants the full field has the package-diff link this
+    section closes with (:func:`_package_diff_line`)."""
     zwsp = "​"  # U+200B zero-width space
     return _cell(f"{candidate.repo}#{zwsp}{candidate.number}")
 
@@ -3479,25 +3862,6 @@ def _crowded_note(plan: CommentPlan) -> str | None:
     return (
         f"\n_{separation} — the ranker is expressing a weak preference here, "
         "not a clear pick._"
-    )
-
-
-def _window_href(
-    plan: CommentPlan, rows: list[RegressionRow], dashboard_url: str | None
-) -> str | None:
-    """The window's dashboard view for the leading row's configuration.
-
-    What :func:`_overflow_line` points at. A dashboard view is one configuration
-    at a time, and the leading row is the one this comment is most about — the
-    reader lands where the strongest claim was made and re-scopes from there,
-    which is the one thing the caps above cannot do for them."""
-    if not rows:
-        return None
-    lead = rows[0].verdict
-    return stack_changes_href(
-        dashboard_url,
-        detector=lead.detector, platform=lead.platform, sample=lead.sample,
-        base_release=plan.base_release, onset_release=plan.onset_release,
     )
 
 
@@ -3573,6 +3937,9 @@ def _facts_payload(
     alike, and identities here are user-supplied names.
     """
     payload = {
+        # Repair existing comments once after the archive-link/table change.
+        # Report dates remain excluded, so later reconfirmations do not edit.
+        "render_version": 2,
         "window": [plan.base_release or "", plan.onset_release],
         "rows": [
             {
@@ -3581,7 +3948,7 @@ def _facts_payload(
                 "state": row.scope_state,
                 # Both halves of the onset identity: the date is the grouping
                 # key and the right-hand end of the visible Change window cell,
-                # the run id is what the row's ``reg_onset`` deep link pins.
+                # the run id distinguishes separate steps inside one release.
                 # Fixed once a change is confirmed, so neither is nightly churn.
                 "onset": [
                     row.verdict.onset_run_date or "",

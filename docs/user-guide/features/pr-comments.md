@@ -383,13 +383,38 @@ The rules that keep this honest:
 - **Retention is not promotion.** Retained rows join one ranked pool with the
   current ones on the same key, so a stronger current row still leads.
 
-Under the table, when the window carried more regressions than it shows, **one
-line counts them and links into the dashboard**. The likelihood ranking answers
-"did my change do this?", but a window can carry a regression that moved further
-than anything near the top of it — and the dashboard is where the whole set can
-be read in whatever ordering a reader wants. The link opens the leading row's
-configuration, which is as much as one dashboard view shows; a window spanning
-several is re-scoped from there.
+Below the detailed metric table, an **association summary** groups the cumulative
+regressions by detector, platform and sample. It names the metrics, the number
+of configurations, how many regressions meet the configured attribution
+threshold, the score range and the report dates. Current and historical scopes
+appear together, using the latest published score for each distinct regression.
+
+It reads *below* the table on purpose. The reviewer's assessment is the
+reasoning behind the alert and stays next to it; this summary is the drill-down
+on the alert's counts, so it belongs after the rows it generalizes, beside the
+per-report line that answers the same "what is beyond these five rows?"
+question.
+
+**Only scopes carrying at least one regression at or above the threshold get a
+row.** A scope the review scored down is not evidence about this pull request,
+and listing it beside the attributed ones invites a reader to weigh it as though
+it were. Those scopes are still counted in one line below the table — the alert
+states a union across every scope, and silently dropping them would leave that
+number unexplained. The table is bounded to eight scopes and four metrics per
+scope, with any surplus counted rather than pasted; in the defensive case where
+no scope reached the threshold, the scopes are named rather than leaving an
+empty table.
+
+Below the detailed table, **one line counts what each report in the lineage
+carried** — newest first, every date opening that night's full report in the
+Overview → Nightly Report view, which includes all scopes and other change
+windows. The comment's evidence is assembled from several overlapping nightly
+snapshots, and a single total would hide which one each count came from. Three
+reports are named; a longer lineage counts the rest ("and 4 earlier reports"),
+which is what the observation history below is for. The line closes with how
+many rows the table drew, counting current and retained rows alike. It is
+omitted when one report's regressions all reached the table, where it would only
+restate the rows above it.
 
 There is **no Platform column** while the suite builds on a single platform; that
 is a rendering switch only, and platform remains part of every row's identity,
@@ -400,10 +425,36 @@ package diff in one place, which is what "did my change do this?" actually needs
 Below the regression table is a collapsed **observation history**. The newest 20
 material versions record the report night, window, regression and scope counts,
 and UP/DOWN split; an omitted count preserves how many earlier versions aged out.
-The report night links to the dashboard pinned to that archived report. Below
+When lineages converge, the absorbed comments' versions are carried across too,
+keyed by report night **and** window rather than by night alone. Two absorbed
+windows can be siblings — `(09-01, 09-02]` and `(09-02, 09-03]` are each
+contained by `(09-01, 09-03]` and neither contains the other — describing
+disjoint regressions seen on the same night, so both keep a row and the change
+window column tells them apart. Only an exact night-and-window collision is
+resolved in the surviving lineage's favour. Without this, the table could draw a
+retained row from a report neither the history nor the line under it ever named.
+
+The per-report counts follow from the same windows: a window contained in
+another contributes nothing of its own, and the remaining windows add up when
+they are pairwise disjoint. Two of them can still partially overlap, and no
+count is recoverable from the stored aggregates then — that report is named
+with **an unspecified number** rather than a plausible-looking wrong one.
+Report dates open that same full nightly report view; earlier observation links
+are migrated when the comment is next materially updated. A retained row's own
+metric link still opens the archived view for the night that row was last
+confirmed, scoped to its recorded sample, stack and window. Below
 that sit the other candidates in the window with their likelihoods, in a
 disclosure whose summary carries the count and the strongest competing score
-without being opened (capped at five, the rest counted).
+without being opened (capped at five, the rest counted). The candidates are
+named but never linked, so that section closes with somewhere to look instead:
+the **package diff for this window**, the Stack Changes view listing every
+tracked package that moved between the two releases — one link per build
+platform that contributed a row, because provenance is recorded per platform and
+two platforms' diffs are two measurements, not one. The line offers the diff
+rather than claiming the candidates came from it: candidates are collected from
+every entry, while only an entry measuring exactly this window describes this
+window's package set, so a candidate can have been found on a narrower range
+whose packages are not the ones behind that link.
 
 The table has a hard five-row cap — current and retained rows together — and
 anything past it is linked rather than pasted.
@@ -462,8 +513,7 @@ successor:
   survivor; the others remain as dated historical comments. This publishes the
   unified evidence and avoids a permanently failing nightly step.
 - **Nothing changed** — no request at all. An edit re-surfaces the comment for
-  everyone watching the PR, so it must mean something changed. The stable body
-  and digest contain nothing nightly-varying. A report night is added to the
+  everyone watching the PR, so it must mean something changed. The facts digest excludes report dates, even though the summary names them. A report night is added to the
   observation history only when a create or material edit is already warranted;
   it never causes an edit by itself. "Changed" is judged on a second hidden
   line: a digest of the *benchmark facts*. It covers
