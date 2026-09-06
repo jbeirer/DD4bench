@@ -62,15 +62,15 @@ Found 14 subdetectors, running 14:
   - ECalBarrel
   ...
 
-[1/15] baseline_all
+[1/15] baseline
          XML: /cvmfs/.../ALLEGRO_o1_v03.xml
          Status: ok  |  Wall: 81.2s  |  RSS: 2095 MB  |  Output: 9.21 MB  |  6.160 ev/s
-         Log:    baseline_all.log
+         Log:    baseline.log
 
-[2/15] without_Vertex
+[2/15] no_Vertex
          XML: /tmp/_k4bench_patch_xxxx/top_ALLEGRO_o1_v03.xml
          Status: ok  |  Wall: 79.8s  |  RSS: 2061 MB  |  Output: 9.04 MB  |  6.265 ev/s
-         Log:    without_Vertex.log
+         Log:    no_Vertex.log
 ...
 ```
 
@@ -89,7 +89,7 @@ loaded) `_events.json` and `_regions.json`. A results CSV is a single row:
 
 ```text
 label,returncode,n_events,wall_time_raw,wall_time_s,user_cpu_s,sys_cpu_s,peak_rss_mb,major_page_faults,voluntary_ctx_switches,involuntary_ctx_switches,output_size_mb,events_per_sec
-baseline_all,0,500,1:21.20,81.2,47.3,3.18,2095.4,4,28341,9812,9.21,6.16
+baseline,0,500,1:21.20,81.2,47.3,3.18,2095.4,4,28341,9812,9.21,6.16
 ```
 
 Each column maps to a field of [`RunResult`](../reference/api/results/model.md);
@@ -103,16 +103,16 @@ from k4bench.analysis import load_results
 df = load_results("logs/ALLEGRO_o1_v03")
 
 # Cost of each detector = its run's wall time vs the baseline
-baseline = df.loc[df.label == "baseline_all", "wall_time_s"].iloc[0]
+baseline = df.loc[df.label == "baseline", "wall_time_s"].iloc[0]
 df["delta_wall_s"] = baseline - df["wall_time_s"]   # time saved by removing it
 print(
-    df[df.label != "baseline_all"]
+    df[df.label != "baseline"]
     .sort_values("delta_wall_s", ascending=False)
     [["label", "wall_time_s", "delta_wall_s", "peak_rss_mb"]]
 )
 ```
 
-A large positive `delta_wall_s` for `without_X` means detector `X` is expensive:
+A large positive `delta_wall_s` for `no_X` means detector `X` is expensive:
 removing it saved a lot of time.
 
 !!! note "Sweep ablation is approximate"

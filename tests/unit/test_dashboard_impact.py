@@ -54,9 +54,9 @@ def _comparison_frames():
         "user_cpu_s": [9.0, 7.0, 9.9],
         "output_size_mb": [100.0, 50.0, 110.0],
         "events_per_sec": [1.0, 1.25, 0.8],
-    }, index=["baseline_all", "without_FastDetector", "without_Adverse"])
+    }, index=["baseline", "no_FastDetector", "no_Adverse"])
     present = list(impact._METRICS)
-    percentages = impact._impact_percentages(raw, "baseline_all", present)
+    percentages = impact._impact_percentages(raw, "baseline", present)
     return raw, present, percentages
 
 
@@ -77,28 +77,28 @@ def test_impact_percentages_normalise_direction_across_metrics():
 
     # Reductions are favourable for resource metrics; increases are favourable
     # for throughput. Positive therefore has one meaning everywhere.
-    assert percentages.loc["without_FastDetector", "Wall Time"] == pytest.approx(20.0)
-    assert percentages.loc["without_FastDetector", "Peak RSS"] == pytest.approx(10.0)
-    assert percentages.loc["without_FastDetector", "User CPU"] == pytest.approx(200 / 9)
-    assert percentages.loc["without_FastDetector", "Output Size"] == pytest.approx(50.0)
-    assert percentages.loc["without_FastDetector", "Throughput"] == pytest.approx(25.0)
-    assert percentages.loc["without_Adverse", "Wall Time"] == pytest.approx(-10.0)
-    assert percentages.loc["without_Adverse", "Throughput"] == pytest.approx(-20.0)
-    assert set(percentages.loc["baseline_all"]) == {0.0}
+    assert percentages.loc["no_FastDetector", "Wall time"] == pytest.approx(20.0)
+    assert percentages.loc["no_FastDetector", "Peak RSS"] == pytest.approx(10.0)
+    assert percentages.loc["no_FastDetector", "User CPU time"] == pytest.approx(200 / 9)
+    assert percentages.loc["no_FastDetector", "Output size"] == pytest.approx(50.0)
+    assert percentages.loc["no_FastDetector", "Throughput"] == pytest.approx(25.0)
+    assert percentages.loc["no_Adverse", "Wall time"] == pytest.approx(-10.0)
+    assert percentages.loc["no_Adverse", "Throughput"] == pytest.approx(-20.0)
+    assert set(percentages.loc["baseline"]) == {0.0}
 
 
 @pytest.mark.parametrize("baseline", [0.0, float("nan"), float("inf"), -1.0])
 def test_invalid_baseline_leaves_metric_unscored(baseline):
     raw = pd.DataFrame(
         {"wall_time_s": [baseline, 8.0]},
-        index=["baseline_all", "without_A"],
+        index=["baseline", "no_A"],
     )
 
     percentages = impact._impact_percentages(
-        raw, "baseline_all", [impact._METRICS_BY_COLUMN["wall_time_s"]],
+        raw, "baseline", [impact._METRICS_BY_COLUMN["wall_time_s"]],
     )
 
-    assert percentages["Wall Time"].isna().all()
+    assert percentages["Wall time"].isna().all()
 
 
 def test_negative_measurements_are_ignored_but_zero_remains_comparable():
@@ -111,14 +111,14 @@ def test_negative_measurements_are_ignored_but_zero_remains_comparable():
             "wall_time_s": [10.0, -1.0, 0.0],
             "events_per_sec": [1.0, -1.0, 0.0],
         },
-        index=["baseline_all", "without_Invalid", "without_Zero"],
+        index=["baseline", "no_Invalid", "no_Zero"],
     )
 
-    percentages = impact._impact_percentages(raw, "baseline_all", metrics)
+    percentages = impact._impact_percentages(raw, "baseline", metrics)
 
-    assert percentages.loc["without_Invalid"].isna().all()
-    assert percentages.loc["without_Zero", "Wall Time"] == pytest.approx(100.0)
-    assert percentages.loc["without_Zero", "Throughput"] == pytest.approx(-100.0)
+    assert percentages.loc["no_Invalid"].isna().all()
+    assert percentages.loc["no_Zero", "Wall time"] == pytest.approx(100.0)
+    assert percentages.loc["no_Zero", "Throughput"] == pytest.approx(-100.0)
 
 
 def test_ranking_is_signed_descending_stable_and_excludes_baseline():
@@ -127,12 +127,12 @@ def test_ranking_is_signed_descending_stable_and_excludes_baseline():
     ranking = impact._ranking_rows(
         percentages,
         raw,
-        "baseline_all",
+        "baseline",
         impact._METRICS_BY_COLUMN["wall_time_s"],
         limit=1,
     )
 
-    assert list(ranking["config"]) == ["without_FastDetector"]
+    assert list(ranking["config"]) == ["no_FastDetector"]
     assert list(ranking["display_name"]) == ["FastDetector"]
     assert ranking.loc[0, "impact"] == pytest.approx(20.0)
     assert ranking.loc[0, "baseline"] == 10.0
@@ -142,18 +142,18 @@ def test_ranking_is_signed_descending_stable_and_excludes_baseline():
 
 def test_compact_ranking_keeps_the_largest_absolute_regressions():
     metric = impact._METRICS_BY_COLUMN["wall_time_s"]
-    configs = ["baseline_all", *[f"without_Detector_{i:02d}" for i in range(1, 14)]]
+    configs = ["baseline", *[f"no_Detector_{i:02d}" for i in range(1, 14)]]
     raw = pd.DataFrame(
         {"wall_time_s": [100.0, *[100.0 + i for i in range(1, 14)]]},
         index=configs,
     )
     scores = pd.DataFrame(
-        {"Wall Time": [0.0, *[-float(i) for i in range(1, 14)]]},
+        {"Wall time": [0.0, *[-float(i) for i in range(1, 14)]]},
         index=configs,
     )
 
     ranking = impact._ranking_rows(
-        scores, raw, "baseline_all", metric, limit=12,
+        scores, raw, "baseline", metric, limit=12,
     )
 
     assert list(ranking["impact"]) == pytest.approx(
@@ -167,48 +167,48 @@ def test_compact_ranking_prefers_adverse_at_an_equal_magnitude_cutoff():
     metric = impact._METRICS_BY_COLUMN["wall_time_s"]
     raw = pd.DataFrame(
         {"wall_time_s": [100.0, 90.0, 110.0]},
-        index=["baseline_all", "without_Gain", "without_Adverse"],
+        index=["baseline", "no_Gain", "no_Adverse"],
     )
     scores = pd.DataFrame(
-        {"Wall Time": [0.0, 10.0, -10.0]}, index=raw.index,
+        {"Wall time": [0.0, 10.0, -10.0]}, index=raw.index,
     )
 
     ranking = impact._ranking_rows(
-        scores, raw, "baseline_all", metric, limit=1,
+        scores, raw, "baseline", metric, limit=1,
     )
 
-    assert list(ranking["config"]) == ["without_Adverse"]
+    assert list(ranking["config"]) == ["no_Adverse"]
 
 
 def test_winner_ties_use_a_stable_alphabetical_configuration():
     impact_frame = pd.DataFrame(
-        {"Wall Time": [0.0, 20.0, 20.0]},
-        index=["baseline_all", "without_Z", "without_A"],
+        {"Wall time": [0.0, 20.0, 20.0]},
+        index=["baseline", "no_Z", "no_A"],
     )
 
     winners = impact._winner_rows(
         impact_frame,
-        "baseline_all",
+        "baseline",
         [impact._METRICS_BY_COLUMN["wall_time_s"]],
     )
 
-    assert winners == [{"metric": "Wall Time", "config": "without_A", "impact": 20.0}]
+    assert winners == [{"metric": "Wall time", "config": "no_A", "impact": 20.0}]
 
 
 def test_winner_cards_show_the_largest_absolute_impact():
     impact_frame = pd.DataFrame(
-        {"Wall Time": [0.0, 20.0, -30.0]},
-        index=["baseline_all", "without_Gain", "without_Adverse"],
+        {"Wall time": [0.0, 20.0, -30.0]},
+        index=["baseline", "no_Gain", "no_Adverse"],
     )
 
     winners = impact._winner_rows(
         impact_frame,
-        "baseline_all",
+        "baseline",
         [impact._METRICS_BY_COLUMN["wall_time_s"]],
     )
 
     assert winners == [
-        {"metric": "Wall Time", "config": "without_Adverse", "impact": -30.0},
+        {"metric": "Wall time", "config": "no_Adverse", "impact": -30.0},
     ]
 
 
@@ -217,13 +217,13 @@ def test_impact_figure_is_a_semantic_zero_anchored_leaderboard():
     ranking = impact._ranking_rows(
         percentages,
         raw,
-        "baseline_all",
+        "baseline",
         impact._METRICS_BY_COLUMN["wall_time_s"],
         limit=None,
     )
 
     fig = impact._impact_figure(
-        ranking, impact._METRICS_BY_COLUMN["wall_time_s"], "baseline_all",
+        ranking, impact._METRICS_BY_COLUMN["wall_time_s"], "baseline",
     )
 
     assert fig is not None
@@ -242,7 +242,7 @@ def test_impact_figure_is_a_semantic_zero_anchored_leaderboard():
         "← worse than baseline",
         "better than baseline →",
     ]
-    assert bars.customdata[0][0] == "without_FastDetector"
+    assert bars.customdata[0][0] == "no_FastDetector"
     assert bars.customdata[0][3] == "10 s"
     assert bars.customdata[0][4] == "8 s"
     assert bars.customdata[0][5] == "-2 s"
@@ -256,14 +256,14 @@ def test_arbitrary_baseline_keeps_chart_wording_and_names_baseline_neutral():
     metric = impact._METRICS_BY_COLUMN["wall_time_s"]
     raw = pd.DataFrame(
         {"wall_time_s": [10.0, 8.0, 12.0]},
-        index=["without_ECal", "without_HCal", "baseline_all"],
+        index=["no_ECal", "no_HCal", "baseline"],
     )
-    percentages = impact._impact_percentages(raw, "without_ECal", [metric])
+    percentages = impact._impact_percentages(raw, "no_ECal", [metric])
     ranking = impact._ranking_rows(
-        percentages, raw, "without_ECal", metric, limit=None,
+        percentages, raw, "no_ECal", metric, limit=None,
     )
 
-    fig = impact._impact_figure(ranking, metric, "without_ECal")
+    fig = impact._impact_figure(ranking, metric, "no_ECal")
 
     assert fig is not None
     assert list(fig.layout.yaxis.ticktext) == ["HCal", "Full detector"]
@@ -288,14 +288,14 @@ def test_ranking_rejects_a_nonfinite_baseline(baseline):
     metric = impact._METRICS_BY_COLUMN["wall_time_s"]
     raw = pd.DataFrame(
         {"wall_time_s": [baseline, 8.0]},
-        index=["baseline_all", "without_A"],
+        index=["baseline", "no_A"],
     )
     scores = pd.DataFrame(
-        {"Wall Time": [0.0, 20.0]}, index=raw.index,
+        {"Wall time": [0.0, 20.0]}, index=raw.index,
     )
 
     ranking = impact._ranking_rows(
-        scores, raw, "baseline_all", metric, limit=None,
+        scores, raw, "baseline", metric, limit=None,
     )
 
     assert ranking.empty
@@ -342,19 +342,19 @@ def test_failed_partial_metrics_cannot_become_the_best_alternative():
     assert any("failed_fast" in warning.value for warning in at.warning)
     assert {metric.delta for metric in at.metric} == {"successful"}
     assert {metric.label: metric.value for metric in at.metric} == {
-        "Wall Time": "+20.0%",
+        "Wall time": "+20.0%",
         "Peak RSS": "+10.0%",
-        "User CPU": "+22.2%",
-        "Output Size": "+40.0%",
+        "User CPU time": "+22.2%",
+        "Output size": "+40.0%",
     }
     assert len(at.get("plotly_chart")) == 1
 
 
 def test_latest_failed_duplicate_does_not_resurrect_an_older_success():
     rows = [
-        {"label": "baseline_all", "returncode": 0, "wall_time_s": 10.0},
-        {"label": "without_ECal", "returncode": 0, "wall_time_s": 8.0},
-        {"label": "without_ECal", "returncode": 1, "wall_time_s": 0.1},
+        {"label": "baseline", "returncode": 0, "wall_time_s": 10.0},
+        {"label": "no_ECal", "returncode": 0, "wall_time_s": 8.0},
+        {"label": "no_ECal", "returncode": 1, "wall_time_s": 0.1},
     ]
 
     at = AppTest.from_function(
@@ -365,9 +365,9 @@ def test_latest_failed_duplicate_does_not_resurrect_an_older_success():
 
     warning_text = "\n".join(warning.value for warning in at.warning)
     assert not at.exception, at.exception
-    assert list(at.selectbox(key="impact_baseline").options) == ["baseline_all"]
+    assert list(at.selectbox(key="impact_baseline").options) == ["baseline"]
     assert "Multiple result rows" in warning_text
-    assert "without_ECal" in warning_text
+    assert "no_ECal" in warning_text
     assert "Excluded failed or incomplete" in warning_text
     assert not at.metric
     assert not at.get("plotly_chart")
@@ -375,9 +375,9 @@ def test_latest_failed_duplicate_does_not_resurrect_an_older_success():
 
 def test_latest_successful_duplicate_remains_authoritative():
     rows = [
-        {"label": "baseline_all", "returncode": 0, "wall_time_s": 10.0},
-        {"label": "without_ECal", "returncode": 1, "wall_time_s": 0.1},
-        {"label": "without_ECal", "returncode": 0, "wall_time_s": 8.0},
+        {"label": "baseline", "returncode": 0, "wall_time_s": 10.0},
+        {"label": "no_ECal", "returncode": 1, "wall_time_s": 0.1},
+        {"label": "no_ECal", "returncode": 0, "wall_time_s": 8.0},
     ]
 
     at = AppTest.from_function(
@@ -389,7 +389,7 @@ def test_latest_successful_duplicate_remains_authoritative():
     warning_text = "\n".join(warning.value for warning in at.warning)
     assert not at.exception, at.exception
     assert list(at.selectbox(key="impact_baseline").options) == [
-        "baseline_all", "without_ECal",
+        "baseline", "no_ECal",
     ]
     assert "Multiple result rows" in warning_text
     assert "Excluded failed or incomplete" not in warning_text
@@ -397,10 +397,10 @@ def test_latest_successful_duplicate_remains_authoritative():
     assert len(at.get("plotly_chart")) == 1
 
 
-def test_baseline_all_is_the_default_even_when_another_label_sorts_first():
+def test_baseline_is_the_default_even_when_another_label_sorts_first():
     rows = [
         {"label": "aaa_alternative", "returncode": 0, "wall_time_s": 8.0},
-        {"label": "baseline_all", "returncode": 0, "wall_time_s": 10.0},
+        {"label": "baseline", "returncode": 0, "wall_time_s": 10.0},
     ]
 
     at = AppTest.from_function(
@@ -410,9 +410,9 @@ def test_baseline_all_is_the_default_even_when_another_label_sorts_first():
     ).run()
 
     assert not at.exception, at.exception
-    assert at.selectbox(key="impact_baseline").value == "baseline_all"
+    assert at.selectbox(key="impact_baseline").value == "baseline"
     selector = at.segmented_control(key="impact_sort")
-    assert selector.value == "Wall Time"
+    assert selector.value == "Wall time"
     assert selector.proto.required is True
     assert len(at.get("plotly_chart")) == 1
 
@@ -420,11 +420,11 @@ def test_baseline_all_is_the_default_even_when_another_label_sorts_first():
 def test_metric_selector_updates_the_focused_ranking():
     rows = [
         {
-            "label": "baseline_all", "returncode": 0, "wall_time_s": 10.0,
+            "label": "baseline", "returncode": 0, "wall_time_s": 10.0,
             "peak_rss_mb": 1000.0,
         },
         {
-            "label": "without_A", "returncode": 0, "wall_time_s": 8.0,
+            "label": "no_A", "returncode": 0, "wall_time_s": 8.0,
             "peak_rss_mb": 700.0,
         },
     ]
@@ -443,10 +443,10 @@ def test_metric_selector_updates_the_focused_ranking():
 
 def test_large_rankings_use_one_show_all_toggle_instead_of_a_dropdown():
     rows = [
-        {"label": "baseline_all", "returncode": 0, "wall_time_s": 100.0},
+        {"label": "baseline", "returncode": 0, "wall_time_s": 100.0},
         *[
             {
-                "label": f"without_Detector_{i:02d}",
+                "label": f"no_Detector_{i:02d}",
                 "returncode": 0,
                 "wall_time_s": 99.0 - i,
             }
@@ -476,12 +476,12 @@ def test_large_rankings_use_one_show_all_toggle_instead_of_a_dropdown():
 def test_show_all_preference_survives_switching_to_a_short_metric():
     rows = [
         {
-            "label": "baseline_all", "returncode": 0,
+            "label": "baseline", "returncode": 0,
             "wall_time_s": 100.0, "peak_rss_mb": 1000.0,
         },
         *[
             {
-                "label": f"without_Detector_{i:02d}",
+                "label": f"no_Detector_{i:02d}",
                 "returncode": 0,
                 "wall_time_s": 99.0 - i,
                 "peak_rss_mb": 900.0 - i if i < 2 else None,
@@ -500,7 +500,7 @@ def test_show_all_preference_survives_switching_to_a_short_metric():
     assert not at.toggle
     assert any("Showing all 2" in caption.value for caption in at.caption)
 
-    at.segmented_control(key="impact_sort").set_value("Wall Time").run()
+    at.segmented_control(key="impact_sort").set_value("Wall time").run()
 
     assert not at.exception, at.exception
     assert at.toggle(key="impact_show_all").value is True
@@ -516,11 +516,11 @@ def test_invalid_output_baseline_explains_percentage_limitation(
 ):
     rows = [
         {
-            "label": "baseline_all", "returncode": 0,
+            "label": "baseline", "returncode": 0,
             "wall_time_s": 10.0, "output_size_mb": baseline,
         },
         {
-            "label": "without_A", "returncode": 0,
+            "label": "no_A", "returncode": 0,
             "wall_time_s": 8.0, "output_size_mb": 1.0,
         },
     ]
@@ -530,11 +530,11 @@ def test_invalid_output_baseline_explains_percentage_limitation(
         default_timeout=30,
     ).run()
 
-    at.segmented_control(key="impact_sort").set_value("Output Size").run()
+    at.segmented_control(key="impact_sort").set_value("Output size").run()
 
     messages = "\n".join(message.value for message in at.info)
     assert not at.exception, at.exception
-    assert "Output Size" in messages
+    assert "Output size" in messages
     assert "baseline" in messages.lower()
     assert expected_reason in messages.lower()
     assert "No comparable output size values" not in messages

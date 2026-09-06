@@ -19,7 +19,7 @@ k4bench --xml $K4GEO/FCCee/ALLEGRO/compact/ALLEGRO_o1_v03/ALLEGRO_o1_v03.xml \
                       --gun.energy '10*GeV'"
 ```
 
-Outputs land in `logs/ALLEGRO_o1_v03/baseline_all_results.csv`. Read the summary
+Outputs land in `logs/ALLEGRO_o1_v03/baseline_results.csv`. Read the summary
 table on stdout, or load it:
 
 ```python
@@ -41,8 +41,8 @@ Rank detectors by the time saved when removed:
 ```python
 from k4bench.analysis import load_results
 df = load_results("logs/ALLEGRO_o1_v03")
-base = df.loc[df.label == "baseline_all", "wall_time_s"].iloc[0]
-df = df[df.label != "baseline_all"].copy()
+base = df.loc[df.label == "baseline", "wall_time_s"].iloc[0]
+df = df[df.label != "baseline"].copy()
 df["saved_s"] = base - df["wall_time_s"]
 print(df.sort_values("saved_s", ascending=False)[["label", "wall_time_s", "saved_s"]])
 ```
@@ -50,13 +50,13 @@ print(df.sort_values("saved_s", ascending=False)[["label", "wall_time_s", "saved
 ## 2b. Partial sweep over a few detectors
 
 When a full sweep is too long — dozens of detectors, or a CI budget — sweep only
-the ones you care about. Same baseline + `without_<Name>` comparison, restricted
+the ones you care about. Same baseline + `no_<Name>` comparison, restricted
 to the named detectors:
 
 ```bash
 k4bench --xml IDEA_o1_v03.xml --sweep-detectors DCH VertexBarrel --events 500 \
         --ddsim-args="--enableGun --gun.particle e- --gun.distribution uniform --gun.energy '10*GeV'"
-# → baseline_all + without_DCH + without_VertexBarrel
+# → baseline + no_DCH + no_VertexBarrel
 ```
 
 The analysis snippet above works unchanged — the labels are identical to a full
@@ -75,7 +75,7 @@ k4bench --xml ALLEGRO_o1_v03.xml \
 ```
 
 Useful for studying a subsystem's standalone cost, or to compare against its
-`without_` counterpart from a sweep.
+`no_` counterpart from a sweep.
 
 ## 4. Everything except an expensive detector (exclude-only)
 
@@ -86,7 +86,7 @@ k4bench --xml ALLEGRO_o1_v03.xml \
         --exclude-only DRcaloTubes \
         --events 200 \
         --ddsim-args="--enableGun --gun.particle e- --gun.distribution uniform"
-# → logs/ALLEGRO_o1_v03/without_DRcaloTubes_results.csv
+# → logs/ALLEGRO_o1_v03/no_DRcaloTubes_results.csv
 ```
 
 ## 5. Keep the results object for later

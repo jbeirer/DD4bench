@@ -21,6 +21,8 @@ import textwrap
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from k4bench.labels import BASELINE_LABEL, INCLUDE_PREFIX, REMOVAL_PREFIX
+
 #: The rendered recipe is an uploaded artifact rather than comment body, so the
 #: cap is only there to bound what a malformed run record can produce.
 _MAX_BYTES = 65536
@@ -81,15 +83,15 @@ def sweep_flag(label: str) -> str | None:
     The empty string represents the unswept baseline. Multi-detector labels are
     intentionally not reversible: their hash records identity, not the roster.
     """
-    if label == "baseline_all":
+    if label == BASELINE_LABEL:
         return ""
-    if label.startswith("without_"):
-        name = label.removeprefix("without_")
+    if label.startswith(REMOVAL_PREFIX):
+        name = label.removeprefix(REMOVAL_PREFIX)
         if not name or re.fullmatch(r"\d+_detectors_[0-9a-fA-F]+", name):
             return None
         return f"--sweep-detectors {name}"
-    if label.startswith("only_"):
-        name = label.removeprefix("only_")
+    if label.startswith(INCLUDE_PREFIX):
+        name = label.removeprefix(INCLUDE_PREFIX)
         return f"--include-only {name}" if name else None
     return None
 

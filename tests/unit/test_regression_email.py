@@ -308,7 +308,7 @@ def test_representative_rows_selected_by_absolute_percentage():
 
 
 def test_friendly_names_units_and_unknown_fallback():
-    assert _metric_label(_v(metric="mean_rss_mb", sub_detector="EMEC")) == "Mean event memory · EMEC"
+    assert _metric_label(_v(metric="mean_rss_mb", sub_detector="EMEC")) == "Mean event RSS · EMEC"
     assert _fmt_value("mean_time_s", 1.234) == "1.234 s"
     assert _fmt_value("cpu_efficiency", 0.873) == "87.3%"
     assert _fmt_value("peak_rss_mb", 512.0) == "512 MB"
@@ -358,9 +358,9 @@ def test_modern_palette_and_atom_branding_are_present():
 
 
 def test_machine_config_identifier_is_kept_on_one_line():
-    v = _v(label="without_VertexBarrel_assembly", first_confirmed_run_id="2026-06-27")
+    v = _v(label="no_VertexBarrel_assembly", first_confirmed_run_id="2026-06-27")
     html = to_html(_report(_group(v)))
-    assert 'white-space:nowrap;\">without_VertexBarrel_assembly</span>' in html
+    assert 'white-space:nowrap;\">no_VertexBarrel_assembly</span>' in html
 
 
 def test_clean_and_unreliable_groups_are_distinguished():

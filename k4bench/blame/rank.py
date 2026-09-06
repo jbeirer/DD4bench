@@ -123,10 +123,10 @@ class MetricStep:
     against the window's full picture rather than a single arbitrary metric.
 
     ``label`` is the benchmark config the metric was measured under (e.g. a
-    removal sweep's ``baseline`` vs. ``without_<detector>``) — deliberately
+    removal sweep's ``baseline`` vs. ``no_<detector>``) — deliberately
     *not* a grouping key: labels sharing a window still get one shared
     ranking, not one call each, but each step keeps its own label so the model
-    can tell "baseline regressed" apart from "only without_HCAL regressed",
+    can tell "baseline regressed" apart from "only no_HCAL regressed",
     which is itself a clue."""
 
     metric: str
@@ -294,7 +294,7 @@ _SYSTEM_PROMPT = (
     "detector, one physics sample, one build platform — every metric that moved "
     "across the same release window, each labelled with the benchmark "
     "configuration it was measured under, e.g. a detector-removal sweep's "
-    "baseline vs. without_<detector> runs; the recent release-by-release "
+    "baseline vs. no_<detector> runs; the recent release-by-release "
     "history of those metrics; the configurations that measured the same window "
     "and did NOT move; and, for each package that changed, the pull requests in "
     "its commit range with their code diffs. "

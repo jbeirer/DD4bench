@@ -371,14 +371,14 @@ def test_a_group_running_another_release_is_not_a_like_for_like_control():
 
 
 def test_the_within_group_control_survives_and_sorts_first():
-    # baseline stepped while without_HCAL did not, same detector/sample/platform:
+    # baseline stepped while no_HCAL did not, same detector/sample/platform:
     # the sharpest control the suite produces, and the one a prompt cap must keep.
     groups = [
-        _group("ALLEGRO_o1_v03", verdicts=[_flat(label="without_HCAL")]),
+        _group("ALLEGRO_o1_v03", verdicts=[_flat(label="no_HCAL")]),
         _group("IDEA_o1_v03", verdicts=[_flat()]),
     ]
     outcomes = _outcomes(groups)
-    assert (outcomes[0].detector, outcomes[0].label) == ("ALLEGRO_o1_v03", "without_HCAL")
+    assert (outcomes[0].detector, outcomes[0].label) == ("ALLEGRO_o1_v03", "no_HCAL")
 
 
 def test_a_step_that_cannot_be_dated_counts_as_inside_the_window():

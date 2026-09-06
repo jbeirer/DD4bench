@@ -23,9 +23,9 @@ import streamlit as st
 
 from k4bench.blame.models import RANKING_DISCLOSURE, BlameReport, CandidatePR
 from k4bench.regression.models import Direction, MetricVerdict, Severity
-from k4bench.labels import pretty_sample
+from k4bench.labels import compact_sample, pretty_metric as _pretty_metric
 from k4bench.regression.render import _badge, _fmt, _fmt_pct
-from ui_utils import _METRIC_LABELS, _to_rgba
+from ui_utils import _to_rgba
 
 #: Trend-flag marker specs keyed on verdict severity, matching the Regressions
 #: tab's colour language (severity = attention level, red = confirmed, amber =
@@ -214,10 +214,10 @@ def attention_key(v: MetricVerdict) -> tuple:
 
 
 def pretty_metric(v: MetricVerdict) -> str:
-    """Row-label metric name — the human label plus the sub-detector for
-    region-level rows (``wall time · VertexBarrel``)."""
-    name = _METRIC_LABELS.get(v.metric, v.metric)
-    return f"{name} · {v.sub_detector}" if v.sub_detector else name
+    """A verdict's metric name — :func:`k4bench.labels.pretty_metric` reached
+    through the verdict, which is what every caller in the dashboard holds
+    (``Wall time · VertexBarrel``)."""
+    return _pretty_metric(v.metric, v.sub_detector)
 
 
 def metric_option(
@@ -238,7 +238,7 @@ def metric_option(
         parts.append(verdict.detector)
     parts += [pretty_metric(verdict), verdict.label]
     if include_scope:
-        parts.append(f"{verdict.detector}, {pretty_sample(verdict.sample)}")
+        parts.append(f"{verdict.detector}, {compact_sample(verdict.sample)}")
     if include_window:
         base = verdict.last_accepted_run_date or "?"
         parts.append(f"{base} → {verdict.onset_run_date}")
@@ -295,7 +295,7 @@ def flag_table(
         }.get(v.severity, "⚠️")}
         if scope:
             rec["Detector"] = v.detector
-            rec["Sample"] = pretty_sample(v.sample)
+            rec["Sample"] = compact_sample(v.sample)
         rec.update({
             "Config": v.label,
             "Metric": pretty_metric(v),

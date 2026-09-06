@@ -47,7 +47,7 @@ timeout: 600  # 10 hours — a job past this is stuck, not merely slow
 # with the largest share of per-event time or of peak RSS: those are the ones a
 # drop-out run can resolve above the regression engine's effect floor. Memory is
 # the binding reason to sweep at all — region timing already localises a *time*
-# step from baseline_all, but it carries no memory information.
+# step from baseline, but it carries no memory information.
 sweep_detectors:
   - DRcalo
   - DCH_v2

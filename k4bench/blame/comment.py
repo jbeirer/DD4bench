@@ -101,7 +101,7 @@ from k4bench.blame.models import (
 )
 from k4bench.blame.reproduce import ReproducerFacts
 from k4bench.blame.reproduce import facts_from as reproducer_facts_from
-from k4bench.labels import pretty_platform, pretty_sample
+from k4bench.labels import compact_sample, pretty_platform
 from k4bench.regression.models import MetricVerdict, NightlyReport
 from k4bench.regression.render import (
     nightly_report_href,
@@ -146,7 +146,12 @@ _OMITTED_OBSERVATIONS_PREFIX = "<!-- k4bench-blame-observations-omitted:v1 "
 # row counts would over-count; the marker carries the union itself and lets a
 # converging lineage merge all of its parents without scraping Markdown.
 _CUMULATIVE_PLACEHOLDER = "<!-- k4bench-blame-cumulative -->"
-_CUMULATIVE_PREFIX = "<!-- k4bench-blame-cumulative:v1 "
+#: Versioned because the identities inside are keyed on the run label: a marker
+#: written under a different label vocabulary names rows that no longer match
+#: anything, and a comment is not ours to migrate. Bump the version whenever
+#: that vocabulary changes — an unreadable marker costs one lineage's merged
+#: state, where a misread one silently doubles every row it carries.
+_CUMULATIVE_PREFIX = "<!-- k4bench-blame-cumulative:v2 "
 _CUMULATIVE_SUFFIX = " -->"
 _MAX_CUMULATIVE_IDENTITIES = 10_000
 _MAX_CUMULATIVE_BYTES = 256_000
@@ -178,7 +183,11 @@ _MAX_RETAINED_ROWS = 20
 #: Report dates stay outside the digest, so they alone never trigger an edit.
 _DETAILS_START = "<!-- k4bench-blame-details:start -->"
 _DETAILS_END = "<!-- k4bench-blame-details:end -->"
-_RETAINED_PREFIX = "<!-- k4bench-blame-retained:v1 "
+#: Versioned for the same reason as :data:`_CUMULATIVE_PREFIX`: a retained row
+#: is keyed on the run label, so a snapshot written under another vocabulary
+#: renders beside tonight's rows as a separate regression rather than as their
+#: own history.
+_RETAINED_PREFIX = "<!-- k4bench-blame-retained:v2 "
 _RETAINED_SUFFIX = " -->"
 
 #: Likelihood points between this PR and the closest other candidate at or
@@ -740,7 +749,7 @@ def _association_summary(
         if _SHOW_PLATFORM_COLUMN or len({key[1] for key in grouped}) > 1:
             scope += f"<br>{_cell(pretty_platform(platform))}"
         lines.append(
-            f"| {scope} | {_cell(pretty_sample(sample))} | {metric_text} | "
+            f"| {scope} | {_cell(compact_sample(sample))} | {metric_text} | "
             f"**{attributed_in(entries)} / {len(entries)}** | {likelihood} "
             f"| {report_text} |"
         )
@@ -846,11 +855,6 @@ def _decoded_cumulative(
             return {}
         state = {}
         for value in values:
-            # Six-field entries are the short-lived identity-only v1 format.
-            # Reading them makes an already-rendered preview forward-compatible;
-            # its historical rows simply have no cumulative score to claim.
-            if isinstance(value, list) and len(value) == 6:
-                value = [*value, None, "", ""]
             if (
                 not isinstance(value, list)
                 or len(value) != 9
@@ -3404,7 +3408,7 @@ def _row_line(
     if _SHOW_PLATFORM_COLUMN:
         cells.append(_cell(pretty_platform(v.platform)))
     cells += [
-        _cell(pretty_sample(v.sample)),
+        _cell(compact_sample(v.sample)),
         f"`{_cell(v.label)}`",
     ]
     if show_window:
@@ -3436,7 +3440,7 @@ def _past_row_line(
     if _SHOW_PLATFORM_COLUMN:
         cells.append(_cell(pretty_platform(row.platform)))
     cells += [
-        _cell(pretty_sample(row.sample)),
+        _cell(compact_sample(row.sample)),
         f"`{_cell(row.label)}`",
     ]
     if show_window:
@@ -3940,7 +3944,7 @@ def _facts_payload(
         # Repair existing comments once after a change to what the rendered
         # body says. Report dates remain excluded, so later reconfirmations do
         # not edit.
-        "render_version": 3,
+        "render_version": 4,
         "window": [plan.base_release or "", plan.onset_release],
         "rows": [
             {

@@ -143,18 +143,18 @@ def test_a_window_end_that_was_never_run_yields_nothing(tmp_path):
 
 def test_another_configurations_regions_are_never_read(tmp_path):
     # Region files are per benchmark configuration; a removal sweep's
-    # without_HCAL run must not answer for the baseline.
+    # no_HCAL run must not answer for the baseline.
     dirs = [
         _write_run(tmp_path, "2026-07-14", "2026-07-14", {"HCAL": 1.0},
-                   label="without_HCAL"),
+                   label="no_HCAL"),
         _write_run(tmp_path, "2026-07-18", "2026-07-18", {"HCAL": 4.0},
-                   label="without_HCAL"),
+                   label="no_HCAL"),
     ]
     assert region_deltas(
         dirs, label="baseline", base_release="2026-07-14", onset_release="2026-07-18",
     ) == ()
     assert region_deltas(
-        dirs, label="without_HCAL",
+        dirs, label="no_HCAL",
         base_release="2026-07-14", onset_release="2026-07-18",
     )
 

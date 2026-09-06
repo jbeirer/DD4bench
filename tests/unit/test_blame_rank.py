@@ -208,7 +208,7 @@ def test_prompt_preserves_every_metric_and_candidate_exactly_once():
         MetricStep(metric="peak_rss_mb", metric_family="memory", direction="UP",
                    pct_change=0.15, label="baseline"),
         MetricStep(metric="wall_time_s", metric_family="time", direction="UP",
-                   pct_change=0.35, label="without_HCAL"),
+                   pct_change=0.35, label="no_HCAL"),
     )
     request = _request(metrics=metrics)
     prompt = _build_user_prompt(request)
@@ -216,7 +216,7 @@ def test_prompt_preserves_every_metric_and_candidate_exactly_once():
     assert bullets == [
         "  - wall_time_s (baseline) up +20.0%",
         "  - peak_rss_mb (baseline) up +15.0%",
-        "  - wall_time_s (without_HCAL) up +35.0%",
+        "  - wall_time_s (no_HCAL) up +35.0%",
     ]
     numbers = [int(ln.split("#")[1].split(" ")[0])
                for ln in prompt.splitlines() if ln.startswith("- #")]
@@ -273,7 +273,7 @@ def test_prompt_carries_every_metric_sharing_the_window():
 
 
 def test_prompt_carries_every_labels_metrics_in_one_shared_block():
-    # A detector-removal sweep's baseline and without_<detector> runs are
+    # A detector-removal sweep's baseline and no_<detector> runs are
     # different benchmark configs sharing one run group and window — both
     # must reach the model, each tagged with its own label, in the *same*
     # prompt (not a separate call per label).
@@ -281,10 +281,10 @@ def test_prompt_carries_every_labels_metrics_in_one_shared_block():
         MetricStep(metric="wall_time_s", metric_family="time", direction="UP",
                    pct_change=0.2, label="baseline"),
         MetricStep(metric="wall_time_s", metric_family="time", direction="UP",
-                   pct_change=0.35, label="without_HCAL_Barrel"),
+                   pct_change=0.35, label="no_HCAL_Barrel"),
     )))
     assert "wall_time_s (baseline) up +20.0%" in prompt
-    assert "wall_time_s (without_HCAL_Barrel) up +35.0%" in prompt
+    assert "wall_time_s (no_HCAL_Barrel) up +35.0%" in prompt
 
 
 def test_diff_budget_is_shared_fairly_not_first_come_first_served(monkeypatch):
@@ -612,11 +612,11 @@ def test_the_first_reading_of_the_step_survives_a_completing_retry():
 def test_counter_evidence_is_kept_when_given_and_optional_when_not():
     body = _rankings_json(
         {"repo": "key4hep/k4geo", "pr": 10, "likelihood": 60, "reason": "touches HCAL",
-         "against": "without_HCAL moved too"},
+         "against": "no_HCAL moved too"},
         {"repo": "AIDASoft/DD4hep", "pr": 20, "likelihood": 5, "reason": "unrelated"},
     )
     result = _ranker([_completion(body)]).rank(_request()).rankings
-    assert result[("key4hep/k4geo", 10)].against == "without_HCAL moved too"
+    assert result[("key4hep/k4geo", 10)].against == "no_HCAL moved too"
     # A judgement is never rejected for lacking it: that would trade a real
     # ranking for a stylistic one and leave the candidate reading as unjudged.
     assert result[("AIDASoft/DD4hep", 20)].against == ""
@@ -670,11 +670,11 @@ def test_the_prompt_carries_the_configurations_that_stayed_flat():
     request = dataclasses.replace(_request(), outcomes=(
         ScopeOutcome(detector="ALLEGRO_o1_v03",
                      platform="x86_64-almalinux9-gcc14.2.0-opt",
-                     sample="single_mu-", label="without_HCAL", status="clean"),
+                     sample="single_mu-", label="no_HCAL", status="clean"),
     ))
     prompt = rank_mod._build_user_prompt(request)
     assert "did NOT confirm a step" in prompt
-    assert "without_HCAL" in prompt
+    assert "no_HCAL" in prompt
 
 
 def test_the_rules_the_second_pass_is_judged_under_are_the_same_ones():

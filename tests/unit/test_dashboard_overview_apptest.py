@@ -34,7 +34,7 @@ _DASHBOARD_DIR = Path(__file__).resolve().parents[2] / "dashboard"
 
 def _verdict(det: str, metric: str, value: float, **kw) -> MetricVerdict:
     base = dict(
-        detector=det, platform="PLAT", sample="single_e_10GeV", label="baseline_all",
+        detector=det, platform="PLAT", sample="single_e_10GeV", label="baseline",
         metric_family="time", metric=metric, sub_detector=None,
         run_id="2026-07-11", run_date="2026-07-11", value=value,
         baseline_median=value, baseline_mad=0.1, pct_change=0.0, z_score=0.0,
@@ -85,7 +85,7 @@ def _report(
 
 
 #: The config every detector is compared on; a job failure names it.
-_BASELINE = "baseline_all"
+_BASELINE = "baseline"
 
 DATES = ["2026-07-11", "2026-07-10", "2026-07-09"]
 #: The middle night failed the host reliability check — exercises the
@@ -355,14 +355,14 @@ def test_status_view_previews_the_worst_flags_trend():
     # The roster leads with the flagged detector and its worst flag.
     roster = at.dataframe[0].value
     assert roster.iloc[0]["Detector"] == "CLD_o2_v08"
-    assert roster.iloc[0]["Worst flag"] == "wall time · baseline_all"
+    assert roster.iloc[0]["Worst flag"] == "Wall time · baseline"
     # The trend preview opens on that flag and draws the chart, with no run
     # downloads (everything comes from the stubbed reports). Its options read
     # exactly like the Regressions tab's picker — same badge wording, same Δ —
     # with the detector leading, since this view spans them.
     preview = at.selectbox(key="det_ov_flag_trend")
     assert preview.options[1] == (
-        "🔴 Regression · CLD_o2_v08 · wall time · baseline_all — Δ +20.0%"
+        "🔴 Regression · CLD_o2_v08 · Wall time · baseline — Δ +20.0%"
     )
     assert preview.value.detector == "CLD_o2_v08"
     assert preview.value.metric == "wall_time_s"
@@ -934,9 +934,9 @@ def test_a_linked_report_still_opens_when_the_latest_one_fails_to_load():
     # Report fetching is per night and independent: one failed night is simply
     # absent. A PR comment's archived link must not break because an unrelated
     # newer report could not be read.
-    without_latest = {n: r for n, r in REPORTS.items() if n != max(DATES)}
+    no_latest = {n: r for n, r in REPORTS.items() if n != max(DATES)}
     at = AppTest.from_function(
-        _app, args=(str(_DASHBOARD_DIR), DATES, without_latest, _WINDOW),
+        _app, args=(str(_DASHBOARD_DIR), DATES, no_latest, _WINDOW),
         default_timeout=30,
     )
     at.query_params.update(view="Nightly Report", report="2026-07-09")

@@ -118,7 +118,7 @@ metric to open its horizontal ranking: the selected baseline is the zero line,
 better-than-baseline changes extend right in blue, and worse changes extend left
 in orange. Positive has the same meaning for every metric — less
 time/memory/CPU/output, or more throughput. The default **Full detector**
-(`baseline_all`) comparison is the usual subdetector-removal study; the wording
+(`baseline`) comparison is the usual subdetector-removal study; the wording
 remains baseline-relative if you select another reference. Throughput remains
 available in the metric selector as the rate-oriented view of wall time. Hover a
 bar for rounded raw measurements and their absolute change. The compact ranking
@@ -371,7 +371,7 @@ one sortable table.
 The group is judged once
 per detector/platform/sample/window: when several metrics (or several
 benchmark-config labels, e.g. a removal sweep's `baseline` and
-`without_<detector>` runs) stepped across the same release boundary in the
+`no_<detector>` runs) stepped across the same release boundary in the
 same run group, they share one diff and one candidate set, so the card shows a
 single verdict rather than a table per metric. A different detector or sample
 sharing the same release dates never shares a verdict. This is a ranked

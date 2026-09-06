@@ -17,7 +17,7 @@ Attribution { #attribution }
     top-level DD4hep [DetElement](#detelement) a step belongs to.
 
 Baseline
-:   A run with the full, unmodified geometry, labelled `baseline_all`. The
+:   A run with the full, unmodified geometry, labelled `baseline`. The
     reference point for all comparisons.
 
 `by_birth` { #by_birth }

@@ -12,7 +12,7 @@ You'll see `NOTE: k4Bench timing plugins unavailable (...)`. Common causes: the 
 
 ## Do per-detector sweep deltas add up to the baseline?
 
-No, and they're not meant to. Removing a detector also removes its material, so particles shower differently and deposit energy elsewhere. Treat `baseline − without_X` as an *attribution estimate* for detector X, not an exact decomposition. The [region plugin](user-guide/features/timing-plugins.md#per-region-timing) gives a more intrinsic per-detector view.
+No, and they're not meant to. Removing a detector also removes its material, so particles shower differently and deposit energy elsewhere. Treat `baseline − no_X` as an *attribution estimate* for detector X, not an exact decomposition. The [region plugin](user-guide/features/timing-plugins.md#per-region-timing) gives a more intrinsic per-detector view.
 
 ## What's the difference between run-level and per-event time?
 

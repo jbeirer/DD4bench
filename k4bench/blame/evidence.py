@@ -359,7 +359,7 @@ class ScopeOutcome:
     The negative evidence, and the reason both passes want it. Identity runs
     down to ``label`` — the benchmark configuration — not just the run group,
     because the sharpest control this suite produces is *within* a group:
-    ``baseline`` stepping while ``without_HCAL`` stayed flat, same detector,
+    ``baseline`` stepping while ``no_HCAL`` stayed flat, same detector,
     same sample, same platform, same night, places the cost inside the HCAL.
     Stopping at the group would delete exactly that comparison, since the group
     also holds the regression it is the control for.
@@ -459,7 +459,7 @@ def outcomes_for_window(
 
     "ALLEGRO moved and IDEA did not" is only readable if the *did not* is
     stated, and so is the sharper within-detector version — "baseline moved and
-    without_HCAL did not" — which is why a configuration, not a run group, is the
+    no_HCAL did not" — which is why a configuration, not a run group, is the
     unit here. Excluding a whole group because one of its configurations
     regressed would delete exactly the control the prompt asks the model to reason
     from: the baseline that stepped and the detector-removal run that did not live

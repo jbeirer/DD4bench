@@ -27,7 +27,7 @@ def test_returns_args_unchanged_without_steering_file(tmp_path):
             extra_args=args,
             present_detectors={"A"},
             log_dir=tmp_path,
-            label="without_B",
+            label="no_B",
         )
         is args
     )
@@ -41,10 +41,10 @@ def test_rewrites_path_and_keeps_other_args(tmp_path):
         extra_args=args,
         present_detectors={"DREndcapTubes"},
         log_dir=tmp_path,
-        label="without_DRBarrelTubes",
+        label="no_DRBarrelTubes",
     )
 
-    assert patched[2] == str(tmp_path / "without_DRBarrelTubes_steering.py")
+    assert patched[2] == str(tmp_path / "no_DRBarrelTubes_steering.py")
     assert patched[:2] == ["--enableGun", "--steeringFile"]
     assert patched[3:] == ["--gun.particle", "e-"]
     assert args[2] == str(steering), "caller's list must not be mutated"
@@ -69,10 +69,10 @@ def test_path_attached_to_the_flag_is_rewritten_in_place(tmp_path, spelling):
         extra_args=[spelling.format(path=steering), "--enableGun"],
         present_detectors={"DREndcapTubes"},
         log_dir=tmp_path,
-        label="without_DRBarrelTubes",
+        label="no_DRBarrelTubes",
     )
 
-    dest = tmp_path / "without_DRBarrelTubes_steering.py"
+    dest = tmp_path / "no_DRBarrelTubes_steering.py"
     assert patched == [spelling.format(path=dest), "--enableGun"]
     assert dest.exists()
 
@@ -84,7 +84,7 @@ def test_trailing_flag_without_a_path_is_left_to_ddsim(tmp_path):
             extra_args=args,
             present_detectors={"A"},
             log_dir=tmp_path,
-            label="without_B",
+            label="no_B",
         )
         is args
     )
@@ -96,10 +96,10 @@ def test_copy_preserves_original_and_appends_epilogue(tmp_path):
         extra_args=["--steeringFile", str(steering)],
         present_detectors={"DREndcapTubes"},
         log_dir=tmp_path,
-        label="without_DRBarrelTubes",
+        label="no_DRBarrelTubes",
     )
 
-    copy = (tmp_path / "without_DRBarrelTubes_steering.py").read_text()
+    copy = (tmp_path / "no_DRBarrelTubes_steering.py").read_text()
     assert copy.startswith(STEERING_BODY)
     assert "DREndcapTubes" in copy
     assert steering.read_text() == STEERING_BODY, "original must not be touched"
@@ -114,7 +114,7 @@ def test_epilogue_drops_only_absent_detectors(tmp_path):
         extra_args=["--steeringFile", str(steering)],
         present_detectors={"DREndcapTubes", "SCEPCal_MainLayer"},
         log_dir=tmp_path,
-        label="without_DRBarrelTubes",
+        label="no_DRBarrelTubes",
     )
 
     class _Geometry:
@@ -128,7 +128,7 @@ def test_epilogue_drops_only_absent_detectors(tmp_path):
     class _SIM:
         geometry = _Geometry()
 
-    epilogue = (tmp_path / "without_DRBarrelTubes_steering.py").read_text()
+    epilogue = (tmp_path / "no_DRBarrelTubes_steering.py").read_text()
     exec(compile(epilogue, "<epilogue>", "exec"), {"SIM": _SIM})
 
     # Absent subdetectors go, including a path key whose leading element is

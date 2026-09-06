@@ -200,23 +200,23 @@ class TestFailedConfigMask:
 
 class TestLoadResults:
     def test_returns_dataframe(self, tmp_path):
-        _write_results_csv(tmp_path, [_minimal_row("baseline_all")])
+        _write_results_csv(tmp_path, [_minimal_row("baseline")])
         df = load_results(tmp_path)
         assert isinstance(df, pd.DataFrame)
 
     def test_row_count(self, tmp_path):
-        _write_results_csv(tmp_path, [_minimal_row("baseline_all"), _minimal_row("without_Ecal")])
+        _write_results_csv(tmp_path, [_minimal_row("baseline"), _minimal_row("no_Ecal")])
         df = load_results(tmp_path)
         assert len(df) == 2
 
     def test_float_columns_are_float(self, tmp_path):
-        _write_results_csv(tmp_path, [_minimal_row("baseline_all")])
+        _write_results_csv(tmp_path, [_minimal_row("baseline")])
         df = load_results(tmp_path)
         assert df["wall_time_s"].dtype == float
         assert df["peak_rss_mb"].dtype == float
 
     def test_int_columns_are_int64(self, tmp_path):
-        _write_results_csv(tmp_path, [_minimal_row("baseline_all")])
+        _write_results_csv(tmp_path, [_minimal_row("baseline")])
         df = load_results(tmp_path)
         assert str(df["n_events"].dtype) == "Int64"
         assert str(df["returncode"].dtype) == "Int64"
@@ -229,13 +229,13 @@ class TestLoadResults:
         assert pd.isna(df["wall_time_s"].iloc[0])
 
     def test_label_filter(self, tmp_path):
-        _write_results_csv(tmp_path, [_minimal_row("baseline_all"), _minimal_row("without_Ecal")])
-        df = load_results(tmp_path, labels=["baseline_all"])
+        _write_results_csv(tmp_path, [_minimal_row("baseline"), _minimal_row("no_Ecal")])
+        df = load_results(tmp_path, labels=["baseline"])
         assert len(df) == 1
-        assert df["label"].iloc[0] == "baseline_all"
+        assert df["label"].iloc[0] == "baseline"
 
     def test_missing_label_raises(self, tmp_path):
-        _write_results_csv(tmp_path, [_minimal_row("baseline_all")])
+        _write_results_csv(tmp_path, [_minimal_row("baseline")])
         with pytest.raises(ValueError, match="Missing result files"):
             load_results(tmp_path, labels=["nonexistent"])
 
@@ -244,7 +244,7 @@ class TestLoadResults:
             load_results(tmp_path)
 
     def test_accepts_string_path(self, tmp_path):
-        _write_results_csv(tmp_path, [_minimal_row("baseline_all")])
+        _write_results_csv(tmp_path, [_minimal_row("baseline")])
         df = load_results(str(tmp_path))
         assert len(df) == 1
 
@@ -256,39 +256,39 @@ class TestLoadResults:
 
 class TestLoadEventTiming:
     def test_returns_dict(self, tmp_path):
-        _write_event_json(tmp_path / "baseline_all_events.json")
+        _write_event_json(tmp_path / "baseline_events.json")
         result = load_event_timing(tmp_path)
         assert isinstance(result, dict)
 
     def test_label_extracted_from_filename(self, tmp_path):
-        _write_event_json(tmp_path / "baseline_all_events.json")
+        _write_event_json(tmp_path / "baseline_events.json")
         result = load_event_timing(tmp_path)
-        assert "baseline_all" in result
+        assert "baseline" in result
 
     def test_dataframe_columns(self, tmp_path):
-        _write_event_json(tmp_path / "baseline_all_events.json", n_events=3)
-        df = load_event_timing(tmp_path)["baseline_all"]
+        _write_event_json(tmp_path / "baseline_events.json", n_events=3)
+        df = load_event_timing(tmp_path)["baseline"]
         assert set(df.columns) == {
             "event_number", "event_time_s",
             "rss_begin_mb", "rss_end_mb", "rss_delta_mb",
         }
 
     def test_rss_delta_computed(self, tmp_path):
-        _write_event_json(tmp_path / "baseline_all_events.json", n_events=2)
-        df = load_event_timing(tmp_path)["baseline_all"]
+        _write_event_json(tmp_path / "baseline_events.json", n_events=2)
+        df = load_event_timing(tmp_path)["baseline"]
         assert (df["rss_delta_mb"] == df["rss_end_mb"] - df["rss_begin_mb"]).all()
 
     def test_multiple_files_loaded(self, tmp_path):
-        _write_event_json(tmp_path / "baseline_all_events.json")
-        _write_event_json(tmp_path / "without_Ecal_events.json")
+        _write_event_json(tmp_path / "baseline_events.json")
+        _write_event_json(tmp_path / "no_Ecal_events.json")
         result = load_event_timing(tmp_path)
-        assert set(result.keys()) == {"baseline_all", "without_Ecal"}
+        assert set(result.keys()) == {"baseline", "no_Ecal"}
 
     def test_label_filter(self, tmp_path):
-        _write_event_json(tmp_path / "baseline_all_events.json")
-        _write_event_json(tmp_path / "without_Ecal_events.json")
-        result = load_event_timing(tmp_path, labels=["baseline_all"])
-        assert list(result.keys()) == ["baseline_all"]
+        _write_event_json(tmp_path / "baseline_events.json")
+        _write_event_json(tmp_path / "no_Ecal_events.json")
+        result = load_event_timing(tmp_path, labels=["baseline"])
+        assert list(result.keys()) == ["baseline"]
 
     def test_missing_file_raises_when_labels_explicit(self, tmp_path):
         with pytest.raises(ValueError, match="Missing event files"):
@@ -311,9 +311,9 @@ class TestLoadEventTiming:
         assert result == {}
 
     def test_accepts_string_path(self, tmp_path):
-        _write_event_json(tmp_path / "baseline_all_events.json")
+        _write_event_json(tmp_path / "baseline_events.json")
         result = load_event_timing(str(tmp_path))
-        assert "baseline_all" in result
+        assert "baseline" in result
 
 
 # ---------------------------------------------------------------------------
@@ -354,50 +354,50 @@ def _write_region_json(path: Path, n_events: int = 5, detectors: list[str] | Non
 
 class TestLoadRegionTiming:
     def test_returns_dict(self, tmp_path):
-        _write_region_json(tmp_path / "baseline_all_regions.json")
+        _write_region_json(tmp_path / "baseline_regions.json")
         result = load_region_timing(tmp_path)
         assert isinstance(result, dict)
 
     def test_label_extracted_from_filename(self, tmp_path):
-        _write_region_json(tmp_path / "baseline_all_regions.json")
+        _write_region_json(tmp_path / "baseline_regions.json")
         result = load_region_timing(tmp_path)
-        assert "baseline_all" in result
+        assert "baseline" in result
 
     def test_result_has_required_keys(self, tmp_path):
-        _write_region_json(tmp_path / "baseline_all_regions.json")
-        entry = load_region_timing(tmp_path)["baseline_all"]
+        _write_region_json(tmp_path / "baseline_regions.json")
+        entry = load_region_timing(tmp_path)["baseline"]
         assert set(entry.keys()) == {"meta", "events", "at_location", "by_birth", "steps"}
 
     def test_events_dataframe_columns(self, tmp_path):
-        _write_region_json(tmp_path / "baseline_all_regions.json", n_events=3)
-        df = load_region_timing(tmp_path)["baseline_all"]["events"]
+        _write_region_json(tmp_path / "baseline_regions.json", n_events=3)
+        df = load_region_timing(tmp_path)["baseline"]["events"]
         assert set(df.columns) == {
             "event_number", "event_wall_s",
             "event_region_sum_s", "event_unaccounted_s",
         }
 
     def test_at_location_indexed_by_event(self, tmp_path):
-        _write_region_json(tmp_path / "baseline_all_regions.json", n_events=3)
-        at_loc = load_region_timing(tmp_path)["baseline_all"]["at_location"]
+        _write_region_json(tmp_path / "baseline_regions.json", n_events=3)
+        at_loc = load_region_timing(tmp_path)["baseline"]["at_location"]
         assert at_loc.index.name == "event_number"
         assert "ECalBarrel" in at_loc.columns
 
     def test_by_birth_same_shape_as_at_location(self, tmp_path):
-        _write_region_json(tmp_path / "baseline_all_regions.json", n_events=4)
-        entry = load_region_timing(tmp_path)["baseline_all"]
+        _write_region_json(tmp_path / "baseline_regions.json", n_events=4)
+        entry = load_region_timing(tmp_path)["baseline"]
         assert entry["at_location"].shape == entry["by_birth"].shape
 
     def test_multiple_files_loaded(self, tmp_path):
-        _write_region_json(tmp_path / "baseline_all_regions.json")
-        _write_region_json(tmp_path / "without_Ecal_regions.json")
+        _write_region_json(tmp_path / "baseline_regions.json")
+        _write_region_json(tmp_path / "no_Ecal_regions.json")
         result = load_region_timing(tmp_path)
-        assert set(result.keys()) == {"baseline_all", "without_Ecal"}
+        assert set(result.keys()) == {"baseline", "no_Ecal"}
 
     def test_label_filter(self, tmp_path):
-        _write_region_json(tmp_path / "baseline_all_regions.json")
-        _write_region_json(tmp_path / "without_Ecal_regions.json")
-        result = load_region_timing(tmp_path, labels=["baseline_all"])
-        assert list(result.keys()) == ["baseline_all"]
+        _write_region_json(tmp_path / "baseline_regions.json")
+        _write_region_json(tmp_path / "no_Ecal_regions.json")
+        result = load_region_timing(tmp_path, labels=["baseline"])
+        assert list(result.keys()) == ["baseline"]
 
     def test_missing_label_raises(self, tmp_path):
         with pytest.raises(ValueError, match="Missing region files"):
@@ -408,9 +408,9 @@ class TestLoadRegionTiming:
             load_region_timing(tmp_path)
 
     def test_accepts_string_path(self, tmp_path):
-        _write_region_json(tmp_path / "baseline_all_regions.json")
+        _write_region_json(tmp_path / "baseline_regions.json")
         result = load_region_timing(str(tmp_path))
-        assert "baseline_all" in result
+        assert "baseline" in result
 
     def test_mismatched_array_lengths_raises(self, tmp_path):
         path = tmp_path / "bad_regions.json"
@@ -433,8 +433,8 @@ class TestLoadRegionTiming:
             load_region_timing(tmp_path)
 
     def test_meta_fields_populated(self, tmp_path):
-        _write_region_json(tmp_path / "baseline_all_regions.json")
-        meta = load_region_timing(tmp_path)["baseline_all"]["meta"]
+        _write_region_json(tmp_path / "baseline_regions.json")
+        meta = load_region_timing(tmp_path)["baseline"]["meta"]
         assert meta["schema_version"] == 1
         assert meta["timer"] == "rdtscp"
         assert isinstance(meta["detectors"], list)

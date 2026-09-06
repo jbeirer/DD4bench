@@ -29,7 +29,7 @@ flowchart LR
 
 Time the complete geometry once — the reference point for everything else, and
 the right choice when you only want overall numbers. `ddsim` runs against your
-original XML directly, with no patching. Labelled `baseline_all`.
+original XML directly, with no patching. Labelled `baseline`.
 
 ```bash
 k4bench --xml ALLEGRO_o1_v03.xml --events 100 \
@@ -39,7 +39,7 @@ k4bench --xml ALLEGRO_o1_v03.xml --events 100 \
 ## Full sweep
 
 Measure each subdetector's individual cost in one command: the baseline plus one
-`without_<Name>` run per discovered detector.
+`no_<Name>` run per discovered detector.
 
 ```bash
 k4bench --xml ALLEGRO_o1_v03.xml --sweep --events 500 \
@@ -60,7 +60,7 @@ detectors yields just the baseline.
 
 A full sweep over a large detector can be dozens of runs. When you only care
 about a handful of subdetectors, `--sweep-detectors` runs the same baseline plus
-`without_<Name>` comparison but restricted to the names you list:
+`no_<Name>` comparison but restricted to the names you list:
 
 ```bash
 k4bench --xml IDEA_o1_v03.xml --sweep-detectors DCH VertexBarrel --events 500 \
@@ -68,7 +68,7 @@ k4bench --xml IDEA_o1_v03.xml --sweep-detectors DCH VertexBarrel --events 500 \
 ```
 
 This is exactly `--sweep` with the removal set narrowed — same `SweepMode.FULL`,
-same `baseline_all` + `without_<Name>` labels, same resilience to unpatchable
+same `baseline` + `no_<Name>` labels, same resilience to unpatchable
 detectors. Names not present in the geometry are warned and dropped; if *all*
 requested names are unknown the run aborts and lists the available detectors.
 It's the mode to reach for in CI when a full sweep would take too long.
@@ -82,7 +82,7 @@ Two single-run modes for studying a subset:
 k4bench --xml ALLEGRO_o1_v03.xml --include-only ECalBarrel HCalBarrel \
         --ddsim-args="--enableGun --gun.particle e-"
 
-# Remove these, keep the rest → label without_DRcaloTubes
+# Remove these, keep the rest → label no_DRcaloTubes
 k4bench --xml ALLEGRO_o1_v03.xml --exclude-only DRcaloTubes \
         --ddsim-args="--enableGun --gun.particle e-"
 ```
@@ -97,10 +97,10 @@ Labels double as filename stems, so they're kept short:
 
 | Mode | Label |
 | --- | --- |
-| Baseline / full baseline | `baseline_all` |
-| Full removal | `without_<Name>` |
+| Baseline / full baseline | `baseline` |
+| Full removal | `no_<Name>` |
 | Include-only | `only_<a>_<b>_…` |
-| Exclude-only | `without_<a>_<b>_…` |
+| Exclude-only | `no_<a>_<b>_…` |
 | More than five names | `<prefix><N>_detectors_<hash>` |
 
 When many detectors are named the label collapses to a stable hash so filenames

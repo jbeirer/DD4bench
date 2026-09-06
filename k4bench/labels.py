@@ -28,7 +28,15 @@ from dataclasses import dataclass
 #: contract: result CSV/JSON files and historical reports use it as a key.
 #: Keeping it in this dependency-free label module lets readers of that data
 #: share the contract without importing the benchmark orchestrator.
-BASELINE_LABEL = "baseline_all"
+BASELINE_LABEL = "baseline"
+
+#: Prefixes the two patched sweep shapes carry, sharing the contract above: an
+#: ablation run is ``no_<detector>``, an include-only run ``only_<detector>``.
+#: Public so the benchmark that writes a label and the readers that invert one
+#: (:func:`k4bench.blame.reproduce.sweep_flag`, the dashboard's impact chart)
+#: spell it once rather than each carrying its own literal.
+REMOVAL_PREFIX = "no_"
+INCLUDE_PREFIX = "only_"
 
 #: Recognized generator/beam/particle tokens for :func:`pretty_sample`. Any
 #: sample name that doesn't match one of the two known layouts below (or that
@@ -40,10 +48,48 @@ _PARTICLE_LABELS = {
     "e-": "e⁻", "e+": "e⁺", "mu-": "μ⁻", "mu+": "μ⁺", "gamma": "γ",
     "pi+": "π⁺", "pi-": "π⁻", "pi0": "π⁰", "proton": "p", "kaon+": "K⁺", "kaon-": "K⁻",
 }
+#: The generator and beams every sample currently uses. :func:`compact_sample`
+#: drops these two tokens because a column of them discriminates nothing, and
+#: names any *other* generator or beam setup — so widening the sample roster
+#: makes the short form grow a distinguishing token rather than silently
+#: conflating two samples.
+_DEFAULT_GENERATOR = "p8"
+_DEFAULT_BEAMS = "ee"
+
 #: A two-letter-plus final state after a capitalized boson reads as a decay,
 #: e.g. "Zbb" -> "Z → bb"; anything else (e.g. "WW", "ZH", "qq") is left as-is
 #: rather than guessed at.
 _PROCESS_SPLIT_RE = re.compile(r"^([A-Z])([a-z]{2,})$")
+
+_ENERGY_RE = re.compile(r"^(\d+(?:\.\d+)?)(GeV|MeV|TeV)$")
+_ECM_RE = re.compile(r"^ecm(\d+(?:\.\d+)?)$")
+
+
+def _gun_tokens(sample: str) -> tuple[str, str, str] | None:
+    """``single_e-_10GeV`` split into particle, magnitude and unit, or ``None``
+    for anything that is not a single-particle gun directory."""
+    tokens = sample.split("_")
+    if len(tokens) != 3 or tokens[0] != "single":
+        return None
+    energy = _ENERGY_RE.match(tokens[2])
+    return (tokens[1], energy[1], energy[2]) if energy else None
+
+
+def _generator_tokens(sample: str) -> tuple[str, str, str, str] | None:
+    """``p8_ee_Zbb_ecm91`` split into generator, beams, process and centre-of-mass
+    energy, or ``None`` for anything that is not a generator sample directory."""
+    tokens = sample.split("_")
+    if len(tokens) != 4:
+        return None
+    ecm = _ECM_RE.match(tokens[3])
+    return (tokens[0], tokens[1], tokens[2], ecm[1].removesuffix(".0")) if ecm else None
+
+
+def _process(process: str, arrow: str) -> str:
+    """*process* as a decay when it reads as one. The arrow is the caller's
+    because the two label widths space it differently."""
+    split = _PROCESS_SPLIT_RE.match(process)
+    return f"{split[1]}{arrow}{split[2]}" if split else process
 
 
 def pretty_sample(sample: str) -> str:
@@ -53,27 +99,100 @@ def pretty_sample(sample: str) -> str:
     single-particle guns (``single_{particle}_{energy}``) and generator
     samples (``{gen}_{beams}_{process}_ecm{energy}``, e.g.
     ``p8_ee_Zbb_ecm91``). Anything else is returned unchanged.
-    """
-    tokens = sample.split("_")
-    if (
-        len(tokens) == 3 and tokens[0] == "single"
-        and re.fullmatch(r"\d+(\.\d+)?(GeV|MeV|TeV)", tokens[2])
-    ):
-        particle = _PARTICLE_LABELS.get(tokens[1], tokens[1])
-        return f"Single {particle} · {tokens[2]}"
 
-    if len(tokens) == 4 and re.fullmatch(r"ecm\d+(\.\d+)?", tokens[3]):
-        gen = _GENERATOR_LABELS.get(tokens[0], tokens[0])
-        beams = _BEAM_LABELS.get(tokens[1], tokens[1])
-        process = tokens[2]
-        if m := _PROCESS_SPLIT_RE.match(process):
-            process = f"{m.group(1)} → {m.group(2)}"
-        ecm = tokens[3].removeprefix("ecm")
-        if ecm.endswith(".0"):
-            ecm = ecm[:-2]
-        return f"{gen}: {beams} → {process} ({ecm} GeV)"
+    This is the *full* form, naming every part of the sample. Use it in prose
+    and wherever there is room for it; :func:`compact_sample` is the one for a
+    narrow table cell.
+    """
+    if gun := _gun_tokens(sample):
+        particle, value, unit = gun
+        return f"Single {_PARTICLE_LABELS.get(particle, particle)} · {value} {unit}"
+
+    if parsed := _generator_tokens(sample):
+        gen, beams, process, ecm = parsed
+        return (
+            f"{_GENERATOR_LABELS.get(gen, gen)}: "
+            f"{_BEAM_LABELS.get(beams, beams)} → {_process(process, ' → ')} "
+            f"({ecm} GeV)"
+        )
 
     return sample
+
+
+def compact_sample(sample: str) -> str:
+    """Narrow-cell label for an EOS sample directory name, e.g.
+    ``p8_ee_Zbb_ecm91`` -> ``Z→bb · 91 GeV`` and ``single_e-_10GeV`` ->
+    ``e⁻ gun · 10 GeV``.
+
+    Half the width of :func:`pretty_sample`, for the markdown tables in a
+    pull-request comment and the dashboard's dataframe columns, where the full
+    form wraps over several lines and costs more room than the column it sits
+    in is worth. It keeps what separates one sample from another — the process
+    and the energy — and drops the generator and beams while they are the
+    defaults every sample shares (:data:`_DEFAULT_GENERATOR`,
+    :data:`_DEFAULT_BEAMS`).
+
+    "gun" is what tells a single-particle run from a generator sample once the
+    generator's name is gone, so it stays even though the directory spells it
+    as a prefix rather than a suffix.
+
+    Purely presentational, unlike :func:`pretty_sample`, which is also what the
+    ranker's prompt says is being simulated. Nothing that judges anything reads
+    this.
+    """
+    if gun := _gun_tokens(sample):
+        particle, value, unit = gun
+        return f"{_PARTICLE_LABELS.get(particle, particle)} gun · {value} {unit}"
+
+    if parsed := _generator_tokens(sample):
+        gen, beams, process, ecm = parsed
+        named = []
+        if gen != _DEFAULT_GENERATOR:
+            named.append(_GENERATOR_LABELS.get(gen, gen))
+        if beams != _DEFAULT_BEAMS:
+            named.append(_BEAM_LABELS.get(beams, beams))
+        named.append(_process(process, "→"))
+        return f"{' '.join(named)} · {ecm} GeV"
+
+    return pretty_sample(sample)
+
+
+#: Human-readable name per measured column, for row labels, panel titles, table
+#: cells and the e-group mail. Sentence case, so a caller can drop one straight
+#: into a title or a list item without recasing it.
+#:
+#: Covers what the regression report judges plus the derived host evidence the
+#: dashboard plots (``cpu_efficiency``) and the columns only the analysis
+#: figures use (``output_size_mb``, ``events_per_sec``, ``sys_cpu_s``). An
+#: unrecognized future column falls back to its raw name rather than failing.
+#: Memory metrics are named for RSS, the thing actually recorded, rather than
+#: the vaguer "memory".
+METRIC_LABELS: dict[str, str] = {
+    "wall_time_s":         "Wall time",
+    "user_cpu_s":          "User CPU time",
+    "sys_cpu_s":           "System CPU time",
+    "cpu_efficiency":      "CPU efficiency",
+    "peak_rss_mb":         "Peak RSS",
+    "mean_rss_mb":         "Mean event RSS",
+    "mean_time_s":         "Mean event time",
+    "median_time_s":       "Median event time",
+    "trimmed_mean_time_s": "Trimmed mean event time",
+    "output_size_mb":      "Output size",
+    "events_per_sec":      "Throughput",
+    "returncode":          "Return code",
+}
+
+
+def pretty_metric(metric: str, sub_detector: str | None = None) -> str:
+    """Human-readable metric name, suffixed with the sub-detector for a
+    region-level row, e.g. ``("mean_rss_mb", "EMEC_turbine")`` ->
+    ``Mean event RSS · EMEC_turbine``.
+
+    The sub-detector keeps its raw name: it is a DD4hep DetElement identifier,
+    which is what the dashboard labels the series with and what someone
+    searching the geometry types."""
+    name = METRIC_LABELS.get(metric, metric)
+    return f"{name} · {sub_detector}" if sub_detector else name
 
 
 #: Prefix every Key4hep release tag carries, both on EOS and in the sidebar.

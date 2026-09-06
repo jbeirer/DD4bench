@@ -44,7 +44,7 @@ A handful of terms recur throughout the docs. The full list is in the
 
 Baseline
 :   A run with the **full, unmodified geometry**. Always labelled
-    `baseline_all`. Every other run is interpreted relative to it.
+    `baseline`. Every other run is interpreted relative to it.
 
 Sweep
 :   A *set* of runs that vary the geometry — typically the baseline plus one
@@ -58,7 +58,7 @@ Subdetector / detector
 
 Run label
 :   A short identifier for one run, used as the log/CSV filename stem and in the
-    summary table — e.g. `baseline_all`, `without_ECalBarrel`,
+    summary table — e.g. `baseline`, `no_ECalBarrel`,
     `only_Vertex_DriftChamber`.
 
 ddsim args

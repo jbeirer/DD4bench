@@ -61,10 +61,10 @@ def _run_row(label: str, wall: float, rss: float, returncode: int = 0) -> dict:
 
 def _sweep_df(tmp_path: Path) -> pd.DataFrame:
     rows = [
-        _run_row("baseline_all",   wall=10.0, rss=2000.0),
-        _run_row("without_EcalBarrel", wall=8.0, rss=1800.0),
-        _run_row("without_HcalBarrel", wall=9.0, rss=1900.0),
-        _run_row("without_InnerTracker", wall=9.5, rss=1950.0),
+        _run_row("baseline",   wall=10.0, rss=2000.0),
+        _run_row("no_EcalBarrel", wall=8.0, rss=1800.0),
+        _run_row("no_HcalBarrel", wall=9.0, rss=1900.0),
+        _run_row("no_InnerTracker", wall=9.5, rss=1950.0),
     ]
     _write_results_csv(tmp_path, rows)
     return load_results(tmp_path)
@@ -128,73 +128,73 @@ class TestComputeCoreRange:
 
 class TestPlotEventTiming:
     def test_single_run_returns_figure(self, tmp_path):
-        _write_event_json(tmp_path / "baseline_all_events.json")
+        _write_event_json(tmp_path / "baseline_events.json")
         fig = plot_event_timing(tmp_path)
         assert isinstance(fig, go.Figure)
 
     def test_multiple_runs_returns_figure(self, tmp_path):
-        _write_event_json(tmp_path / "baseline_all_events.json")
-        _write_event_json(tmp_path / "without_Ecal_events.json")
+        _write_event_json(tmp_path / "baseline_events.json")
+        _write_event_json(tmp_path / "no_Ecal_events.json")
         fig = plot_event_timing(tmp_path)
         assert isinstance(fig, go.Figure)
 
     def test_three_runs_returns_figure(self, tmp_path):
-        _write_event_json(tmp_path / "baseline_all_events.json")
-        _write_event_json(tmp_path / "without_Ecal_events.json")
-        _write_event_json(tmp_path / "without_Hcal_events.json")
+        _write_event_json(tmp_path / "baseline_events.json")
+        _write_event_json(tmp_path / "no_Ecal_events.json")
+        _write_event_json(tmp_path / "no_Hcal_events.json")
         fig = plot_event_timing(tmp_path)
         assert isinstance(fig, go.Figure)
 
     def test_label_filter(self, tmp_path):
-        _write_event_json(tmp_path / "baseline_all_events.json")
-        _write_event_json(tmp_path / "without_Ecal_events.json")
-        fig = plot_event_timing(tmp_path, labels=["baseline_all"])
+        _write_event_json(tmp_path / "baseline_events.json")
+        _write_event_json(tmp_path / "no_Ecal_events.json")
+        fig = plot_event_timing(tmp_path, labels=["baseline"])
         assert isinstance(fig, go.Figure)
 
     def test_show_distribution(self, tmp_path):
-        _write_event_json(tmp_path / "baseline_all_events.json")
-        _write_event_json(tmp_path / "without_Ecal_events.json")
+        _write_event_json(tmp_path / "baseline_events.json")
+        _write_event_json(tmp_path / "no_Ecal_events.json")
         fig = plot_event_timing(tmp_path, show="distribution")
         assert isinstance(fig, go.Figure)
 
     def test_show_sequence(self, tmp_path):
-        _write_event_json(tmp_path / "baseline_all_events.json")
-        _write_event_json(tmp_path / "without_Ecal_events.json")
+        _write_event_json(tmp_path / "baseline_events.json")
+        _write_event_json(tmp_path / "no_Ecal_events.json")
         fig = plot_event_timing(tmp_path, show="sequence")
         assert isinstance(fig, go.Figure)
 
     def test_show_invalid_raises(self, tmp_path):
-        _write_event_json(tmp_path / "baseline_all_events.json")
+        _write_event_json(tmp_path / "baseline_events.json")
         with pytest.raises(ValueError, match="show must be"):
             plot_event_timing(tmp_path, show="invalid")
 
     def test_custom_baseline(self, tmp_path):
-        _write_event_json(tmp_path / "baseline_all_events.json")
-        _write_event_json(tmp_path / "without_Ecal_events.json")
-        fig = plot_event_timing(tmp_path, baseline_label="without_Ecal")
+        _write_event_json(tmp_path / "baseline_events.json")
+        _write_event_json(tmp_path / "no_Ecal_events.json")
+        fig = plot_event_timing(tmp_path, baseline_label="no_Ecal")
         assert isinstance(fig, go.Figure)
 
     def test_invalid_baseline_raises(self, tmp_path):
-        _write_event_json(tmp_path / "baseline_all_events.json")
-        _write_event_json(tmp_path / "without_Ecal_events.json")
+        _write_event_json(tmp_path / "baseline_events.json")
+        _write_event_json(tmp_path / "no_Ecal_events.json")
         with pytest.raises(ValueError, match="baseline_label"):
             plot_event_timing(tmp_path, baseline_label="nonexistent")
 
     def test_accepts_preloaded_dict(self, tmp_path):
-        _write_event_json(tmp_path / "baseline_all_events.json")
-        _write_event_json(tmp_path / "without_Ecal_events.json")
+        _write_event_json(tmp_path / "baseline_events.json")
+        _write_event_json(tmp_path / "no_Ecal_events.json")
         from k4bench.analysis.loader import load_event_timing
         data = load_event_timing(tmp_path)
         fig = plot_event_timing(data)
         assert isinstance(fig, go.Figure)
 
     def test_bins_int(self, tmp_path):
-        _write_event_json(tmp_path / "baseline_all_events.json", n=20)
+        _write_event_json(tmp_path / "baseline_events.json", n=20)
         fig = plot_event_timing(tmp_path, bins=10)
         assert isinstance(fig, go.Figure)
 
     def test_bins_auto(self, tmp_path):
-        _write_event_json(tmp_path / "baseline_all_events.json", n=50)
+        _write_event_json(tmp_path / "baseline_events.json", n=50)
         fig = plot_event_timing(tmp_path, bins="auto")
         assert isinstance(fig, go.Figure)
 
@@ -206,7 +206,7 @@ class TestPlotEventTiming:
         is passed explicitly so the default event-0 exclusion warning does not
         interfere with this test.
         """
-        path = tmp_path / "baseline_all_events.json"
+        path = tmp_path / "baseline_events.json"
         _write_event_json(path, n=100)
         import warnings as _w
         raw = json.loads(path.read_text())
@@ -217,7 +217,7 @@ class TestPlotEventTiming:
             plot_event_timing(tmp_path, exclude_events=[])  # should not raise
     def test_outlier_warns_when_fraction_high(self, tmp_path):
         """More than 5 % outliers triggers a UserWarning."""
-        path = tmp_path / "baseline_all_events.json"
+        path = tmp_path / "baseline_events.json"
         _write_event_json(path, n=20)
         raw = json.loads(path.read_text())
         # Inject 2/20 = 10 % outliers
@@ -229,7 +229,7 @@ class TestPlotEventTiming:
 
     def test_outlier_threshold_respected(self, tmp_path):
         """Raising outlier_threshold keeps more of the tail in view."""
-        _write_event_json(tmp_path / "baseline_all_events.json", n=30)
+        _write_event_json(tmp_path / "baseline_events.json", n=30)
         fig = plot_event_timing(tmp_path, outlier_threshold=10.0)
         assert isinstance(fig, go.Figure)
 
@@ -239,7 +239,7 @@ class TestPlotEventTiming:
 
     def test_duplicate_event_number_raises(self, tmp_path):
         """Duplicate event_number values in a run must raise ValueError."""
-        path = tmp_path / "baseline_all_events.json"
+        path = tmp_path / "baseline_events.json"
         data = {
             "event_numbers": [1, 1, 2, 3],
             "event_times_s": [0.1, 0.2, 0.3, 0.4],
@@ -641,78 +641,78 @@ def _write_region_json(path: Path, n_events: int = 10,
 
 class TestPlotRegionTiming:
     def test_single_run_both_returns_figure(self, tmp_path):
-        _write_region_json(tmp_path / "baseline_all_regions.json")
+        _write_region_json(tmp_path / "baseline_regions.json")
         fig = plot_region_timing(tmp_path)
         assert isinstance(fig, go.Figure)
 
     def test_single_run_breakdown_returns_figure(self, tmp_path):
-        _write_region_json(tmp_path / "baseline_all_regions.json")
+        _write_region_json(tmp_path / "baseline_regions.json")
         fig = plot_region_timing(tmp_path, show="breakdown")
         assert isinstance(fig, go.Figure)
 
     def test_single_run_sequence_returns_figure(self, tmp_path):
-        _write_region_json(tmp_path / "baseline_all_regions.json")
+        _write_region_json(tmp_path / "baseline_regions.json")
         fig = plot_region_timing(tmp_path, show="sequence")
         assert isinstance(fig, go.Figure)
 
     def test_by_birth_attribution(self, tmp_path):
-        _write_region_json(tmp_path / "baseline_all_regions.json")
+        _write_region_json(tmp_path / "baseline_regions.json")
         fig = plot_region_timing(tmp_path, attribution="by_birth")
         assert isinstance(fig, go.Figure)
 
     def test_multi_run_both_returns_figure(self, tmp_path):
-        _write_region_json(tmp_path / "baseline_all_regions.json")
-        _write_region_json(tmp_path / "without_Ecal_regions.json")
+        _write_region_json(tmp_path / "baseline_regions.json")
+        _write_region_json(tmp_path / "no_Ecal_regions.json")
         fig = plot_region_timing(tmp_path)
         assert isinstance(fig, go.Figure)
 
     def test_multi_run_breakdown_returns_figure(self, tmp_path):
-        _write_region_json(tmp_path / "baseline_all_regions.json")
-        _write_region_json(tmp_path / "without_Ecal_regions.json")
+        _write_region_json(tmp_path / "baseline_regions.json")
+        _write_region_json(tmp_path / "no_Ecal_regions.json")
         fig = plot_region_timing(tmp_path, show="breakdown")
         assert isinstance(fig, go.Figure)
 
     def test_multi_run_sequence_returns_figure(self, tmp_path):
-        _write_region_json(tmp_path / "baseline_all_regions.json")
-        _write_region_json(tmp_path / "without_Ecal_regions.json")
+        _write_region_json(tmp_path / "baseline_regions.json")
+        _write_region_json(tmp_path / "no_Ecal_regions.json")
         fig = plot_region_timing(tmp_path, show="sequence")
         assert isinstance(fig, go.Figure)
 
     def test_label_filter(self, tmp_path):
-        _write_region_json(tmp_path / "baseline_all_regions.json")
-        _write_region_json(tmp_path / "without_Ecal_regions.json")
-        fig = plot_region_timing(tmp_path, labels=["baseline_all"])
+        _write_region_json(tmp_path / "baseline_regions.json")
+        _write_region_json(tmp_path / "no_Ecal_regions.json")
+        fig = plot_region_timing(tmp_path, labels=["baseline"])
         assert isinstance(fig, go.Figure)
 
     def test_top_n_fewer_than_detectors(self, tmp_path):
-        _write_region_json(tmp_path / "baseline_all_regions.json")
+        _write_region_json(tmp_path / "baseline_regions.json")
         fig = plot_region_timing(tmp_path, top_n=3)
         assert isinstance(fig, go.Figure)
 
     def test_top_n_more_than_detectors(self, tmp_path):
-        _write_region_json(tmp_path / "baseline_all_regions.json", detectors=["ECalBarrel", "HCalBarrel"])
+        _write_region_json(tmp_path / "baseline_regions.json", detectors=["ECalBarrel", "HCalBarrel"])
         fig = plot_region_timing(tmp_path, top_n=20)
         assert isinstance(fig, go.Figure)
 
     def test_accepts_preloaded_dict(self, tmp_path):
-        _write_region_json(tmp_path / "baseline_all_regions.json")
+        _write_region_json(tmp_path / "baseline_regions.json")
         from k4bench.analysis.loader import load_region_timing
         data = load_region_timing(tmp_path)
         fig = plot_region_timing(data)
         assert isinstance(fig, go.Figure)
 
     def test_invalid_show_raises(self, tmp_path):
-        _write_region_json(tmp_path / "baseline_all_regions.json")
+        _write_region_json(tmp_path / "baseline_regions.json")
         with pytest.raises(ValueError, match="show must be"):
             plot_region_timing(tmp_path, show="invalid")
 
     def test_invalid_attribution_raises(self, tmp_path):
-        _write_region_json(tmp_path / "baseline_all_regions.json")
+        _write_region_json(tmp_path / "baseline_regions.json")
         with pytest.raises(ValueError, match="attribution must be"):
             plot_region_timing(tmp_path, attribution="nowhere")
 
     def test_exclude_events_all_removed_raises(self, tmp_path):
-        _write_region_json(tmp_path / "baseline_all_regions.json", n_events=3)
+        _write_region_json(tmp_path / "baseline_regions.json", n_events=3)
         with pytest.raises(ValueError, match="No events left"):
             plot_region_timing(tmp_path, exclude_events=[0, 1, 2])
 
